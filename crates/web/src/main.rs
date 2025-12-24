@@ -75,11 +75,9 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(app_data)
-            // Routes UI
             .service(index)
             .service(encode_page)
             .service(decode_page)
-            // Static files
             .service(Files::new("/static", "./static").show_files_listing())
     })
     .bind("127.0.0.1:8080")?
@@ -88,34 +86,37 @@ async fn main() -> std::io::Result<()> {
 }
 
 /// Page d'accueil
+#[actix_web::get("/")]
 async fn index(data: web::Data<AppState>) -> Result<HttpResponse> {
     let mut ctx = Context::new();
     ctx.insert("title", "ADN Data Storage");
-    
+
     let rendered = data.tera.render("index.html", &ctx)
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-    
+
     Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
 }
 
 /// Page d'encodage
+#[actix_web::get("/encode")]
 async fn encode_page(data: web::Data<AppState>) -> Result<HttpResponse> {
     let mut ctx = Context::new();
     ctx.insert("title", "Encoder en ADN");
-    
+
     let rendered = data.tera.render("encode.html", &ctx)
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-    
+
     Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
 }
 
 /// Page de décodage
+#[actix_web::get("/decode")]
 async fn decode_page(data: web::Data<AppState>) -> Result<HttpResponse> {
     let mut ctx = Context::new();
     ctx.insert("title", "Décoder depuis ADN");
-    
+
     let rendered = data.tera.render("decode.html", &ctx)
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-    
+
     Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
 }

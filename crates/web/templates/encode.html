@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2 class="text-2xl font-bold text-gray-800 mb-6">📤 Encoder un fichier en ADN</h2>
+
+<div class="upload-zone rounded-xl p-12 text-center cursor-pointer mb-6" id="dropZone">
+    <input type="file" id="fileInput" class="hidden" />
+    <div class="text-6xl mb-4">📁</div>
+    <h3 class="text-xl font-bold text-gray-700 mb-2">Glissez-déposez votre fichier ici</h3>
+    <p class="text-gray-500 mb-4">ou cliquez pour sélectionner</p>
+    <p class="text-sm text-gray-400">Formats supportés: TXT, HTML, BIN, PDF, etc.</p>
+    <div id="selectedFile" class="hidden mt-4 p-3 bg-green-50 rounded-lg text-green-700 font-medium"></div>
+</div>
+
+<div class="bg-gray-50 rounded-lg p-6 mb-6">
+    <h3 class="font-bold text-gray-800 mb-4">Options d'encodage</h3>
+
+    <div class="grid md:grid-cols-2 gap-4">
+        <label class="flex items-center space-x-3">
+            <input type="checkbox" id="compression" checked class="w-5 h-5 text-green-600">
+            <div>
+                <span class="font-medium">Compression LZ4</span>
+                <p class="text-sm text-gray-500">Réduit la taille avant encodage</p>
+            </div>
+        </label>
+
+        <label class="flex items-center space-x-3">
+            <input type="checkbox" id="reedSolomon" checked class="w-5 h-5 text-green-600">
+            <div>
+                <span class="font-medium">Reed-Solomon (255, 223)</span>
+                <p class="text-sm text-gray-500">Correction d'erreurs</p>
+            </div>
+        </label>
+    </div>
+
+    <div class="mt-4">
+        <label class="block font-medium text-gray-700 mb-2">Algorithme</label>
+        <select id="algorithm" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500">
+            <option value="fountain">DNA Fountain (recommandé)</option>
+            <option value="goldman">Goldman Code</option>
+        </select>
+    </div>
+
+    <div class="mt-4">
+        <label class="block font-medium text-gray-700 mb-2">
+            Redondance: <span id="redundancyValue">1.5x</span>
+        </label>
+        <input type="range" id="redundancy" min="1.0" max="3.0" step="0.1" value="1.5"
+               class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+        <p class="text-sm text-gray-500 mt-1">
+            Plus la redondance est élevée, plus la tolérance aux erreurs est grande
+        </p>
+    </div>
+</div>
+
+<button id="encodeBtn" disabled
+        class="btn-primary w-full py-4 rounded-xl text-white font-bold text-lg disabled:opacity-50">
+    🧬 Encoder en ADN
+</button>
+
+<div id="progress" class="hidden mt-6">
+    <div class="progress-bar">
+        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+    </div>
+    <p id="progressText" class="text-center mt-2 text-gray-600">Encodage en cours...</p>
+</div>
+
+<div id="results" class="hidden mt-6">
+    <h3 class="text-xl font-bold text-gray-800 mb-4">✅ Encodage terminé!</h3>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="stat-card">
+            <div class="stat-value text-2xl" id="seqCount">0</div>
+            <div class="text-sm text-gray-600">Sequences</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value text-2xl" id="avgLength">0</div>
+            <div class="text-sm text-gray-600">Long. moyenne (nt)</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value text-2xl" id="gcContent">0%</div>
+            <div class="text-sm text-gray-600">GC moyen</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value text-2xl" id="density">0</div>
+            <div class="text-sm text-gray-600">Bits/base</div>
+        </div>
+    </div>
+
+    <div class="flex gap-4">
+        <button id="downloadFasta" class="btn-primary flex-1 py-3 rounded-lg text-white font-medium">
+            💾 Telecharger FASTA
+        </button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const selectedFileDiv = document.getElementById('selectedFile');
+const encodeBtn = document.getElementById('encodeBtn');
+const redundancySlider = document.getElementById('redundancy');
+const redundancyValue = document.getElementById('redundancyValue');
+
+let selectedFile = null;
+
+redundancySlider.addEventListener('input', (e) => {
+    redundancyValue.textContent = parseFloat(e.target.value).toFixed(1) + 'x';
+});
+
+dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('dragover');
+});
+
+dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('dragover');
+});
+
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) {
+        handleFileSelect(e.dataTransfer.files[0]);
+    }
+});
+
+dropZone.addEventListener('click', () => {
+    fileInput.click();
+});
+
+fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length) {
+        handleFileSelect(e.target.files[0]);
+    }
+});
+
+function handleFileSelect(file) {
+    selectedFile = file;
+    selectedFileDiv.textContent = 'Fichier: ' + file.name + ' (' + formatBytes(file.size) + ')';
+    selectedFileDiv.classList.remove('hidden');
+    encodeBtn.disabled = false;
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+encodeBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+
+    alert('API endpoints will be implemented in the next phase. Stay tuned!');
+});
+</script>
+{% endblock %}
