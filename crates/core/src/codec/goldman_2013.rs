@@ -145,10 +145,10 @@ impl Goldman2013Encoder {
         ))
     }
 
-    /// Ajoute l'addressing 4-byte (simplifié pour MVP)
+    /// Ajoute l'addressing 8-byte (16 bits pour supporter jusqu'à 65535 séquences)
     fn add_addressing(&self, bases: Vec<IupacBase>, idx: usize) -> Result<Vec<IupacBase>> {
         // Pour le MVP, on encode l'index de manière à éviter les homopolymères
-        let addr_bases = self.encode_index_4byte_safe(idx)?;
+        let addr_bases = self.encode_index_8byte_safe(idx)?;
 
         // Insérer au début
         let mut full_sequence = addr_bases;
@@ -157,16 +157,29 @@ impl Goldman2013Encoder {
         Ok(full_sequence)
     }
 
-    /// Encode un index sur 4 bases
-    fn encode_index_4byte_safe(&self, idx: usize) -> Result<Vec<IupacBase>> {
-        // Encodage simple 2-bit pour l'index
-        let standard_bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
-        let mut bases = Vec::with_capacity(4);
+    /// Encode un index sur 8 bases (16 bits, peut encoder jusqu'à 65535 séquences)
+    fn encode_index_8byte_safe(&self, idx: usize) -> Result<Vec<IupacBase>> {
+        if idx >= 65536 {
+            return Err(DnaError::Encoding(format!(
+                "Index de séquence trop grand: {} (max: 65535)", idx
+            )));
+        }
 
-        // Encoder l'index sur 4 bases (chaque base = 2 bits, peut encoder jusqu'à 2^16 = 65535)
-        for i in 0..4 {
+        // Encodage 2-bit avec rotation pour éviter les homopolymères
+        let standard_bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
+        let mut bases = Vec::with_capacity(8);
+
+        // Encoder l'index sur 8 bases avec rotation pour éviter homopolymères
+        // Utiliser une rotation qui change à chaque position
+        for i in 0..8 {
             let two_bits = ((idx >> (i * 2)) & 0b11) as usize;
-            bases.push(standard_bases[two_bits]);
+
+            // Appliquer une rotation basée sur la position pour éviter homopolymères
+            // La rotation change à chaque position (0, 1, 2, 3, 0, 1, 2, 3, ...)
+            let rotation = i % 4;
+            let base = standard_bases[(two_bits + rotation) % 4];
+
+            bases.push(base);
         }
 
         Ok(bases)
@@ -216,23 +229,23 @@ impl Goldman2013Decoder {
     fn parse_sequence(&self, seq: &DnaSequence) -> Result<(usize, Vec<u8>)> {
         let bases = &seq.bases;
 
-        if bases.len() < 4 {
+        if bases.len() < 8 {
             return Err(DnaError::Decoding("Séquence trop courte pour contenir l'addressing".to_string()));
         }
 
-        // Extraire l'index depuis les 4 premières bases
-        let idx = self.decode_index_4byte(&bases[0..4])?;
+        // Extraire l'index depuis les 8 premières bases
+        let idx = self.decode_index_8byte(&bases[0..8])?;
 
         // Le reste sont les données encodées
-        let data_bases = &bases[4..];
+        let data_bases = &bases[8..];
         let data = self.decode_bases_to_bytes(data_bases, idx)?;
 
         Ok((idx, data))
     }
 
-    /// Décode un index depuis 4 bases
-    fn decode_index_4byte(&self, bases: &[IupacBase]) -> Result<usize> {
-        if bases.len() < 4 {
+    /// Décode un index depuis 8 bases (16 bits)
+    fn decode_index_8byte(&self, bases: &[IupacBase]) -> Result<usize> {
+        if bases.len() < 8 {
             return Err(DnaError::Decoding("Pas assez de bases pour l'index".to_string()));
         }
 
@@ -249,9 +262,16 @@ impl Goldman2013Decoder {
 
         let mut idx: usize = 0;
 
-        // Décoder les 4 bases
-        for i in 0..4 {
-            let two_bits = base_to_bits(bases[i])?;
+        // Décoder les 8 bases (16 bits) en inversant la rotation
+        for i in 0..8 {
+            let base = bases[i];
+            let bits = base_to_bits(base)?;
+
+            // Inverser la rotation: (x + r) % 4 = bits  =>  x = (bits - r + 4) % 4
+            // où r = i % 4
+            let rotation = i % 4;
+            let two_bits = (bits + 4 - rotation) % 4;
+
             idx |= (two_bits) << (i * 2);
         }
 

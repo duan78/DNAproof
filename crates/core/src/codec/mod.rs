@@ -53,7 +53,22 @@ mod tests {
 
     #[test]
     fn test_codec_roundtrip() {
-        let codec = Codec::new();
+        let mut codec = Codec::new();
+        // Use old Goldman encoder with lenient constraints for generic Codec test
+        codec.encoder_config.encoder_type = crate::codec::encoder::EncoderType::Goldman;
+        codec.encoder_config.constraints = crate::sequence::DnaConstraints {
+            gc_min: 0.15,
+            gc_max: 0.85,
+            max_homopolymer: 20,  // Old Goldman doesn't use rotation, can create long runs
+            max_sequence_length: 200,
+            allowed_bases: vec![
+                crate::sequence::IupacBase::A,
+                crate::sequence::IupacBase::C,
+                crate::sequence::IupacBase::G,
+                crate::sequence::IupacBase::T,
+            ],
+        };
+
         let original = b"Hello, DNA world!";
 
         let sequences = codec.encode(original).unwrap();

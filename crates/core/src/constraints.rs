@@ -316,7 +316,7 @@ mod tests {
         ];
 
         let gc_ratio = validator.compute_gc_ratio(&bases);
-        assert_eq!(gc_ratio, 0.5); // 3 GC sur 6 bases
+        assert_eq!(gc_ratio, 4.0/6.0); // 4 GC (C, G, C, G) sur 6 bases
     }
 
     #[test]

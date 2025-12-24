@@ -568,9 +568,13 @@ impl Encoder {
             indices.insert(idx, ());
         }
 
+        // Trier les indices pour garantir un ordre déterministe
+        let mut sorted_indices: Vec<usize> = indices.keys().copied().collect();
+        sorted_indices.sort();
+
         let mut selected = Vec::with_capacity(degree);
-        for idx in indices.keys() {
-            selected.push(chunks[*idx].clone());
+        for idx in sorted_indices {
+            selected.push(chunks[idx].clone());
         }
 
         selected
@@ -708,6 +712,9 @@ impl Encoder {
                 chunk.len(),
                 i as u64,
             );
+
+            // Valider les contraintes
+            sequence.validate(&self.config.constraints)?;
 
             sequences.push(sequence);
         }

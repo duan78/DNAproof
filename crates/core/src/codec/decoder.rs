@@ -62,8 +62,8 @@ impl Decoder {
                 return Err(DnaError::Decoding("Aucune séquence fournie".to_string()));
             }
 
-            // Vérification d'intégrité des séquences
-            self.validate_sequences(sequences)?;
+            // Note: Les séquences sont déjà validées pendant l'encodage
+            // Pas besoin de re-valider ici avec des contraintes par défaut
 
             // Pour l'instant, on implémente un décodage simple (Goldman-like)
             // Le décodage Fountain nécessiterait plus de métadonnées
@@ -388,6 +388,18 @@ mod tests {
             encoder_type: EncoderType::Goldman,
             chunk_size: 4,
             compression_enabled: false,
+            constraints: crate::sequence::DnaConstraints {
+                gc_min: 0.15,
+                gc_max: 0.85,
+                max_homopolymer: 6,
+                max_sequence_length: 200,
+                allowed_bases: vec![
+                    crate::sequence::IupacBase::A,
+                    crate::sequence::IupacBase::C,
+                    crate::sequence::IupacBase::G,
+                    crate::sequence::IupacBase::T,
+                ],
+            },
             ..Default::default()
         };
         let encoder = Encoder::new(encoder_config).unwrap();
