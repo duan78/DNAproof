@@ -147,7 +147,7 @@ pub async fn api_encode(
                 Ok(stats) => {
                     job.status = JobStatus::Complete;
                     job.result = Some(crate::models::JobResult {
-                        download_url: Some(format!("/download/{}", job_id_clone)),
+                        download_url: Some(format!("/download/fasta/{}", job_id_clone)),
                         stats: Some(stats),
                         sequences: None,
                     });
@@ -208,6 +208,10 @@ async fn process_encode_data(
             }
         }
     }
+
+    // Sauvegarder le fichier FASTA
+    save_fasta_file(&sequences, &job_id).await
+        .map_err(|e| format!("Erreur de sauvegarde FASTA: {}", e))?;
 
     Ok(crate::models::EncodingStats {
         sequence_count: sequences.len(),
@@ -398,6 +402,32 @@ fn parse_sequence(id: &str, seq: &str) -> Result<adn_core::DnaSequence, String> 
     ))
 }
 
+/// Sauvegarde les séquences au format FASTA
+async fn save_fasta_file(
+    sequences: &[adn_core::DnaSequence],
+    job_id: &str,
+) -> Result<(), String> {
+    let upload_dir = std::path::Path::new("uploads");
+
+    if !upload_dir.exists() {
+        std::fs::create_dir_all(upload_dir)
+            .map_err(|e| format!("Erreur de création du dossier: {}", e))?;
+    }
+
+    let file_path = upload_dir.join(format!("{}.fasta", job_id));
+
+    // Générer le contenu FASTA
+    let fasta_content: String = sequences.iter()
+        .map(|seq| seq.to_fasta())
+        .collect();
+
+    tokio::fs::write(&file_path, fasta_content)
+        .await
+        .map_err(|e| format!("Erreur d'écriture du fichier FASTA: {}", e))?;
+
+    Ok(())
+}
+
 /// Sauvegarde le résultat décodé
 async fn save_decoded_result(
     data: &web::Data<AppState>,
@@ -451,6 +481,25 @@ pub async fn download_result(
             .body(data),
         Err(_) => HttpResponse::NotFound().json(ErrorResponse::new(
             "Fichier non trouvé".to_string(),
+            404
+        )),
+    }
+}
+
+/// Route pour télécharger un fichier FASTA
+#[get("/download/fasta/{job_id}")]
+pub async fn download_fasta(
+    job_id: web::Path<String>,
+) -> impl Responder {
+    let file_path = std::path::Path::new("uploads").join(format!("{}.fasta", job_id.as_ref()));
+
+    match tokio::fs::read(&file_path).await {
+        Ok(data) => HttpResponse::Ok()
+            .content_type("text/x-fasta")
+            .insert_header(("Content-Disposition", format!("attachment; filename=\"{}.fasta\"", job_id.as_ref())))
+            .body(data),
+        Err(_) => HttpResponse::NotFound().json(ErrorResponse::new(
+            "Fichier FASTA non trouvé".to_string(),
             404
         )),
     }

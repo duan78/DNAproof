@@ -36,8 +36,13 @@
     <div class="mt-4">
         <label class="block font-medium text-gray-700 mb-2">Algorithme</label>
         <select id="algorithm" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500">
-            <option value="fountain">DNA Fountain (recommandé)</option>
-            <option value="goldman">Goldman Code</option>
+            <optgroup label="Production-Ready (Standards Publiés)">
+                <option value="erlich_zielinski_2017">DNA Fountain (Erlich-Zielinski 2017) ✓ Recommandé</option>
+            </optgroup>
+            <optgroup label="Expérimental (Implémentations Custom)">
+                <option value="fountain">DNA Fountain (Custom)</option>
+                <option value="goldman">Goldman Code (Simple 2-bit)</option>
+            </optgroup>
         </select>
     </div>
 
@@ -155,7 +160,103 @@ function formatBytes(bytes) {
 encodeBtn.addEventListener('click', async () => {
     if (!selectedFile) return;
 
-    alert('API endpoints will be implemented in the next phase. Stay tuned!');
+    // Réinitialiser l'UI
+    document.getElementById('progress').classList.remove('hidden');
+    document.getElementById('results').classList.add('hidden');
+    encodeBtn.disabled = true;
+    encodeBtn.textContent = '⏳ Encodage en cours...';
+
+    try {
+        // Préparer le formulaire
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('algorithm', document.getElementById('algorithm').value);
+        formData.append('redundancy', parseFloat(document.getElementById('redundancy').value));
+        formData.append('compression', document.getElementById('compression').checked);
+
+        // Envoyer la requête d'encodage
+        const response = await fetch('/api/encode', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            throw new Error('Erreur lors de l\'encodage: ' + response.statusText);
+        }
+
+        const result = await response.json();
+
+        // Poller le statut du job
+        pollJobStatus(result.job_id);
+
+    } catch (error) {
+        console.error('Erreur:', error);
+        document.getElementById('progress').classList.add('hidden');
+        alert('Erreur: ' + error.message);
+        encodeBtn.disabled = false;
+        encodeBtn.textContent = '🧬 Encoder en ADN';
+    }
 });
+
+async function pollJobStatus(jobId) {
+    const pollInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/jobs/${jobId}`);
+
+            if (!response.ok) {
+                throw new Error('Erreur lors du polling: ' + response.statusText);
+            }
+
+            const job = await response.json();
+
+            // Mettre à jour la progression
+            if (job.progress !== undefined) {
+                const percent = Math.round(job.progress * 100);
+                document.getElementById('progressFill').style.width = `${percent}%`;
+                document.getElementById('progressText').textContent = `Encodage en cours... ${percent}%`;
+            }
+
+            // Vérifier le statut
+            if (job.status === 'complete') {
+                clearInterval(pollInterval);
+                displayResults(job.result);
+                encodeBtn.disabled = false;
+                encodeBtn.textContent = '🧬 Encoder en ADN';
+            } else if (job.status === 'failed') {
+                clearInterval(pollInterval);
+                throw new Error(job.error || 'Échec de l\'encodage');
+            }
+
+        } catch (error) {
+            clearInterval(pollInterval);
+            console.error('Erreur polling:', error);
+            document.getElementById('progress').classList.add('hidden');
+            alert('Erreur: ' + error.message);
+            encodeBtn.disabled = false;
+            encodeBtn.textContent = '🧬 Encoder en ADN';
+        }
+    }, 500);  // Poll toutes les 500ms
+}
+
+function displayResults(result) {
+    document.getElementById('progress').classList.add('hidden');
+    document.getElementById('results').classList.remove('hidden');
+
+    // Afficher les statistiques
+    if (result.stats) {
+        document.getElementById('seqCount').textContent = result.stats.sequence_count;
+        document.getElementById('avgLength').textContent = result.stats.avg_length.toFixed(1);
+        document.getElementById('gcContent').textContent = (result.stats.gc_ratio * 100).toFixed(1) + '%';
+        document.getElementById('density').textContent = result.stats.bits_per_base.toFixed(2);
+    }
+
+    // Configurer le bouton de téléchargement
+    const downloadBtn = document.getElementById('downloadFasta');
+    downloadBtn.onclick = () => {
+        if (result.download_url) {
+            window.location.href = result.download_url;
+        }
+    };
+}
 </script>
 {% endblock %}

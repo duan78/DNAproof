@@ -87,6 +87,7 @@ async fn main() -> std::io::Result<()> {
             .service(routes::api_decode)
             .service(routes::job_status)
             .service(routes::download_result)
+            .service(routes::download_fasta)
             .service(routes::health_check)
             .service(Files::new("/static", config.server.static_files.clone())
                 .show_files_listing())
