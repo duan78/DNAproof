@@ -20,7 +20,9 @@
       "Bash(git remote add:*)",
       "Bash(git branch:*)",
       "Bash(git push:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(readlink:*)",
+      "Bash(ls:*)"
     ]
   }
 }

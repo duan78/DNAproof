@@ -3,10 +3,12 @@
 pub mod encoder;
 pub mod decoder;
 pub mod reed_solomon;
+pub mod goldman_2013;
 
 pub use encoder::{Encoder, EncoderConfig, EncoderType};
 pub use decoder::{Decoder, DecoderConfig};
 pub use reed_solomon::ReedSolomonCodec;
+pub use goldman_2013::Goldman2013Encoder;
 
 use crate::error::Result;
 use crate::sequence::DnaSequence;

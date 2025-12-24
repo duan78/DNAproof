@@ -19,7 +19,9 @@ pub enum EncoderType {
     /// Erlich-Zielinski 2017 - DNA Fountain avec paramètres validés (Science 2017)
     /// Paramètres: c=0.1, δ=0.5, GC 40-60%, homopolymer <4, 152nt
     ErlichZielinski2017,
-    /// Goldman code - Codage de Huffman simple
+    /// Goldman et al. 2013 - Nature 2013 (Huffman + 3-base rotation + 4-byte addressing)
+    Goldman2013,
+    /// Goldman code - Codage de Huffman simple (legacy)
     Goldman,
     /// Encodage adaptatif
     Adaptive,
@@ -104,6 +106,7 @@ impl Encoder {
             let sequences = match self.config.encoder_type {
                 EncoderType::Fountain => self.encode_fountain_optimized(&chunks)?,
                 EncoderType::ErlichZielinski2017 => self.encode_erlich_zielinski_2017(&chunks)?,
+                EncoderType::Goldman2013 => self.encode_goldman_2013(data)?,
                 EncoderType::Goldman => self.encode_goldman(&chunks)?,
                 EncoderType::Adaptive => self.encode_adaptive(&chunks)?,
                 EncoderType::Base3 => self.encode_base3(&chunks)?,
@@ -749,6 +752,20 @@ impl Encoder {
     fn encode_base3(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
         // Pour l'instant, fallback sur goldman
         self.encode_goldman(chunks)
+    }
+
+    /// Encodage Goldman et al. 2013 - Nature 2013
+    ///
+    /// Spécifications du papier:
+    /// - Compression Huffman (utilisant LZ4 comme proxy pour MVP)
+    /// - Encodage 3-base rotation (pas 2-bit fixe)
+    /// - Addressing 4-byte par oligo
+    /// - Segments alternés addressing/data
+    fn encode_goldman_2013(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
+        use crate::codec::goldman_2013::Goldman2013Encoder;
+
+        let goldman_encoder = Goldman2013Encoder::new(self.config.constraints.clone());
+        goldman_encoder.encode(data)
     }
 }
 
