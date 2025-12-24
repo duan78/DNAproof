@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="text-center py-12">
+    <h2 class="text-3xl font-bold text-gray-800 mb-6">Bienvenue sur ADN Data Storage</h2>
+    
+    <p class="text-gray-600 mb-8 max-w-2xl mx-auto">
+        Transformez vos fichiers numériques en séquences ADN virtuelles grâce à nos algorithmes avancés.
+        Supporte la correction d'erreurs Reed-Solomon, les codes Fountain, et les standards Illumina.
+    </p>
+
+    <div class="grid md:grid-cols-2 gap-6 max-w-3xl mx-auto">
+        <!-- Encoder Card -->
+        <a href="/encode" class="block bg-gradient-to-br from-green-500 to-green-600 rounded-xl p-8 text-white hover:shadow-xl transition transform hover:-translate-y-1">
+            <div class="text-5xl mb-4">📤</div>
+            <h3 class="text-2xl font-bold mb-2">Encoder en ADN</h3>
+            <p class="text-green-50">Convertissez vos fichiers en séquences ADN virtuelles</p>
+        </a>
+
+        <!-- Decoder Card -->
+        <a href="/decode" class="block bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-8 text-white hover:shadow-xl transition transform hover:-translate-y-1">
+            <div class="text-5xl mb-4">📥</div>
+            <h3 class="text-2xl font-bold mb-2">Décoder depuis ADN</h3>
+            <p class="text-blue-50">Récupérez vos fichiers depuis des séquences ADN</p>
+        </a>
+    </div>
+
+    <!-- Features -->
+    <div class="mt-16 max-w-4xl mx-auto">
+        <h3 class="text-2xl font-bold text-gray-800 mb-8">Fonctionnalités</h3>
+        
+        <div class="grid md:grid-cols-3 gap-6">
+            <div class="bg-gray-50 rounded-lg p-6">
+                <div class="text-3xl mb-3">🛡️</div>
+                <h4 class="font-bold text-gray-800 mb-2">Reed-Solomon</h4>
+                <p class="text-sm text-gray-600">Correction d'erreurs (255, 223) pour une récupération garantie</p>
+            </div>
+            
+            <div class="bg-gray-50 rounded-lg p-6">
+                <div class="text-3xl mb-3">⛲</div>
+                <h4 class="font-bold text-gray-800 mb-2">DNA Fountain</h4>
+                <p class="text-sm text-gray-600">Codes LT avec distribution Robust Soliton</p>
+            </div>
+            
+            <div class="bg-gray-50 rounded-lg p-6">
+                <div class="text-3xl mb-3">🧬</div>
+                <h4 class="font-bold text-gray-800 mb-2">Standards Illumina</h4>
+                <p class="text-sm text-gray-600">Support des barcodes et adapters Illumina</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="mt-16 grid grid-cols-2 md:grid-cols-4 gap-4 max-w-4xl mx-auto">
+        <div class="stat-card">
+            <div class="stat-value">1.92</div>
+            <div class="text-sm text-gray-600">bits/base</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">99.9%</div>
+            <div class="text-sm text-gray-600">Fiabilité</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">~2x</div>
+            <div class="text-sm text-gray-600">Overhead</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">150nt</div>
+            <div class="text-sm text-gray-600">Longueur standard</div>
+        </div>
+    </div>
+</div>
+{% endblock %}

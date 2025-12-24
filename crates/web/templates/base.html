@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}ADN Data Storage{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #10b981;
+            --secondary: #059669;
+            --dark: #1f2937;
+        }
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+        }
+        .upload-zone {
+            border: 3px dashed #d1d5db;
+            transition: all 0.3s;
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: var(--primary);
+            background: #f0fdf4;
+        }
+        .btn-primary {
+            background: var(--primary);
+            transition: all 0.2s;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background: var(--secondary);
+            transform: translateY(-2px);
+        }
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .stat-card {
+            background: white;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: var(--primary);
+        }
+        .progress-bar {
+            background: #e5e7eb;
+            border-radius: 999px;
+            height: 1rem;
+            overflow: hidden;
+        }
+        .progress-fill {
+            background: var(--primary);
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-6xl mx-auto">
+        <!-- Header -->
+        <header class="glass rounded-xl shadow-lg p-6 mb-8">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800">🧬 ADN Data Storage</h1>
+                    <p class="text-gray-600 mt-2">Encodez vos fichiers en ADN virtuel avec des algorithmes de pointe</p>
+                </div>
+                <nav class="flex gap-4">
+                    <a href="/" class="text-gray-700 hover:text-green-600 transition">Accueil</a>
+                    <a href="/encode" class="text-gray-700 hover:text-green-600 transition">Encoder</a>
+                    <a href="/decode" class="text-gray-700 hover:text-green-600 transition">Décoder</a>
+                </nav>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="glass rounded-xl shadow-lg p-8">
+            {% block content %}{% endblock %}
+        </main>
+
+        <!-- Footer -->
+        <footer class="glass rounded-xl shadow-lg p-4 mt-8 text-center text-gray-600">
+            <p>🧬 Powered by Rust + Reed-Solomon + DNA Fountain | 
+            <a href="https://github.com/duan78/DNAproof" class="text-green-600 hover:underline">GitHub</a></p>
+        </footer>
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
