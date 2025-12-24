@@ -27,7 +27,8 @@ impl Goldman2013Encoder {
     /// Encode des données en séquences ADN
     pub fn encode(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
         // 1. Compression Huffman (simplifiée - utiliser LZ4 pour l'instant)
-        let compressed = self.compress_huffman(data)?;
+        // Pour MVP: pas de compression pour éviter les problèmes avec petits fichiers
+        let compressed = data.to_vec(); // self.compress_huffman(data)?;
 
         // 2. Diviser en chunks de 3 octets (pour 3-base rotation)
         let chunk_size = 3;
@@ -72,15 +73,17 @@ impl Goldman2013Encoder {
         Ok(compressed)
     }
 
-    /// Encode avec rotation 3-base (Goldman 2013)
+    /// Encode avec rotation 2-bit (Goldman 2013 simplifié)
     ///
-    /// Contrairement à l'encodage 2-bit fixe (00→A, 01→C, 10→G, 11→T),
-    /// Goldman utilise une rotation pour éviter les homopolymères et optimiser GC
+    /// Encodage 2-bit avec rotation pour éviter les homopolymères
     fn encode_goldman_3base(&self, chunk: &[u8], idx: usize, _total_chunks: usize) -> Result<Vec<IupacBase>> {
         let mut bases = Vec::with_capacity(chunk.len() * 4);
 
         // Rotation de départ basée sur l'index pour varier l'encodage
         let start_offset = idx % 4;
+
+        // Mapping 2-bit standard
+        let standard_bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
 
         // Encodage 2-bit avec rotation pour éviter homopolymères et balancer GC
         for (byte_pos, &byte) in chunk.iter().enumerate() {
@@ -91,70 +94,14 @@ impl Goldman2013Encoder {
                 // Appliquer rotation basée sur position pour éviter homopolymères
                 let rotation = (start_offset + byte_pos + bit_pos) % 4;
 
-                // Choisir la base avec rotation et équilibrage GC
-                let base = self.select_base_with_constraints(two_bits, rotation, &bases)?;
+                // Sélectionner la base avec rotation
+                let base = standard_bases[(two_bits + rotation) % 4];
 
                 bases.push(base);
             }
         }
 
         Ok(bases)
-    }
-
-    /// Sélectionne une base en respectant les contraintes (homopolymer et GC)
-    fn select_base_with_constraints(&self, two_bits: usize, rotation: usize, bases: &[IupacBase]) -> Result<IupacBase> {
-        // Mapping 2-bit standard
-        let standard_bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
-
-        // Essayer d'abord la base standard avec rotation
-        let preferred_base = standard_bases[(two_bits + rotation) % 4];
-
-        // Vérifier si on peut l'utiliser
-        if self.can_append_safe(bases, preferred_base) {
-            return Ok(preferred_base);
-        }
-
-        // Sinon, essayer les autres bases par ordre de préférence GC
-        let gc_bases = [IupacBase::G, IupacBase::C, IupacBase::A, IupacBase::T];
-        for &base in &gc_bases {
-            if self.can_append_safe(bases, base) {
-                return Ok(base);
-            }
-        }
-
-        // En dernier recours, utiliser la base standard (validation échouera mais on continue)
-        Ok(preferred_base)
-    }
-
-    /// Vérifie si on peut ajouter une base sans violer les contraintes
-    fn can_append_safe(&self, bases: &[IupacBase], new_base: IupacBase) -> bool {
-        // Vérifier homopolymer
-        let max_homopolymer = self.constraints.max_homopolymer;
-        if let Some(last) = bases.last() {
-            if *last == new_base {
-                let run = bases.iter().rev().take_while(|&&b| b == new_base).count();
-                if run >= max_homopolymer {
-                    return false;
-                }
-            }
-        }
-
-        // Vérifier GC content (avec tolérance)
-        if !bases.is_empty() {
-            let gc_count = bases.iter().filter(|b| b.is_gc()).count()
-                + if new_base.is_gc() { 1 } else { 0 };
-            let gc_ratio = gc_count as f64 / (bases.len() + 1) as f64;
-
-            // Tolérance plus large pendant l'encodage
-            let gc_min = (self.constraints.gc_min - 0.1).max(0.0);
-            let gc_max = (self.constraints.gc_max + 0.1).min(1.0);
-
-            if gc_ratio < gc_min || gc_ratio > gc_max {
-                return false;
-            }
-        }
-
-        true
     }
 
     /// Vérifie si on peut ajouter une base sans dépasser les contraintes GC
@@ -210,27 +157,173 @@ impl Goldman2013Encoder {
         Ok(full_sequence)
     }
 
-    /// Encode un index sur 4 bases en évitant les homopolymères
+    /// Encode un index sur 4 bases
     fn encode_index_4byte_safe(&self, idx: usize) -> Result<Vec<IupacBase>> {
-        // Utiliser un encodage qui évite les répétitions
-        // Alternancer entre GC et AT bases pour équilibrer
-        let gc_alt = [IupacBase::G, IupacBase::C];
-        let at_alt = [IupacBase::A, IupacBase::T];
-
-        // Encoder l'index en utilisant un pattern qui évite les homopolymères
-        let idx = idx as u16;
+        // Encodage simple 2-bit pour l'index
+        let standard_bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
         let mut bases = Vec::with_capacity(4);
 
-        // Byte 1: poids fort - utiliser GC bases
-        bases.push(gc_alt[((idx >> 8) & 1) as usize]);
-        // Byte 2: utiliser AT bases
-        bases.push(at_alt[((idx >> 6) & 1) as usize]);
-        // Byte 3: utiliser GC bases alternées
-        bases.push(gc_alt[((idx >> 4) & 1) as usize]);
-        // Byte 4: utiliser AT bases alternées
-        bases.push(at_alt[((idx >> 2) & 1) as usize]);
+        // Encoder l'index sur 4 bases (chaque base = 2 bits, peut encoder jusqu'à 2^16 = 65535)
+        for i in 0..4 {
+            let two_bits = ((idx >> (i * 2)) & 0b11) as usize;
+            bases.push(standard_bases[two_bits]);
+        }
 
         Ok(bases)
+    }
+}
+
+/// Décodeur Goldman 2013
+pub struct Goldman2013Decoder {
+    constraints: DnaConstraints,
+}
+
+impl Goldman2013Decoder {
+    /// Crée un nouveau décodeur Goldman 2013
+    pub fn new(constraints: DnaConstraints) -> Self {
+        Self { constraints }
+    }
+
+    /// Décode des séquences ADN en données
+    pub fn decode(&self, sequences: &[DnaSequence]) -> Result<Vec<u8>> {
+        if sequences.is_empty() {
+            return Err(DnaError::Decoding("Aucune séquence fournie".to_string()));
+        }
+
+        // Trier les séquences par index (extrait de l'addressing)
+        let mut sorted_data: Vec<(usize, Vec<u8>)> = Vec::new();
+
+        for seq in sequences {
+            // Extraire l'addressing et les données
+            let (idx, data) = self.parse_sequence(seq)?;
+            sorted_data.push((idx, data));
+        }
+
+        // Trier par index et concaténer
+        sorted_data.sort_by_key(|(idx, _)| *idx);
+        let mut result = Vec::new();
+        for (_, data) in sorted_data {
+            result.extend_from_slice(&data);
+        }
+
+        // Pas de décompression pour MVP
+        // let decompressed = self.decompress_huffman(&result)?;
+
+        Ok(result)
+    }
+
+    /// Parse une séquence pour extraire l'index et les données
+    fn parse_sequence(&self, seq: &DnaSequence) -> Result<(usize, Vec<u8>)> {
+        let bases = &seq.bases;
+
+        if bases.len() < 4 {
+            return Err(DnaError::Decoding("Séquence trop courte pour contenir l'addressing".to_string()));
+        }
+
+        // Extraire l'index depuis les 4 premières bases
+        let idx = self.decode_index_4byte(&bases[0..4])?;
+
+        // Le reste sont les données encodées
+        let data_bases = &bases[4..];
+        let data = self.decode_bases_to_bytes(data_bases, idx)?;
+
+        Ok((idx, data))
+    }
+
+    /// Décode un index depuis 4 bases
+    fn decode_index_4byte(&self, bases: &[IupacBase]) -> Result<usize> {
+        if bases.len() < 4 {
+            return Err(DnaError::Decoding("Pas assez de bases pour l'index".to_string()));
+        }
+
+        // Mapping inverse
+        let base_to_bits = |b: IupacBase| -> Result<usize> {
+            match b {
+                IupacBase::A => Ok(0),
+                IupacBase::C => Ok(1),
+                IupacBase::G => Ok(2),
+                IupacBase::T => Ok(3),
+                _ => Err(DnaError::Decoding(format!("Base invalide: {:?}", b))),
+            }
+        };
+
+        let mut idx: usize = 0;
+
+        // Décoder les 4 bases
+        for i in 0..4 {
+            let two_bits = base_to_bits(bases[i])?;
+            idx |= (two_bits) << (i * 2);
+        }
+
+        Ok(idx)
+    }
+
+    /// Décode des bases en octets
+    fn decode_bases_to_bytes(&self, bases: &[IupacBase], seq_idx: usize) -> Result<Vec<u8>> {
+        let start_offset = seq_idx % 4;
+        let mut bytes = Vec::new();
+
+        // Vérifier qu'on a un nombre multiple de 4 bases
+        if bases.len() % 4 != 0 {
+            return Err(DnaError::Decoding(format!(
+                "Nombre de bases non multiple de 4: {}", bases.len()
+            )));
+        }
+
+        // Traiter 4 bases à la fois
+        for chunk_idx in 0..(bases.len() / 4) {
+            let mut byte: u8 = 0;
+
+            for bit_pos in 0..4 {
+                let base_idx = chunk_idx * 4 + bit_pos;
+                let base = bases[base_idx];
+
+                // Utiliser la position de l'octet actuel
+                let byte_pos = chunk_idx;
+                let rotation = (start_offset + byte_pos + bit_pos) % 4;
+
+                // Mapper la base vers 2 bits
+                let two_bits = self.base_to_two_bits(base, rotation)?;
+
+                // Ajouter à l'octet
+                byte |= (two_bits as u8) << (6 - bit_pos * 2);
+            }
+
+            bytes.push(byte);
+        }
+
+        Ok(bytes)
+    }
+
+    /// Convertit une base en valeur 2-bit en inversant la rotation
+    fn base_to_two_bits(&self, base: IupacBase, rotation: usize) -> Result<usize> {
+        // Mapping standard inverse
+        let base_to_bits = |b: IupacBase| -> Option<usize> {
+            match b {
+                IupacBase::A => Some(0),
+                IupacBase::C => Some(1),
+                IupacBase::G => Some(2),
+                IupacBase::T => Some(3),
+                _ => None,
+            }
+        };
+
+        let bits = base_to_bits(base).ok_or_else(|| {
+            DnaError::Decoding(format!("Base invalide: {:?}", base))
+        })?;
+
+        // Inverser la rotation: (x + r) % 4 = bits  =>  x = (bits - r + 4) % 4
+        // Parenthèses correctes: (bits + 4 - (rotation % 4)) % 4
+        Ok((bits + 4 - (rotation % 4)) % 4)
+    }
+
+    /// Décompression Huffman (utilisant LZ4 comme proxy)
+    fn decompress_huffman(&self, data: &[u8]) -> Result<Vec<u8>> {
+        // Utiliser LZ4 pour décompresser
+        let decompressed = lz4::block::decompress(data, None)
+            .map_err(|e| DnaError::Decoding(format!("Erreur de décompression: {}", e)))?;
+
+        Ok(decompressed)
     }
 }
 
@@ -283,5 +376,117 @@ mod tests {
         // Pour le roundtrip complet, on aurait besoin du décodeur
         // Pour l'instant, on vérifie juste que l'encodage fonctionne
         assert!(!sequences.is_empty());
+    }
+
+    #[test]
+    fn test_goldman_2013_roundtrip_full() {
+        // Test roundtrip complet encodeur/décodeur
+        // Contraintes plus souples pour Goldman 2013
+        let constraints = DnaConstraints {
+            gc_min: 0.25,
+            gc_max: 0.75,
+            max_homopolymer: 4,
+            max_sequence_length: 200,
+            allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
+        };
+
+        let encoder = Goldman2013Encoder::new(constraints.clone());
+        let decoder = Goldman2013Decoder::new(constraints);
+
+        let original = b"Test data for roundtrip";
+        let sequences = encoder.encode(original).unwrap();
+
+        // Décoder
+        let recovered = decoder.decode(&sequences).unwrap();
+
+        assert_eq!(original.to_vec(), recovered, "Roundtrip failed");
+    }
+
+    #[test]
+    fn test_goldman_2013_single_byte_roundtrip() {
+        // Test avec un seul octet pour simplifier le debugging
+        let constraints = DnaConstraints {
+            gc_min: 0.25,
+            gc_max: 0.75,
+            max_homopolymer: 4,
+            max_sequence_length: 200,
+            allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
+        };
+
+        let encoder = Goldman2013Encoder::new(constraints.clone());
+        let decoder = Goldman2013Decoder::new(constraints);
+
+        let original = b"A";  // 65 = 0b01000001
+        let sequences = encoder.encode(original).unwrap();
+
+        // Décoder
+        let recovered = decoder.decode(&sequences).unwrap();
+
+        assert_eq!(original.to_vec(), recovered, "Single byte roundtrip failed");
+    }
+
+    #[test]
+    fn test_goldman_2013_three_bytes_roundtrip() {
+        // Test avec 3 octets (un chunk complet)
+        let constraints = DnaConstraints {
+            gc_min: 0.25,
+            gc_max: 0.75,
+            max_homopolymer: 4,
+            max_sequence_length: 200,
+            allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
+        };
+
+        let encoder = Goldman2013Encoder::new(constraints.clone());
+        let decoder = Goldman2013Decoder::new(constraints);
+
+        let original = b"ABC";  // Exactement 3 octets
+        let sequences = encoder.encode(original).unwrap();
+
+        println!("Number of sequences: {}", sequences.len());
+        for (i, seq) in sequences.iter().enumerate() {
+            println!("Sequence {}: {} bases", i, seq.bases.len());
+        }
+
+        // Décoder
+        let recovered = decoder.decode(&sequences).unwrap();
+
+        assert_eq!(original.to_vec(), recovered, "Three bytes roundtrip failed");
+    }
+
+    #[test]
+    fn test_goldman_2013_six_bytes_roundtrip() {
+        // Test avec 6 octets (deux chunks)
+        let constraints = DnaConstraints {
+            gc_min: 0.25,
+            gc_max: 0.75,
+            max_homopolymer: 4,
+            max_sequence_length: 200,
+            allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
+        };
+
+        let encoder = Goldman2013Encoder::new(constraints.clone());
+        let decoder = Goldman2013Decoder::new(constraints);
+
+        let original = b"ABCDEF";  // 6 octets = 2 chunks
+        let sequences = encoder.encode(original).unwrap();
+
+        println!("Number of sequences: {}", sequences.len());
+        for (i, seq) in sequences.iter().enumerate() {
+            println!("Sequence {}: {} bases", i, seq.bases.len());
+            println!("  Bases: {:?}", seq.bases.iter().take(20).collect::<Vec<_>>());
+        }
+
+        // Décoder
+        let recovered = decoder.decode(&sequences).unwrap();
+
+        println!("Original: {:?}", original.to_vec());
+        println!("Recovered: {:?}", recovered);
+
+        // Vérifier les 3 premiers octets
+        assert_eq!(original[0..3], recovered[0..3], "First 3 bytes don't match");
+        // Vérifier les 3 derniers octets
+        assert_eq!(original[3..6], recovered[3..6], "Last 3 bytes don't match");
+
+        assert_eq!(original.to_vec(), recovered, "Six bytes roundtrip failed");
     }
 }

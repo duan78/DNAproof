@@ -22,7 +22,8 @@
       "Bash(git push:*)",
       "Bash(tree:*)",
       "Bash(readlink:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(rustc:*)"
     ]
   }
 }

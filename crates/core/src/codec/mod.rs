@@ -8,7 +8,7 @@ pub mod goldman_2013;
 pub use encoder::{Encoder, EncoderConfig, EncoderType};
 pub use decoder::{Decoder, DecoderConfig};
 pub use reed_solomon::ReedSolomonCodec;
-pub use goldman_2013::Goldman2013Encoder;
+pub use goldman_2013::{Goldman2013Encoder, Goldman2013Decoder};
 
 use crate::error::Result;
 use crate::sequence::DnaSequence;
