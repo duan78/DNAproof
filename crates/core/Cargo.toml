@@ -1,0 +1,21 @@
+[package]
+name = "adn-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bio = { workspace = true }
+reed-solomon = { workspace = true }
+lz4 = { workspace = true }
+zstd = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

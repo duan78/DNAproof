@@ -1,0 +1,25 @@
+[package]
+name = "adn-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "adn"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
+tabled = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+adn-core = { path = "../core" }
+adn-storage = { path = "../storage" }
+adn-simulation = { path = "../simulation" }
+adn-utils = { path = "../utils" }

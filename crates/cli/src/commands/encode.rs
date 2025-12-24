@@ -1,0 +1,84 @@
+//! Commande d'encodage
+
+use crate::{EncodingAlgorithm, CompressionAlgorithm, create_progress_bar, create_spinner};
+use adn_core::{Encoder, EncoderConfig, DnaConstraints};
+use adn_core::codec::encoder::{EncoderType, CompressionType};
+use anyhow::Result;
+use std::path::PathBuf;
+use std::fs::File;
+use std::io::Write;
+
+pub fn run(
+    input: PathBuf,
+    output: PathBuf,
+    algorithm: EncodingAlgorithm,
+    redundancy: f64,
+    compress: bool,
+    compression: Option<CompressionAlgorithm>,
+) -> Result<()> {
+    println!("🧬 Encodage de: {}", input.display());
+
+    // 1. Lire le fichier
+    let spinner = create_spinner("Lecture du fichier...");
+    let data = std::fs::read(&input)?;
+    spinner.finish_with_message(format!("Fichier lu ({} octets)", data.len()));
+
+    // 2. Configurer l'encodeur
+    let encoder_type = match algorithm {
+        EncodingAlgorithm::Fountain => EncoderType::Fountain,
+        EncodingAlgorithm::Goldman => EncoderType::Goldman,
+        EncodingAlgorithm::Adaptive => EncoderType::Adaptive,
+        EncodingAlgorithm::Base3 => EncoderType::Base3,
+    };
+
+    let compression_type = match compression.unwrap_or(CompressionAlgorithm::Lz4) {
+        CompressionAlgorithm::Lz4 => CompressionType::Lz4,
+        CompressionAlgorithm::Zstd => CompressionType::Zstd,
+        CompressionAlgorithm::None => CompressionType::None,
+    };
+
+    let config = EncoderConfig {
+        encoder_type,
+        chunk_size: 32,
+        redundancy,
+        compression_enabled: compress,
+        compression_type,
+        constraints: DnaConstraints::default(),
+    };
+
+    // 3. Encoder
+    let pb = create_progress_bar(data.len() as u64, "Encodage ADN...");
+    let encoder = Encoder::new(config)?;
+    let sequences = encoder.encode(&data)?;
+    pb.finish_with_message(format!("{} séquences générées", sequences.len()));
+
+    // 4. Créer le répertoire de sortie
+    std::fs::create_dir_all(&output)?;
+
+    // 5. Écrire les séquences en format FASTA
+    let output_file = output.join(format!(
+        "{}.fasta",
+        input.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output")
+    ));
+
+    let spinner = create_spinner("Écriture des séquences...");
+    let mut file = File::create(&output_file)?;
+
+    for seq in &sequences {
+        writeln!(file, "{}", seq.to_fasta())?;
+    }
+
+    spinner.finish_with_message(format!("Séquences écrites dans {}", output_file.display()));
+
+    // 6. Statistiques
+    println!("\n📊 Statistiques:");
+    println!("   Séquences générées: {}", sequences.len());
+    println!("   Longueur moyenne: {:.1} bases", sequences.iter().map(|s| s.len()).sum::<usize>() as f64 / sequences.len() as f64);
+    println!("   GC moyen: {:.1}%", sequences.iter().map(|s| s.metadata.gc_ratio).sum::<f64>() * 100.0 / sequences.len() as f64);
+
+    println!("\n✅ Encodage terminé!");
+
+    Ok(())
+}

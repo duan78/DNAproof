@@ -1,0 +1,376 @@
+//! Validation et gestion des contraintes ADN
+
+use crate::error::{DnaError, Result};
+use crate::sequence::{DnaConstraints, IupacBase};
+
+/// Validateur de contraintes ADN
+pub struct DnaConstraintValidator {
+    constraints: DnaConstraints,
+}
+
+impl DnaConstraintValidator {
+    /// Crée un nouveau validateur avec les contraintes par défaut
+    pub fn new() -> Self {
+        Self {
+            constraints: DnaConstraints::default(),
+        }
+    }
+
+    /// Crée un validateur avec des contraintes personnalisées
+    pub fn with_constraints(constraints: DnaConstraints) -> Self {
+        Self { constraints }
+    }
+
+    /// Retourne les contraintes actuelles
+    pub fn constraints(&self) -> &DnaConstraints {
+        &self.constraints
+    }
+
+    /// Modifie les contraintes
+    pub fn set_constraints(&mut self, constraints: DnaConstraints) {
+        self.constraints = constraints;
+    }
+
+    /// Valide une séquence complète
+    pub fn validate_sequence(&self, bases: &[IupacBase]) -> Result<()> {
+        self.constraints.validate(bases)
+    }
+
+    /// Calcule le ratio GC d'une séquence
+    pub fn compute_gc_ratio(&self, bases: &[IupacBase]) -> f64 {
+        if bases.is_empty() {
+            return 0.5;
+        }
+
+        let gc_count = bases.iter().filter(|b| b.is_gc()).count();
+        gc_count as f64 / bases.len() as f64
+    }
+
+    /// Détecte les runs d'homopolymers
+    pub fn detect_homopolymers(&self, bases: &[IupacBase]) -> Vec<(usize, IupacBase, usize)> {
+        let mut runs = Vec::new();
+        let mut current_run = 0;
+        let mut start_idx = 0;
+        let mut last_base: Option<IupacBase> = None;
+
+        for (i, base) in bases.iter().enumerate() {
+            if Some(*base) == last_base {
+                current_run += 1;
+            } else {
+                if current_run > 1 {
+                    runs.push((start_idx, last_base.unwrap(), current_run));
+                }
+                start_idx = i;
+                current_run = 1;
+                last_base = Some(*base);
+            }
+        }
+
+        // Ajouter le dernier run
+        if current_run > 1 {
+            runs.push((start_idx, last_base.unwrap(), current_run));
+        }
+
+        runs
+    }
+
+    /// Compte la fréquence de chaque base
+    pub fn count_bases(&self, bases: &[IupacBase]) -> [usize; 4] {
+        let mut counts = [0usize; 4]; // A, C, G, T
+
+        for base in bases {
+            match base {
+                IupacBase::A => counts[0] += 1,
+                IupacBase::C => counts[1] += 1,
+                IupacBase::G => counts[2] += 1,
+                IupacBase::T => counts[3] += 1,
+                _ => {}
+            }
+        }
+
+        counts
+    }
+
+    /// Vérifie si une base peut être ajoutée sans violer les contraintes
+    pub fn can_append(&self, bases: &[IupacBase], new_base: IupacBase) -> bool {
+        // Vérifier la longueur
+        if bases.len() >= self.constraints.max_sequence_length {
+            return false;
+        }
+
+        // Vérifier l'homopolymer
+        if let Some(last_base) = bases.last() {
+            if *last_base == new_base {
+                // Compter le run actuel
+                let run_length = bases
+                    .iter()
+                    .rev()
+                    .take_while(|&&b| b == new_base)
+                    .count();
+
+                if run_length >= self.constraints.max_homopolymer {
+                    return false;
+                }
+            }
+        }
+
+        // Pour le GC, on ne peut pas savoir à l'avance si ce sera OK
+        // car on ne connaît pas la longueur finale
+        true
+    }
+
+    /// Équilibre le GC content en suggérant une base
+    pub fn suggest_base_for_gc(&self, bases: &[IupacBase]) -> Option<IupacBase> {
+        let gc_ratio = self.compute_gc_ratio(bases);
+
+        if gc_ratio < self.constraints.gc_min {
+            // Besoin de plus de GC
+            Some(if rand::random::<bool>() {
+                IupacBase::G
+            } else {
+                IupacBase::C
+            })
+        } else if gc_ratio > self.constraints.gc_max {
+            // Besoin de plus de AT
+            Some(if rand::random::<bool>() {
+                IupacBase::A
+            } else {
+                IupacBase::T
+            })
+        } else {
+            // GC est OK, n'importe quelle base
+            None
+        }
+    }
+
+    /// Transforme une séquence pour respecter les contraintes
+    pub fn enforce_constraints(&self, bases: &[IupacBase]) -> Result<Vec<IupacBase>> {
+        let mut result = Vec::with_capacity(bases.len());
+
+        for &base in bases {
+            // Si on ne peut pas ajouter cette base, essayer une alternative
+            if !self.can_append(&result, base) {
+                // Essayer une base alternative
+                let alt_base = self.suggest_base_for_gc(&result).unwrap_or_else(|| {
+                    // Choisir une base différente de la dernière
+                    match result.last() {
+                        Some(IupacBase::A) => IupacBase::C,
+                        Some(IupacBase::C) => IupacBase::G,
+                        Some(IupacBase::G) => IupacBase::T,
+                        Some(IupacBase::T) => IupacBase::A,
+                        _ => IupacBase::A,
+                    }
+                });
+
+                if self.can_append(&result, alt_base) {
+                    result.push(alt_base);
+                } else {
+                    return Err(DnaError::ConstraintViolation(
+                        "Impossible de satisfaire les contraintes".to_string(),
+                    ));
+                }
+            } else {
+                result.push(base);
+            }
+        }
+
+        // Vérification finale
+        self.validate_sequence(&result)?;
+        Ok(result)
+    }
+}
+
+impl Default for DnaConstraintValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Checker de contraintes (version simplifiée)
+pub struct ConstraintChecker {
+    validator: DnaConstraintValidator,
+}
+
+impl ConstraintChecker {
+    pub fn new() -> Self {
+        Self {
+            validator: DnaConstraintValidator::new(),
+        }
+    }
+
+    /// Vérifie rapidement si une séquence est valide
+    pub fn is_valid(&self, bases: &[IupacBase]) -> bool {
+        self.validator.validate_sequence(bases).is_ok()
+    }
+
+    /// Retourne des statistiques sur la séquence
+    pub fn stats(&self, bases: &[IupacBase]) -> SequenceStats {
+        let counts = self.validator.count_bases(bases);
+        let gc_ratio = self.validator.compute_gc_ratio(bases);
+        let homopolymers = self.validator.detect_homopolymers(bases);
+        let max_homopolymer = homopolymers
+            .iter()
+            .map(|(_, _, len)| *len)
+            .max()
+            .unwrap_or(1);
+
+        SequenceStats {
+            length: bases.len(),
+            count_a: counts[0],
+            count_c: counts[1],
+            count_g: counts[2],
+            count_t: counts[3],
+            gc_ratio,
+            max_homopolymer,
+            homopolymer_count: homopolymers.len(),
+        }
+    }
+}
+
+impl Default for ConstraintChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Statistiques de séquence
+#[derive(Debug, Clone)]
+pub struct SequenceStats {
+    pub length: usize,
+    pub count_a: usize,
+    pub count_c: usize,
+    pub count_g: usize,
+    pub count_t: usize,
+    pub gc_ratio: f64,
+    pub max_homopolymer: usize,
+    pub homopolymer_count: usize,
+}
+
+impl SequenceStats {
+    /// Affiche les statistiques sous forme de tableau
+    pub fn format_table(&self) -> String {
+        format!(
+            "┌────────────────────────────────────┐\n\
+             │ Statistiques de Séquence           │\n\
+             ├────────────────────────────────────┤\n\
+             │ Longueur    : {:>6} bases        │\n\
+             │ A           : {:>6} ({:>5.1}%)    │\n\
+             │ C           : {:>6} ({:>5.1}%)    │\n\
+             │ G           : {:>6} ({:>5.1}%)    │\n\
+             │ T           : {:>6} ({:>5.1}%)    │\n\
+             │ GC Ratio    : {:>6.1}%            │\n\
+             │ Max Homopoly: {:>6}               │\n\
+             │ Nb Homopoly: {:>6}               │\n\
+             └────────────────────────────────────┘",
+            self.length,
+            self.count_a,
+            100.0 * self.count_a as f64 / self.length as f64,
+            self.count_c,
+            100.0 * self.count_c as f64 / self.length as f64,
+            self.count_g,
+            100.0 * self.count_g as f64 / self.length as f64,
+            self.count_t,
+            100.0 * self.count_t as f64 / self.length as f64,
+            100.0 * self.gc_ratio,
+            self.max_homopolymer,
+            self.homopolymer_count
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gc_ratio_computation() {
+        let validator = DnaConstraintValidator::new();
+        let bases = vec![
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
+            IupacBase::C,
+            IupacBase::G,
+        ];
+
+        let gc_ratio = validator.compute_gc_ratio(&bases);
+        assert_eq!(gc_ratio, 0.5); // 3 GC sur 6 bases
+    }
+
+    #[test]
+    fn test_homopolymer_detection() {
+        let validator = DnaConstraintValidator::new();
+        let bases = vec![
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::C,
+            IupacBase::G,
+        ];
+
+        let runs = validator.detect_homopolymers(&bases);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0], (0, IupacBase::A, 3));
+        assert_eq!(runs[1], (3, IupacBase::C, 2));
+    }
+
+    #[test]
+    fn test_can_append() {
+        let validator = DnaConstraintValidator::new();
+        let bases = vec![IupacBase::A, IupacBase::A, IupacBase::A];
+
+        // Ne devrait pas pouvoir ajouter un 4ème A
+        assert!(!validator.can_append(&bases, IupacBase::A));
+
+        // Mais peut ajouter une autre base
+        assert!(validator.can_append(&bases, IupacBase::C));
+    }
+
+    #[test]
+    fn test_enforce_constraints() {
+        let validator = DnaConstraintValidator::new();
+
+        // Séquence avec homopolymer trop long
+        let bases = vec![
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
+        ];
+
+        let result = validator.enforce_constraints(&bases);
+        assert!(result.is_ok());
+
+        let enforced = result.unwrap();
+        assert!(validator.validate_sequence(&enforced).is_ok());
+    }
+
+    #[test]
+    fn test_stats() {
+        let checker = ConstraintChecker::new();
+        let bases = vec![
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::G,
+            IupacBase::T,
+            IupacBase::T,
+        ];
+
+        let stats = checker.stats(&bases);
+        assert_eq!(stats.length, 8);
+        assert_eq!(stats.count_a, 2);
+        assert_eq!(stats.count_c, 2);
+        assert_eq!(stats.count_g, 2);
+        assert_eq!(stats.count_t, 2);
+        assert_eq!(stats.gc_ratio, 0.5);
+        assert_eq!(stats.max_homopolymer, 2);
+    }
+}

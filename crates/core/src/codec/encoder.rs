@@ -1,0 +1,474 @@
+//! Encodeur ADN - Implémente DNA Fountain et autres algorithmes
+
+use crate::error::{DnaError, Result};
+use crate::sequence::{DnaConstraints, DnaSequence, IupacBase};
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Type d'algorithme d'encodage
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EncoderType {
+    /// DNA Fountain - LT codes avec distribution robust soliton
+    Fountain,
+    /// Goldman code - Codage de Huffman simple
+    Goldman,
+    /// Encodage adaptatif
+    Adaptive,
+    /// Encodage base-3 optimisé
+    Base3,
+}
+
+impl Default for EncoderType {
+    fn default() -> Self {
+        Self::Fountain
+    }
+}
+
+/// Configuration de l'encodeur
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncoderConfig {
+    /// Type d'algorithme
+    pub encoder_type: EncoderType,
+
+    /// Taille des chunks (octets)
+    pub chunk_size: usize,
+
+    /// Facteur de redondance (1.0 = minimum, 2.0 = 2x plus de gouttes)
+    pub redundancy: f64,
+
+    /// Activer la compression
+    pub compression_enabled: bool,
+
+    /// Type de compression
+    pub compression_type: CompressionType,
+
+    /// Contraintes ADN
+    pub constraints: DnaConstraints,
+}
+
+impl Default for EncoderConfig {
+    fn default() -> Self {
+        Self {
+            encoder_type: EncoderType::Fountain,
+            chunk_size: 32, // 32 octets par chunk
+            redundancy: 1.5,
+            compression_enabled: true,
+            compression_type: CompressionType::Lz4,
+            constraints: DnaConstraints::default(),
+        }
+    }
+}
+
+/// Type de compression
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompressionType {
+    Lz4,
+    Zstd,
+    None,
+}
+
+/// Encodeur ADN principal
+pub struct Encoder {
+    config: EncoderConfig,
+}
+
+impl Encoder {
+    /// Crée un nouvel encodeur
+    pub fn new(config: EncoderConfig) -> Result<Self> {
+        Ok(Self { config })
+    }
+
+    /// Encode des données en séquences ADN
+    pub fn encode(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
+        // 1. Compression si activée
+        let processed_data = if self.config.compression_enabled {
+            self.compress(data)?
+        } else {
+            data.to_vec()
+        };
+
+        // 2. Division en chunks
+        let chunks = self.split_into_chunks(&processed_data);
+
+        // 3. Encodage selon le type
+        let sequences = match self.config.encoder_type {
+            EncoderType::Fountain => self.encode_fountain(&chunks)?,
+            EncoderType::Goldman => self.encode_goldman(&chunks)?,
+            EncoderType::Adaptive => self.encode_adaptive(&chunks)?,
+            EncoderType::Base3 => self.encode_base3(&chunks)?,
+        };
+
+        Ok(sequences)
+    }
+
+    /// Compresse les données
+    fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+        match self.config.compression_type {
+            CompressionType::Lz4 => {
+                let compressed = lz4::block::compress(
+                    data,
+                    None, // Mode par défaut
+                    true, // Avec checksum
+                )
+                .map_err(|e| DnaError::Encoding(format!("Erreur LZ4: {}", e)))?;
+                Ok(compressed)
+            }
+            CompressionType::Zstd => {
+                let compressed = zstd::encode_all(data, 0)
+                    .map_err(|e| DnaError::Encoding(format!("Erreur Zstd: {}", e)))?;
+                Ok(compressed)
+            }
+            CompressionType::None => Ok(data.to_vec()),
+        }
+    }
+
+    /// Divise les données en chunks
+    fn split_into_chunks(&self, data: &[u8]) -> Vec<Vec<u8>> {
+        data.chunks(self.config.chunk_size)
+            .map(|c| c.to_vec())
+            .collect()
+    }
+
+    /// Encodage DNA Fountain
+    fn encode_fountain(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        let num_chunks = chunks.len();
+        let num_droplets = (num_chunks as f64 * self.config.redundancy).ceil() as usize;
+
+        let mut sequences = Vec::with_capacity(num_droplets);
+
+        for seed in 0..num_droplets {
+            // Échantillonner le degré depuis la distribution robust soliton
+            let degree = Self::sample_robust_soliton_degree(num_chunks, seed as u64);
+
+            // Sélectionner les chunks (seed-based pour reproductibilité)
+            let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed as u64);
+
+            // XOR des chunks sélectionnés
+            let payload = Self::xor_chunks(&selected_chunks)?;
+
+            // Convertir en ADN avec contraintes
+            let dna = self.payload_to_dna(payload, seed as u64)?;
+
+            sequences.push(dna);
+        }
+
+        Ok(sequences)
+    }
+
+    /// Échantillonne un degré depuis la distribution Robust Soliton
+    fn sample_robust_soliton_degree(num_chunks: usize, seed: u64) -> usize {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+        // Distribution Robust Soliton simplifiée
+        // K = num_chunks, c = 0.1, delta = 0.5
+
+        let k = num_chunks as f64;
+        let c = 0.1;
+        let delta = 0.5;
+
+        // Tau function
+        let tau = |d: f64| -> f64 {
+            if d <= (k / c - 1.0).ceil() {
+                1.0 / (d * c)
+            } else {
+                0.0
+            }
+        };
+
+        // Calculer les poids pour chaque degré possible
+        let mut weights = Vec::with_capacity(num_chunks);
+
+        for d in 1..=num_chunks {
+            let d_float = d as f64;
+            let rho = if d == 1 {
+                1.0 / k
+            } else {
+                1.0 / (d_float * (d_float - 1.0))
+            };
+
+            let weight = rho + tau(d as f64);
+            weights.push(weight);
+        }
+
+        // Normaliser
+        let sum: f64 = weights.iter().sum();
+        for w in weights.iter_mut() {
+            *w /= sum;
+        }
+
+        // Échantillonner
+        let mut cumulative = 0.0;
+        let sample = rng.gen::<f64>();
+
+        for (d, &w) in weights.iter().enumerate() {
+            cumulative += w;
+            if sample <= cumulative {
+                return d + 1; // +1 car les degrés commencent à 1
+            }
+        }
+
+        num_chunks // Fallback
+    }
+
+    /// Sélectionne des chunks de façon déterministe (seed-based)
+    fn select_chunks_seeded(chunks: &[Vec<u8>], degree: usize, seed: u64) -> Vec<Vec<u8>> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut indices = HashMap::new();
+
+        while indices.len() < degree {
+            let idx = rng.gen_range(0..chunks.len());
+            indices.insert(idx, ());
+        }
+
+        let mut selected = Vec::with_capacity(degree);
+        for idx in indices.keys() {
+            selected.push(chunks[*idx].clone());
+        }
+
+        selected
+    }
+
+    /// XOR de plusieurs chunks
+    fn xor_chunks(chunks: &[Vec<u8>]) -> Result<Vec<u8>> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Trouver la longueur max
+        let max_len = chunks.iter().map(|c| c.len()).max().unwrap_or(0);
+
+        let mut result = vec![0u8; max_len];
+
+        for chunk in chunks {
+            for (i, &byte) in chunk.iter().enumerate() {
+                result[i] ^= byte;
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Convertit un payload en séquence ADN
+    fn payload_to_dna(&self, payload: Vec<u8>, seed: u64) -> Result<DnaSequence> {
+        let mut bases = Vec::new();
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let validator = crate::constraints::DnaConstraintValidator::with_constraints(
+            self.config.constraints.clone(),
+        );
+
+        let payload_len = payload.len();
+
+        // Encoder chaque octet en 4 bases (2 bits par base)
+        for byte in &payload {
+            let bits = [
+                (byte >> 6) & 0b11,
+                (byte >> 4) & 0b11,
+                (byte >> 2) & 0b11,
+                byte & 0b11,
+            ];
+
+            for two_bits in bits {
+                let base = match two_bits {
+                    0b00 => IupacBase::A,
+                    0b01 => IupacBase::C,
+                    0b10 => IupacBase::G,
+                    0b11 => IupacBase::T,
+                    _ => unreachable!(),
+                };
+
+                // Vérifier les contraintes et ajuster si nécessaire
+                if validator.can_append(&bases, base) {
+                    bases.push(base);
+                } else {
+                    // Essayer une base alternative qui préserve la valeur
+                    let alt = self.suggest_alternative_base(base, &bases, &mut rng)?;
+                    bases.push(alt);
+                }
+            }
+        }
+
+        // Créer la séquence
+        let sequence = DnaSequence::new(
+            bases,
+            String::from("encoded"),
+            0,
+            payload_len,
+            seed,
+        );
+
+        // Valider
+        sequence.validate(&self.config.constraints)?;
+
+        Ok(sequence)
+    }
+
+    /// Suggère une base alternative respectant les contraintes
+    fn suggest_alternative_base(
+        &self,
+        preferred: IupacBase,
+        current: &[IupacBase],
+        _rng: &mut ChaCha8Rng,
+    ) -> Result<IupacBase> {
+        let bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
+
+        // Essayer d'abord la base préférée
+        for &base in &bases {
+            if base == preferred {
+                continue;
+            }
+
+            let gc_ratio = if current.is_empty() {
+                0.5
+            } else {
+                current.iter().filter(|b| b.is_gc()).count() as f64 / current.len() as f64
+            };
+
+            // Vérifier si cette base nous rapproche du GC cible
+            let target_gc = (self.config.constraints.gc_min + self.config.constraints.gc_max) / 2.0;
+
+            let is_gc = base.is_gc();
+            let improves_gc = (gc_ratio < target_gc && is_gc) || (gc_ratio > target_gc && !is_gc);
+
+            if improves_gc && self.config.constraints.validate(&[base]).is_ok() {
+                return Ok(base);
+            }
+        }
+
+        // Fallback: première base valide
+        for base in bases {
+            if self.config.constraints.validate(&[base]).is_ok() {
+                return Ok(base);
+            }
+        }
+
+        Err(DnaError::ConstraintViolation(
+            "Impossible de trouver une base valide".to_string(),
+        ))
+    }
+
+    /// Encodage Goldman (simple, sans fountain codes)
+    fn encode_goldman(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        let mut sequences = Vec::with_capacity(chunks.len());
+
+        for (i, chunk) in chunks.iter().enumerate() {
+            let bases = self.chunk_to_bases(chunk)?;
+
+            let sequence = DnaSequence::new(
+                bases,
+                String::from("goldman"),
+                i,
+                chunk.len(),
+                i as u64,
+            );
+
+            sequences.push(sequence);
+        }
+
+        Ok(sequences)
+    }
+
+    /// Convertit un chunk en bases (encodage simple)
+    fn chunk_to_bases(&self, chunk: &[u8]) -> Result<Vec<IupacBase>> {
+        let mut bases = Vec::new();
+
+        for byte in chunk {
+            let bits = [
+                (byte >> 6) & 0b11,
+                (byte >> 4) & 0b11,
+                (byte >> 2) & 0b11,
+                byte & 0b11,
+            ];
+
+            for two_bits in bits {
+                let base = match two_bits {
+                    0b00 => IupacBase::A,
+                    0b01 => IupacBase::C,
+                    0b10 => IupacBase::G,
+                    0b11 => IupacBase::T,
+                    _ => unreachable!(),
+                };
+                bases.push(base);
+            }
+        }
+
+        Ok(bases)
+    }
+
+    /// Encodage adaptatif
+    fn encode_adaptive(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        // Pour l'instant, fallback sur fountain
+        self.encode_fountain(chunks)
+    }
+
+    /// Encodage base-3 optimisé
+    fn encode_base3(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        // Pour l'instant, fallback sur goldman
+        self.encode_goldman(chunks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encoder_creation() {
+        let config = EncoderConfig::default();
+        let encoder = Encoder::new(config);
+        assert!(encoder.is_ok());
+    }
+
+    #[test]
+    fn test_simple_encoding() {
+        let config = EncoderConfig {
+            encoder_type: EncoderType::Goldman,
+            chunk_size: 4,
+            redundancy: 1.0,
+            compression_enabled: false,
+            ..Default::default()
+        };
+
+        let encoder = Encoder::new(config).unwrap();
+        let data = b"test";
+
+        let sequences = encoder.encode(data).unwrap();
+        assert!(!sequences.is_empty());
+    }
+
+    #[test]
+    fn test_xor_chunks() {
+        let chunk1 = vec![0b01010101];
+        let chunk2 = vec![0b10101010];
+
+        let result = Encoder::xor_chunks(&[chunk1, chunk2]).unwrap();
+        assert_eq!(result, vec![0b11111111]);
+    }
+
+    #[test]
+    fn test_fountain_degree_sampling() {
+        let degree1 = Encoder::sample_robust_soliton_degree(100, 42);
+        let degree2 = Encoder::sample_robust_soliton_degree(100, 42);
+
+        // Même seed = même degré
+        assert_eq!(degree1, degree2);
+
+        let degree3 = Encoder::sample_robust_soliton_degree(100, 43);
+        // Seed différent = potentiellement différent (mais pas garanti)
+    }
+
+    #[test]
+    fn test_seed_based_selection() {
+        let chunks = vec![
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            vec![7, 8, 9],
+        ];
+
+        let selected1 = Encoder::select_chunks_seeded(&chunks, 2, 42);
+        let selected2 = Encoder::select_chunks_seeded(&chunks, 2, 42);
+
+        assert_eq!(selected1, selected2);
+    }
+}

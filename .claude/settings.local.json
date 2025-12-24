@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(dir:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo build:*)",
+      "Bash(./target/release/adn.exe encode:*)",
+      "Bash(./target/release/adn.exe decode:*)",
+      "Bash(cat:*)",
+      "Bash(./target/release/adn.exe visualize:*)",
+      "Bash(./target/release/adn.exe:*)",
+      "Bash(find:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo test:*)",
+      "Bash(git init:*)",
+      "Bash(git config:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
