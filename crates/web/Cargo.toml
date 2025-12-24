@@ -8,6 +8,7 @@ edition.workspace = true
 actix-web = "4.9"
 actix-files = "0.6"
 actix-multipart = "0.7"
+actix-cors = "0.7"
 
 # Template engine
 tera = "1.20"
@@ -24,7 +25,18 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 
 # Core library
 adn-core = { path = "../core" }
+adn-storage = { path = "../storage" }
 
 # Logging
-env_logger = "0.11"
-log = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-actix-web = "0.7"
+
+# API documentation
+actix-web-openapi = "0.1"
+
+# File upload/download
+futures = "0.3"
+
+# Configuration
+config = "0.13"

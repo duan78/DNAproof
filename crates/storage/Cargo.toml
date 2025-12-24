@@ -13,3 +13,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 adn-core = { path = "../core" }
+sqlx = { version = "0.7", features = ["sqlite", "postgres", "runtime-tokio"] }
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+async-trait = "0.1"

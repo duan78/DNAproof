@@ -1,0 +1,18 @@
+# Configuration du serveur ADN Storage
+
+[server]
+host = "127.0.0.1"
+port = 8080
+workers = 4
+upload_limit = 104857600  # 100MB
+static_files = "./static"
+templates = "./templates"
+
+[database]
+enabled = false
+url = "adn_storage.db"
+max_connections = 5
+
+[logging]
+level = "info"
+format = "compact"

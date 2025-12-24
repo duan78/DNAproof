@@ -52,34 +52,61 @@ impl Decoder {
         Self { config }
     }
 
-    /// Décode des séquences ADN en données
+    /// Décode des séquences ADN en données avec gestion des erreurs améliorée
     pub fn decode(&self, sequences: &[DnaSequence]) -> Result<Vec<u8>> {
-        if sequences.is_empty() {
-            return Err(DnaError::Decoding("Aucune séquence fournie".to_string()));
+        log_operation!("decode_data", {
+            if sequences.is_empty() {
+                return Err(DnaError::Decoding("Aucune séquence fournie".to_string()));
+            }
+
+            // Vérification d'intégrité des séquences
+            self.validate_sequences(sequences)?;
+
+            // Pour l'instant, on implémente un décodage simple (Goldman-like)
+            // Le décodage Fountain nécessiterait plus de métadonnées
+
+            let mut data = Vec::new();
+
+            // Trier les séquences par chunk_index
+            let mut sorted_seqs: Vec<_> = sequences.iter().collect();
+            sorted_seqs.sort_by_key(|s| s.metadata.chunk_index);
+
+            for seq in sorted_seqs {
+                let chunk_data = self.sequence_to_chunk(seq)?;
+                data.extend_from_slice(&chunk_data);
+            }
+
+            // Décompression si activée
+            let result = if self.config.auto_decompress {
+                self.decompress(&data)?
+            } else {
+                data
+            };
+
+            // Vérification finale d'intégrité
+            self.verify_integrity(&result)?;
+
+            Ok(result)
+        })
+    }
+
+    /// Valide les séquences d'entrée
+    fn validate_sequences(&self, sequences: &[DnaSequence]) -> Result<()> {
+        for seq in sequences {
+            seq.validate(&crate::constraints::DnaConstraints::default())?;
         }
+        Ok(())
+    }
 
-        // Pour l'instant, on implémente un décodage simple (Goldman-like)
-        // Le décodage Fountain nécessiterait plus de métadonnées
-
-        let mut data = Vec::new();
-
-        // Trier les séquences par chunk_index
-        let mut sorted_seqs: Vec<_> = sequences.iter().collect();
-        sorted_seqs.sort_by_key(|s| s.metadata.chunk_index);
-
-        for seq in sorted_seqs {
-            let chunk_data = self.sequence_to_chunk(seq)?;
-            data.extend_from_slice(&chunk_data);
+    /// Vérifie l'intégrité des données décodées
+    fn verify_integrity(&self, data: &[u8]) -> Result<()> {
+        // Vérification basique de la taille
+        if data.is_empty() {
+            return Err(DnaError::Decoding("Données décodées vides".to_string()));
         }
-
-        // Décompression si activée
-        let result = if self.config.auto_decompress {
-            self.decompress(&data)?
-        } else {
-            data
-        };
-
-        Ok(result)
+        
+        // Ajouter d'autres vérifications d'intégrité ici
+        Ok(())
     }
 
     /// Convertit une séquence en chunk de données

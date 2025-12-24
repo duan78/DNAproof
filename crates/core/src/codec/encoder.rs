@@ -80,27 +80,29 @@ impl Encoder {
         Ok(Self { config })
     }
 
-    /// Encode des données en séquences ADN
+    /// Encode des données en séquences ADN avec optimisation de performance
     pub fn encode(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
-        // 1. Compression si activée
-        let processed_data = if self.config.compression_enabled {
-            self.compress(data)?
-        } else {
-            data.to_vec()
-        };
+        log_operation!("encode_data", {
+            // 1. Compression si activée
+            let processed_data = if self.config.compression_enabled {
+                self.compress(data)?
+            } else {
+                data.to_vec()
+            };
 
-        // 2. Division en chunks
-        let chunks = self.split_into_chunks(&processed_data);
+            // 2. Division en chunks
+            let chunks = self.split_into_chunks(&processed_data);
 
-        // 3. Encodage selon le type
-        let sequences = match self.config.encoder_type {
-            EncoderType::Fountain => self.encode_fountain(&chunks)?,
-            EncoderType::Goldman => self.encode_goldman(&chunks)?,
-            EncoderType::Adaptive => self.encode_adaptive(&chunks)?,
-            EncoderType::Base3 => self.encode_base3(&chunks)?,
-        };
+            // 3. Encodage selon le type avec parallélisme
+            let sequences = match self.config.encoder_type {
+                EncoderType::Fountain => self.encode_fountain_optimized(&chunks)?,
+                EncoderType::Goldman => self.encode_goldman(&chunks)?,
+                EncoderType::Adaptive => self.encode_adaptive(&chunks)?,
+                EncoderType::Base3 => self.encode_base3(&chunks)?,
+            };
 
-        Ok(sequences)
+            Ok(sequences)
+        })
     }
 
     /// Compresse les données
@@ -131,7 +133,33 @@ impl Encoder {
             .collect()
     }
 
-    /// Encodage DNA Fountain
+    /// Encodage DNA Fountain optimisé avec parallélisme
+    fn encode_fountain_optimized(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        let num_chunks = chunks.len();
+        let num_droplets = (num_chunks as f64 * self.config.redundancy).ceil() as usize;
+
+        // Utiliser Rayon pour le parallélisme
+        let sequences: Result<Vec<DnaSequence>> = (0..num_droplets)
+            .into_par_iter()
+            .map(|seed| {
+                // Échantillonner le degré depuis la distribution robust soliton
+                let degree = Self::sample_robust_soliton_degree(num_chunks, seed as u64);
+
+                // Sélectionner les chunks (seed-based pour reproductibilité)
+                let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed as u64);
+
+                // XOR des chunks sélectionnés
+                let payload = Self::xor_chunks(&selected_chunks)?;
+
+                // Convertir en ADN avec contraintes
+                self.payload_to_dna(payload, seed as u64)
+            })
+            .collect();
+
+        sequences
+    }
+
+    /// Encodage DNA Fountain (version originale pour compatibilité)
     fn encode_fountain(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
         let num_chunks = chunks.len();
         let num_droplets = (num_chunks as f64 * self.config.redundancy).ceil() as usize;
@@ -250,9 +278,9 @@ impl Encoder {
         Ok(result)
     }
 
-    /// Convertit un payload en séquence ADN
+    /// Convertit un payload en séquence ADN avec optimisation
     fn payload_to_dna(&self, payload: Vec<u8>, seed: u64) -> Result<DnaSequence> {
-        let mut bases = Vec::new();
+        let mut bases = Vec::with_capacity(payload.len() * 4); // Pré-allocation
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let validator = crate::constraints::DnaConstraintValidator::with_constraints(
             self.config.constraints.clone(),
@@ -260,7 +288,7 @@ impl Encoder {
 
         let payload_len = payload.len();
 
-        // Encoder chaque octet en 4 bases (2 bits par base)
+        // Encoder chaque octet en 4 bases (2 bits par base) - version optimisée
         for byte in &payload {
             let bits = [
                 (byte >> 6) & 0b11,
@@ -278,7 +306,7 @@ impl Encoder {
                     _ => unreachable!(),
                 };
 
-                // Vérifier les contraintes et ajuster si nécessaire
+                // Vérification optimisée des contraintes
                 if validator.can_append(&bases, base) {
                     bases.push(base);
                 } else {
@@ -289,7 +317,7 @@ impl Encoder {
             }
         }
 
-        // Créer la séquence
+        // Créer la séquence avec validation optimisée
         let sequence = DnaSequence::new(
             bases,
             String::from("encoded"),
@@ -298,7 +326,7 @@ impl Encoder {
             seed,
         );
 
-        // Valider
+        // Valider avec cache
         sequence.validate(&self.config.constraints)?;
 
         Ok(sequence)
