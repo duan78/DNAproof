@@ -3,6 +3,27 @@
 use crate::error::{DnaError, Result};
 use crate::sequence::{DnaConstraints, IupacBase};
 
+/// Trouve la longueur maximale d'homopolymer dans une séquence
+pub fn find_max_homopolymer(bases: &[IupacBase]) -> usize {
+    if bases.is_empty() {
+        return 0;
+    }
+
+    let mut max_run = 1;
+    let mut current_run = 1;
+
+    for window in bases.windows(2) {
+        if window[0] == window[1] {
+            current_run += 1;
+            max_run = max_run.max(current_run);
+        } else {
+            current_run = 1;
+        }
+    }
+
+    max_run
+}
+
 /// Validateur de contraintes ADN
 pub struct DnaConstraintValidator {
     constraints: DnaConstraints,

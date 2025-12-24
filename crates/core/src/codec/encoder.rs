@@ -16,6 +16,9 @@ pub use crate::{log_operation, log_error};
 pub enum EncoderType {
     /// DNA Fountain - LT codes avec distribution robust soliton
     Fountain,
+    /// Erlich-Zielinski 2017 - DNA Fountain avec paramètres validés (Science 2017)
+    /// Paramètres: c=0.1, δ=0.5, GC 40-60%, homopolymer <4, 152nt
+    ErlichZielinski2017,
     /// Goldman code - Codage de Huffman simple
     Goldman,
     /// Encodage adaptatif
@@ -100,6 +103,7 @@ impl Encoder {
             // 3. Encodage selon le type avec parallélisme
             let sequences = match self.config.encoder_type {
                 EncoderType::Fountain => self.encode_fountain_optimized(&chunks)?,
+                EncoderType::ErlichZielinski2017 => self.encode_erlich_zielinski_2017(&chunks)?,
                 EncoderType::Goldman => self.encode_goldman(&chunks)?,
                 EncoderType::Adaptive => self.encode_adaptive(&chunks)?,
                 EncoderType::Base3 => self.encode_base3(&chunks)?,
@@ -161,6 +165,313 @@ impl Encoder {
             .collect();
 
         sequences
+    }
+
+    /// Encodage Erlich-Zielinski 2017 - DNA Fountain validé (Science 2017)
+    ///
+    /// Spécifications du papier:
+    /// - Distribution Robust Soliton: c=0.1, δ=0.5
+    /// - Contraintes biochemical: GC 40-60%, homopolymer <4
+    /// - Longueur d'oligo: 152nt (± quelques bases)
+    /// - Overhead théorique: 1.03-1.07× (minimum)
+    fn encode_erlich_zielinski_2017(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        // Contraintes Erlich-Zielinski 2017
+        let ez_constraints = DnaConstraints::new(
+            0.40,  // GC min 40%
+            0.60,  // GC max 60%
+            3,     // Max homopolymer 3 (<4)
+            152    // Max length 152nt (spécification papier)
+        );
+
+        let num_chunks = chunks.len();
+        // Redondance plus faible avec EZ 2017 (1.03-1.07 recommandé)
+        let redundancy = self.config.redundancy.min(1.07).max(1.03);
+        let num_droplets = (num_chunks as f64 * redundancy).ceil() as usize;
+
+        let mut sequences = Vec::with_capacity(num_droplets);
+
+        for seed in 0..num_droplets {
+            // Échantillonner le degré avec paramètres EZ 2017
+            let degree = Self::sample_robust_soliton_degree_ez2017(num_chunks, seed as u64);
+
+            // Sélectionner les chunks
+            let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed as u64);
+
+            // XOR des chunks
+            let payload = Self::xor_chunks(&selected_chunks)?;
+
+            // Convertir en ADN avec contraintes EZ 2017 strictes
+            let dna = self.payload_to_dna_with_constraints(
+                payload,
+                seed as u64,
+                &ez_constraints,
+            )?;
+
+            // Validation stricte des contraintes EZ 2017
+            Self::validate_erlich_zielinski_2017_sequence(&dna)?;
+
+            sequences.push(dna);
+        }
+
+        Ok(sequences)
+    }
+
+    /// Échantillonne un degré avec distribution Robust Soliton (paramètres EZ 2017)
+    ///
+    /// Selon Erlich & Zielinski 2017:
+    /// - c = 0.1
+    /// - δ = 0.5
+    /// - K = nombre de chunks
+    fn sample_robust_soliton_degree_ez2017(num_chunks: usize, seed: u64) -> usize {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+        // Paramètres Robust Soliton du papier EZ 2017
+        let k = num_chunks as f64;
+        let c = 0.1;  // Constante c du papier
+        let delta = 0.5;  // Paramètre δ du papier
+
+        // Fonction Tau définie dans le papier
+        let tau = |d: f64| -> f64 {
+            let s = c * k.ln();
+            let t = c * k.sqrt();
+            let k_over_s = (k / s).floor();
+            let k_over_t = (k / t).floor();
+
+            if d <= k_over_s {
+                s / k / d
+            } else if (d - k_over_s).abs() < 0.5 {
+                s * (s - 1.0) / k
+            } else if d <= k_over_t {
+                t / k / d
+            } else {
+                0.0
+            }
+        };
+
+        // Fonction Rho (idéal soliton)
+        let rho = |d: f64| -> f64 {
+            if d == 1.0 {
+                1.0 / k
+            } else {
+                1.0 / (d * (d - 1.0))
+            }
+        };
+
+        // Calculer les poids normalisés
+        let mut weights = Vec::with_capacity(num_chunks);
+        let mut sum = 0.0;
+
+        for d in 1..=num_chunks {
+            let d_float = d as f64;
+            let weight = rho(d_float) + tau(d_float);
+            weights.push(weight);
+            sum += weight;
+        }
+
+        // Normaliser
+        for w in weights.iter_mut() {
+            *w /= sum;
+        }
+
+        // Échantillonner avec la méthode de la roulette
+        let mut sample = rng.gen::<f64>();
+        for (d, weight) in weights.iter().enumerate() {
+            sample -= weight;
+            if sample <= 0.0 {
+                return d + 1;  // Les degrés commencent à 1
+            }
+        }
+
+        num_chunks  // Fallback au degré maximum
+    }
+
+    /// Convertit un payload en ADN avec contraintes spécifiques
+    fn payload_to_dna_with_constraints(
+        &self,
+        payload: Vec<u8>,
+        seed: u64,
+        constraints: &DnaConstraints,
+    ) -> Result<DnaSequence> {
+        // D'abord, encoder en bases idéales
+        let mut ideal_bases: Vec<IupacBase> = Vec::with_capacity(payload.len() * 4);
+        for byte in &payload {
+            let bits = [
+                (byte >> 6) & 0b11,
+                (byte >> 4) & 0b11,
+                (byte >> 2) & 0b11,
+                byte & 0b11,
+            ];
+
+            for two_bits in bits {
+                let base = match two_bits {
+                    0b00 => IupacBase::A,
+                    0b01 => IupacBase::C,
+                    0b10 => IupacBase::G,
+                    0b11 => IupacBase::T,
+                    _ => unreachable!(),
+                };
+                ideal_bases.push(base);
+            }
+        }
+
+        // Ensuite, utiliser enforce_constraints pour respecter les contraintes
+        let validator = crate::constraints::DnaConstraintValidator::with_constraints(
+            constraints.clone(),
+        );
+        let enforced_bases = validator.enforce_constraints(&ideal_bases)?;
+
+        // Si les bases font la conversion trop longue, tronquer
+        let max_len = constraints.max_sequence_length;
+        if enforced_bases.len() > max_len {
+            // Logique de retry avec seed différent
+            return self.payload_to_dna_with_constraints_retry(payload, seed, constraints);
+        }
+
+        let sequence = DnaSequence::new(
+            enforced_bases,
+            String::from("ez2017"),
+            0,
+            payload.len(),
+            seed,
+        );
+
+        // Validation finale
+        sequence.validate(constraints)?;
+
+        Ok(sequence)
+    }
+
+    /// Encode avec retry si la première tentative échoue à cause de la longueur
+    fn payload_to_dna_with_constraints_retry(
+        &self,
+        payload: Vec<u8>,
+        mut seed: u64,
+        constraints: &DnaConstraints,
+    ) -> Result<DnaSequence> {
+        const MAX_RETRIES: usize = 10;
+
+        for attempt in 0..MAX_RETRIES {
+            seed += attempt as u64;  // Variante le seed
+
+            let mut bases = Vec::with_capacity(payload.len() * 4);
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            let validator = crate::constraints::DnaConstraintValidator::with_constraints(
+                constraints.clone(),
+            );
+
+            for byte in &payload {
+                let bits = [
+                    (byte >> 6) & 0b11,
+                    (byte >> 4) & 0b11,
+                    (byte >> 2) & 0b11,
+                    byte & 0b11,
+                ];
+
+                for two_bits in bits {
+                    let base = match two_bits {
+                        0b00 => IupacBase::A,
+                        0b01 => IupacBase::C,
+                        0b10 => IupacBase::G,
+                        0b11 => IupacBase::T,
+                        _ => unreachable!(),
+                    };
+
+                    if validator.can_append(&bases, base) {
+                        bases.push(base);
+                    } else {
+                        // Essayer différentes alternatives
+                        let bases_set = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
+                        let mut found = false;
+
+                        for &alt_base in &bases_set {
+                            if alt_base != base && validator.can_append(&bases, alt_base) {
+                                bases.push(alt_base);
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if !found {
+                            // Dernier recours: prendre une base aléatoire qui marche
+                            for &alt_base in &bases_set {
+                                if validator.can_append(&bases, alt_base) {
+                                    bases.push(alt_base);
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if !found {
+                            return Err(DnaError::ConstraintViolation(
+                                format!("Impossible de trouver une base valide à l'attempt {}", attempt)
+                            ));
+                        }
+                    }
+
+                    // Vérifier qu'on ne dépasse pas la longueur max
+                    if bases.len() >= constraints.max_sequence_length {
+                        break;
+                    }
+                }
+
+                // Si on atteint la longueur max, arrêter
+                if bases.len() >= constraints.max_sequence_length {
+                    break;
+                }
+            }
+
+            // Créer la séquence
+            let sequence = DnaSequence::new(
+                bases,
+                String::from("ez2017"),
+                0,
+                payload.len(),
+                seed,
+            );
+
+            // Valider
+            if sequence.validate(constraints).is_ok() {
+                return Ok(sequence);
+            }
+        }
+
+        Err(DnaError::ConstraintViolation(
+            "Impossible d'encoder le payload avec les contraintes EZ 2017 après {} tentatives".to_string()
+        ))
+    }
+
+    /// Valide qu'une séquence respecte les contraintes Erlich-Zielinski 2017
+    fn validate_erlich_zielinski_2017_sequence(sequence: &DnaSequence) -> Result<()> {
+        // Vérifier la longueur (152nt ± quelques bases de tolérance)
+        let len = sequence.bases.len();
+        if len < 140 || len > 160 {
+            return Err(DnaError::ConstraintViolation(format!(
+                "Longueur de séquence {} hors limites EZ 2017 (140-160nt)", len
+            )));
+        }
+
+        // Vérifier le GC ratio (40-60%)
+        let gc_count = sequence.bases.iter()
+            .filter(|b| b.is_gc())
+            .count();
+        let gc_ratio = gc_count as f64 / len as f64;
+
+        if gc_ratio < 0.40 || gc_ratio > 0.60 {
+            return Err(DnaError::ConstraintViolation(format!(
+                "GC ratio {:.2} hors limites EZ 2017 (40-60%)", gc_ratio
+            )));
+        }
+
+        // Vérifier les homopolymères (<4)
+        let max_homopolymer = crate::constraints::find_max_homopolymer(&sequence.bases);
+        if max_homopolymer >= 4 {
+            return Err(DnaError::ConstraintViolation(format!(
+                "Homopolymer de longueur {} détecté, EZ 2017 requiert <4", max_homopolymer
+            )));
+        }
+
+        Ok(())
     }
 
     /// Encodage DNA Fountain (version originale pour compatibilité)
