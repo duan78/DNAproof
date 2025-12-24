@@ -1,6 +1,5 @@
 //! Système de logging professionnel pour ADN Core
 
-use tracing::{info, warn, error, debug, span, Level};
 use tracing_subscriber::{fmt, EnvFilter};
 
 /// Initialise le système de logging
@@ -17,11 +16,11 @@ pub fn init_logging() {
 #[macro_export]
 macro_rules! log_operation {
     ($name:expr, $block:block) => {{
-        let span = span!(Level::INFO, $name);
+        let span = tracing::span!(tracing::Level::INFO, $name);
         let _enter = span.enter();
-        info!("Début de l'opération: {}", $name);
+        tracing::info!("Début de l'opération: {}", $name);
         let result = $block;
-        info!("Fin de l'opération: {}", $name);
+        tracing::info!("Fin de l'opération: {}", $name);
         result
     }};
 }
@@ -30,7 +29,7 @@ macro_rules! log_operation {
 #[macro_export]
 macro_rules! log_error {
     ($error:expr) => {{
-        error!("Erreur: {}", $error);
+        tracing::error!("Erreur: {}", $error);
         $error
     }};
 }

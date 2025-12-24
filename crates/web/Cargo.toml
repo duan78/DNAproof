@@ -23,17 +23,17 @@ tokio = { version = "1.0", features = ["full"] }
 # UUID for job IDs
 uuid = { workspace = true, features = ["serde", "v4"] }
 
+# Date/time handling
+chrono = { workspace = true }
+
 # Core library
 adn-core = { path = "../core" }
 adn-storage = { path = "../storage" }
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-actix-web = "0.7"
-
-# API documentation
-actix-web-openapi = "0.1"
 
 # File upload/download
 futures = "0.3"

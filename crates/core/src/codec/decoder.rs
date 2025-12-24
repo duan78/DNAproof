@@ -5,6 +5,9 @@ use crate::sequence::{DnaSequence, IupacBase};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// Importer les macros depuis la racine du crate
+pub use crate::{log_operation, log_error};
+
 /// Configuration du décodeur
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecoderConfig {
@@ -93,7 +96,7 @@ impl Decoder {
     /// Valide les séquences d'entrée
     fn validate_sequences(&self, sequences: &[DnaSequence]) -> Result<()> {
         for seq in sequences {
-            seq.validate(&crate::constraints::DnaConstraints::default())?;
+            seq.validate(&crate::DnaConstraints::default())?;
         }
         Ok(())
     }

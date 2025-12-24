@@ -3,18 +3,25 @@
 use rayon::prelude::*;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::num::NonZeroUsize;
 
 /// Cache pour les opérations coûteuses
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PerformanceCache {
     cache: Mutex<lru::LruCache<u64, Vec<u8>>>,
+}
+
+impl Default for PerformanceCache {
+    fn default() -> Self {
+        Self::new(1000)
+    }
 }
 
 impl PerformanceCache {
     /// Crée un nouveau cache avec une capacité donnée
     pub fn new(capacity: usize) -> Self {
         Self {
-            cache: Mutex::new(lru::LruCache::new(capacity)),
+            cache: Mutex::new(lru::LruCache::new(NonZeroUsize::new(capacity).unwrap())),
         }
     }
 
@@ -59,7 +66,7 @@ impl PerformanceOptimizer {
             .map(|chunk| {
                 chunk.iter()
                     .map(|item| operation(item))
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .flatten()
             .collect()

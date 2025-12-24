@@ -3,15 +3,18 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use std::collections::HashMap;
+use std::sync::Arc;
 use adn_core::{EncoderConfig, DecoderConfig};
+use adn_core::codec::EncoderType;
+use chrono::{DateTime, Utc};
 
 /// État global de l'application
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
-    pub tera: tera::Tera,
-    pub jobs: tokio::sync::RwLock<HashMap<String, JobState>>,
+    pub tera: Arc<tera::Tera>,
+    pub jobs: Arc<tokio::sync::RwLock<HashMap<String, JobState>>>,
     pub config: crate::config::AppConfig,
-    pub database: Option<adn_storage::DatabaseManager>,
+    pub database: Option<Arc<adn_storage::DatabaseManager>>,
 }
 
 /// État d'un job d'encodage/décodage
@@ -25,13 +28,13 @@ pub struct JobState {
     pub result: Option<JobResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl JobState {
     pub fn new(id: String) -> Self {
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         Self {
             id,
             status: JobStatus::Pending,
@@ -99,28 +102,28 @@ impl Default for EncodeRequest {
 impl From<EncodeRequest> for EncoderConfig {
     fn from(req: EncodeRequest) -> Self {
         let mut config = EncoderConfig::default();
-        
+
         if let Some(algorithm) = req.algorithm {
             config.encoder_type = match algorithm.to_lowercase().as_str() {
-                "goldman" => adn_core::EncoderType::Goldman,
-                "adaptive" => adn_core::EncoderType::Adaptive,
-                "base3" => adn_core::EncoderType::Base3,
-                _ => adn_core::EncoderType::Fountain,
+                "goldman" => EncoderType::Goldman,
+                "adaptive" => EncoderType::Adaptive,
+                "base3" => EncoderType::Base3,
+                _ => EncoderType::Fountain,
             };
         }
-        
+
         if let Some(redundancy) = req.redundancy {
             config.redundancy = redundancy;
         }
-        
+
         if let Some(compression) = req.compression {
             config.compression_enabled = compression;
         }
-        
+
         if let Some(chunk_size) = req.chunk_size {
             config.chunk_size = chunk_size;
         }
-        
+
         config
     }
 }

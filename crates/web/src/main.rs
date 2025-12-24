@@ -59,26 +59,26 @@ async fn main() -> std::io::Result<()> {
 
     // Créer l'état de l'application
     let app_state = web::Data::new(AppState {
-        tera,
-        jobs: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        tera: std::sync::Arc::new(tera),
+        jobs: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         config: config.clone(),
-        database,
+        database: database.map(std::sync::Arc::new),
     });
 
-    // Configurer CORS
-    let cors = Cors::default()
-        .allow_any_origin()
-        .allow_any_method()
-        .allow_any_header()
-        .max_age(3600);
-
-    tracing::info!("🧬 Démarrage du serveur ADN Storage sur http://{}:{}", 
+    tracing::info!("🧬 Démarrage du serveur ADN Storage sur http://{}:{}",
         config.server.host, config.server.port);
 
     HttpServer::new(move || {
+        // Configurer CORS (recrée pour chaque worker)
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header()
+            .max_age(3600);
+
         App::new()
             .wrap(TracingLogger::default())
-            .wrap(cors.clone())
+            .wrap(cors)
             .app_data(app_state.clone())
             .service(routes::index)
             .service(routes::encode_page)
@@ -88,7 +88,7 @@ async fn main() -> std::io::Result<()> {
             .service(routes::job_status)
             .service(routes::download_result)
             .service(routes::health_check)
-            .service(Files::new("/static", &config.server.static_files)
+            .service(Files::new("/static", config.server.static_files.clone())
                 .show_files_listing())
     })
     .workers(config.server.workers)

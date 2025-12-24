@@ -1,13 +1,14 @@
 //! Tests d'intégration pour ADN Core
 
-use adn_core::{Encoder, Decoder, EncoderConfig, DecoderConfig, EncoderType, DnaSequence};
+use adn_core::{Encoder, Decoder, EncoderConfig, DecoderConfig, DnaSequence};
+use adn_core::codec::{EncoderType, encoder::CompressionType};
 use std::time::Instant;
 
 #[test]
 fn test_large_file_encoding() {
     // Tester l'encodage d'un fichier de 1MB
     let data = vec![0u8; 1024 * 1024]; // 1MB
-    
+
     let config = EncoderConfig {
         encoder_type: EncoderType::Fountain,
         chunk_size: 32,
@@ -16,16 +17,16 @@ fn test_large_file_encoding() {
         ..Default::default()
     };
 
-    let encoder = Encoder::new(config).unwrap();
+    let encoder = Encoder::new(config.clone()).unwrap();
     let start = Instant::now();
     let sequences = encoder.encode(&data).unwrap();
     let duration = start.elapsed();
 
     println!("Encodage de 1MB: {} séquences en {:?}", sequences.len(), duration);
-    
+
     // Vérifier que nous avons bien des séquences
     assert!(!sequences.is_empty());
-    
+
     // Vérifier que toutes les séquences sont valides
     for seq in &sequences {
         seq.validate(&config.constraints).unwrap();
@@ -42,7 +43,7 @@ fn test_roundtrip_with_compression() {
         chunk_size: 32,
         redundancy: 1.5,
         compression_enabled: true,
-        compression_type: adn_core::CompressionType::Lz4,
+        compression_type: CompressionType::Lz4,
         ..Default::default()
     };
 
@@ -63,23 +64,23 @@ fn test_roundtrip_with_compression() {
 
 #[test]
 fn test_multiple_roundtrips() {
-    let test_cases = vec![
-        b"Short text",
-        b"This is a medium length text that should be encoded and decoded correctly.",
+    let test_cases: Vec<Vec<u8>> = vec![
+        b"Short text".to_vec(),
+        b"This is a medium length text that should be encoded and decoded correctly.".to_vec(),
         vec![0u8; 1024], // 1KB de zéros
         vec![255u8; 512], // 512 octets de 255
-        (0..256).collect::<Vec<u8>>(), // Tous les octets possibles
+        (0..=255).collect::<Vec<u8>>(), // Tous les octets possibles
     ];
 
     for (i, data) in test_cases.iter().enumerate() {
         println!("Test case {}", i + 1);
-        
+
         let encoder = Encoder::new(EncoderConfig::default()).unwrap();
         let sequences = encoder.encode(data).unwrap();
-        
+
         let decoder = Decoder::new(DecoderConfig::default());
         let decoded = decoder.decode(&sequences).unwrap();
-        
+
         assert_eq!(data.to_vec(), decoded, "Failed for test case {}", i + 1);
     }
 }

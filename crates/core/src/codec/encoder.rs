@@ -4,8 +4,12 @@ use crate::error::{DnaError, Result};
 use crate::sequence::{DnaConstraints, DnaSequence, IupacBase};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+// Importer les macros depuis la racine du crate
+pub use crate::{log_operation, log_error};
 
 /// Type d'algorithme d'encodage
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,7 +198,7 @@ impl Encoder {
 
         let k = num_chunks as f64;
         let c = 0.1;
-        let delta = 0.5;
+        let _delta = 0.5; // Paramètre Robust Soliton (non utilisé dans cette implémentation simplifiée)
 
         // Tau function
         let tau = |d: f64| -> f64 {

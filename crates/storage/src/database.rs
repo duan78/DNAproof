@@ -1,9 +1,8 @@
 //! Module de base de données pour le stockage ADN
 
-use sqlx::{SqlitePool, PostgresPool, Pool, Sqlite, Postgres};
-use std::path::Path;
+use sqlx::{Pool, Sqlite, Postgres};
 use async_trait::async_trait;
-use tracing::{info, error, instrument};
+use tracing::{info, instrument};
 
 /// Type de base de données supporté
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,12 +65,12 @@ impl DatabaseManager {
         let pool = match self.config.db_type {
             DatabaseType::Sqlite => {
                 DatabasePool::Sqlite(
-                    SqlitePool::connect(&self.config.connection_string).await?
+                    Pool::<Sqlite>::connect(&self.config.connection_string).await?
                 )
             }
             DatabaseType::Postgres => {
                 DatabasePool::Postgres(
-                    PostgresPool::connect(&self.config.connection_string).await?
+                    Pool::<Postgres>::connect(&self.config.connection_string).await?
                 )
             }
         };
@@ -101,13 +100,15 @@ impl DatabaseManager {
     #[instrument(skip(self))]
     pub async fn migrate(&self) -> crate::Result<()> {
         let pool = self.pool()?;
-        
+
         match pool {
             DatabasePool::Sqlite(pool) => {
-                sqlx::migrate!("./migrations/sqlite").run(pool).await?;
+                sqlx::migrate!("./migrations/sqlite").run(pool).await
+                    .map_err(|e| crate::StorageError::MigrationError(e.to_string()))?;
             }
             DatabasePool::Postgres(pool) => {
-                sqlx::migrate!("./migrations/postgres").run(pool).await?;
+                sqlx::migrate!("./migrations/postgres").run(pool).await
+                    .map_err(|e| crate::StorageError::MigrationError(e.to_string()))?;
             }
         }
 
@@ -134,6 +135,8 @@ impl DatabaseManager {
 }
 
 /// Énumération des pools de base de données supportés
+/// Pool de connexions à la base de données
+#[derive(Clone)]
 pub enum DatabasePool {
     Sqlite(Pool<Sqlite>),
     Postgres(Pool<Postgres>),
@@ -141,13 +144,15 @@ pub enum DatabasePool {
 
 impl DatabasePool {
     /// Exécute une requête SQL générique
-    pub async fn execute(&self, query: &str) -> crate::Result<sqlx::query::QueryResult> {
+    pub async fn execute(&self, query: &str) -> crate::Result<u64> {
         match self {
             DatabasePool::Sqlite(pool) => {
-                Ok(sqlx::query(query).execute(pool).await?)
+                let result = sqlx::query(query).execute(pool).await?;
+                Ok(result.rows_affected())
             }
             DatabasePool::Postgres(pool) => {
-                Ok(sqlx::query(query).execute(pool).await?)
+                let result = sqlx::query(query).execute(pool).await?;
+                Ok(result.rows_affected())
             }
         }
     }
@@ -160,7 +165,7 @@ impl DatabasePool {
             }
             DatabasePool::Postgres(pool) => {
                 // Conversion pour PostgreSQL
-                let rows = sqlx::query(query).fetch_all(pool).await?;
+                let _rows = sqlx::query(query).fetch_all(pool).await?;
                 // Note: Cela nécessite une conversion appropriée
                 unimplemented!("Conversion PostgreSQL vers SqliteRow non implémentée");
             }

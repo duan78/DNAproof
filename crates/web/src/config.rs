@@ -82,14 +82,16 @@ impl Default for LoggingConfig {
 impl AppConfig {
     /// Charge la configuration depuis un fichier
     pub fn load_from_file(path: &str) -> Result<Self, config::ConfigError> {
-        let mut builder = config::Config::builder()
-            .add_source(config::File::with_name(path));
+        let mut settings = config::Config::builder()
+            .add_source(config::File::with_name(path))
+            .build()?;
 
-        // Ajouter les valeurs par défaut
-        builder = builder.set_default("server", ServerConfig::default())?;
-        builder = builder.set_default("database", DatabaseConfig::default())?;
-        builder = builder.set_default("logging", LoggingConfig::default())?;
+        // Essayer de charger la configuration, sinon utiliser les valeurs par défaut
+        let config = settings.try_deserialize::<AppConfig>();
 
-        builder.build()?.try_deserialize()
+        match config {
+            Ok(cfg) => Ok(cfg),
+            Err(_) => Ok(AppConfig::default()),
+        }
     }
 }

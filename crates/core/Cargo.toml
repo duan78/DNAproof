@@ -24,4 +24,3 @@ parking_lot = "0.12"  # Pour les structures thread-safe
 tracing = "0.1"  # Pour le logging avancé
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lru = "0.12"  # Pour le cache LRU
-=======

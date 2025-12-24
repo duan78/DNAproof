@@ -1,16 +1,17 @@
 //! Routes de l'API web
 
-use actix_web::{web, HttpResponse, Responder, HttpRequest};
+use actix_web::{web, HttpResponse, Responder, HttpRequest, get, post};
 use actix_multipart::Multipart;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use std::path::PathBuf;
 use tracing::{info, error, instrument};
 use uuid::Uuid;
+use chrono::Utc;
 
 use crate::models::{AppState, EncodeRequest, EncodeResponse, DecodeRequest, DecodeResponse, JobStatus, ErrorResponse};
 
 /// Route pour la page d'accueil
-#[instrument]
+#[get("/")]
 pub async fn index(data: web::Data<AppState>) -> impl Responder {
     let mut ctx = tera::Context::new();
     ctx.insert("title", "ADN Data Storage");
@@ -29,7 +30,7 @@ pub async fn index(data: web::Data<AppState>) -> impl Responder {
 }
 
 /// Route pour la page d'encodage
-#[instrument]
+#[get("/encode")]
 pub async fn encode_page(data: web::Data<AppState>) -> impl Responder {
     let mut ctx = tera::Context::new();
     ctx.insert("title", "Encoder en ADN");
@@ -47,7 +48,7 @@ pub async fn encode_page(data: web::Data<AppState>) -> impl Responder {
 }
 
 /// Route pour la page de décodage
-#[instrument]
+#[get("/decode")]
 pub async fn decode_page(data: web::Data<AppState>) -> impl Responder {
     let mut ctx = tera::Context::new();
     ctx.insert("title", "Décoder depuis ADN");
@@ -65,7 +66,7 @@ pub async fn decode_page(data: web::Data<AppState>) -> impl Responder {
 }
 
 /// Route pour l'API d'encodage
-#[instrument]
+#[post("/api/encode")]
 pub async fn api_encode(
     data: web::Data<AppState>,
     mut payload: Multipart,
@@ -74,26 +75,71 @@ pub async fn api_encode(
     info!("Nouvelle requête d'encodage");
 
     let job_id = Uuid::new_v4().to_string();
-    
+
     // Créer un nouveau job
     let mut jobs = data.jobs.write().await;
     jobs.insert(job_id.clone(), crate::models::JobState::new(job_id.clone()));
-    
+
     // Mettre à jour le statut
     if let Some(job) = jobs.get_mut(&job_id) {
         job.status = JobStatus::Processing;
-        job.updated_at = chrono::Utc::now();
+        job.updated_at = Utc::now();
     }
-    
+
     drop(jobs); // Libérer le verrou
 
-    // Traiter le fichier en arrière-plan
+    // Traiter le fichier uploadé AVANT de spawner (Multipart n'est pas Send)
+    let mut file_data = Vec::new();
+    let mut file_name = None;
+
+    while let Some(item) = payload.next().await {
+        let field = match item {
+            Ok(f) => f,
+            Err(e) => {
+                error!("Erreur de champ: {}", e);
+                return HttpResponse::BadRequest().json(ErrorResponse::new(
+                    format!("Erreur de champ: {}", e),
+                    400
+                ));
+            }
+        };
+
+        if let Some(content_disposition) = field.content_disposition() {
+            if let Some(name) = content_disposition.get_filename() {
+                file_name = Some(name.to_string());
+
+                let mut field = field;
+                while let Some(chunk_result) = field.next().await {
+                    let data = match chunk_result {
+                        Ok(d) => d,
+                        Err(e) => {
+                            error!("Erreur de chunk: {}", e);
+                            return HttpResponse::BadRequest().json(ErrorResponse::new(
+                                format!("Erreur de chunk: {}", e),
+                                400
+                            ));
+                        }
+                    };
+                    file_data.extend_from_slice(&data);
+                }
+            }
+        }
+    }
+
+    if file_data.is_empty() {
+        return HttpResponse::BadRequest().json(ErrorResponse::new(
+            "Aucun fichier fourni".to_string(),
+            400
+        ));
+    }
+
+    // Traiter l'encodage en arrière-plan
     let data_clone = data.clone();
     let job_id_clone = job_id.clone();
 
     tokio::spawn(async move {
-        let result = process_encode_upload(&mut payload, &data_clone, job_id_clone.clone()).await;
-        
+        let result = process_encode_data(&file_data, &data_clone, job_id_clone.clone()).await;
+
         // Mettre à jour le job avec le résultat
         let mut jobs = data_clone.jobs.write().await;
         if let Some(job) = jobs.get_mut(&job_id_clone) {
@@ -111,7 +157,7 @@ pub async fn api_encode(
                     job.error = Some(format!("Erreur d'encodage: {}", e));
                 }
             }
-            job.updated_at = chrono::Utc::now();
+            job.updated_at = Utc::now();
         }
     });
 
@@ -122,40 +168,18 @@ pub async fn api_encode(
     })
 }
 
-/// Traite l'upload et l'encodage
-async fn process_encode_upload(
-    payload: &mut Multipart,
+/// Traite les données d'encodage
+async fn process_encode_data(
+    file_data: &[u8],
     data: &web::Data<AppState>,
     job_id: String,
 ) -> Result<crate::models::EncodingStats, String> {
-    let mut file_data = Vec::new();
-    let mut file_name = None;
-
-    while let Some(item) = payload.next().await {
-        let mut field = item.map_err(|e| format!("Erreur de champ: {}", e))?;
-        
-        if let Some(content_disposition) = field.content_disposition() {
-            if let Some(name) = content_disposition.get_filename() {
-                file_name = Some(name.to_string());
-                
-                while let Some(chunk) = field.next().await {
-                    let data = chunk.map_err(|e| format!("Erreur de chunk: {}", e))?;
-                    file_data.extend_from_slice(&data);
-                }
-            }
-        }
-    }
-
-    if file_data.is_empty() {
-        return Err("Aucun fichier fourni".to_string());
-    }
-
     // Encoder les données
     let start_time = std::time::Instant::now();
     let encoder = adn_core::Encoder::new(adn_core::EncoderConfig::default())
         .map_err(|e| format!("Erreur d'initialisation de l'encodeur: {}", e))?;
 
-    let sequences = encoder.encode(&file_data)
+    let sequences = encoder.encode(file_data)
         .map_err(|e| format!("Erreur d'encodage: {}", e))?;
 
     let encoding_time = start_time.elapsed().as_millis() as u64;
@@ -163,20 +187,21 @@ async fn process_encode_upload(
     // Calculer les statistiques
     let total_length: usize = sequences.iter().map(|s| s.bases.len()).sum();
     let avg_length = total_length as f64 / sequences.len() as f64;
-    
+
     let gc_count: usize = sequences.iter()
         .flat_map(|s| s.bases.iter())
         .filter(|b| b.is_gc())
         .count();
-    
+
     let gc_ratio = gc_count as f64 / total_length as f64;
     let bits_per_base = (file_data.len() * 8) as f64 / total_length as f64;
     let compression_ratio = file_data.len() as f64 / total_length as f64;
 
     // Sauvegarder dans la base de données si activé
     if let Some(db) = &data.database {
-        let mut repo = adn_storage::SequenceRepository::new(db.pool().unwrap().clone());
-        
+        let pool = db.pool().unwrap();
+        let mut repo = adn_storage::SequenceRepository::new(std::sync::Arc::new(pool.clone()));
+
         for seq in &sequences {
             if let Err(e) = repo.save_sequence(seq).await {
                 error!("Erreur de sauvegarde dans la base de données: {}", e);
@@ -197,7 +222,7 @@ async fn process_encode_upload(
 }
 
 /// Route pour l'API de décodage
-#[instrument]
+#[post("/api/decode")]
 pub async fn api_decode(
     data: web::Data<AppState>,
     mut payload: Multipart,
@@ -205,26 +230,68 @@ pub async fn api_decode(
     info!("Nouvelle requête de décodage");
 
     let job_id = Uuid::new_v4().to_string();
-    
+
     // Créer un nouveau job
     let mut jobs = data.jobs.write().await;
     jobs.insert(job_id.clone(), crate::models::JobState::new(job_id.clone()));
-    
+
     // Mettre à jour le statut
     if let Some(job) = jobs.get_mut(&job_id) {
         job.status = JobStatus::Processing;
-        job.updated_at = chrono::Utc::now();
+        job.updated_at = Utc::now();
     }
-    
+
     drop(jobs); // Libérer le verrou
 
-    // Traiter le fichier en arrière-plan
+    // Traiter le fichier uploadé AVANT de spawner (Multipart n'est pas Send)
+    let mut fasta_data = Vec::new();
+
+    while let Some(item) = payload.next().await {
+        let field = match item {
+            Ok(f) => f,
+            Err(e) => {
+                error!("Erreur de champ: {}", e);
+                return HttpResponse::BadRequest().json(ErrorResponse::new(
+                    format!("Erreur de champ: {}", e),
+                    400
+                ));
+            }
+        };
+
+        if let Some(content_disposition) = field.content_disposition() {
+            if let Some(_name) = content_disposition.get_filename() {
+                let mut field = field;
+                while let Some(chunk_result) = field.next().await {
+                    let data = match chunk_result {
+                        Ok(d) => d,
+                        Err(e) => {
+                            error!("Erreur de chunk: {}", e);
+                            return HttpResponse::BadRequest().json(ErrorResponse::new(
+                                format!("Erreur de chunk: {}", e),
+                                400
+                            ));
+                        }
+                    };
+                    fasta_data.extend_from_slice(&data);
+                }
+            }
+        }
+    }
+
+    if fasta_data.is_empty() {
+        return HttpResponse::BadRequest().json(ErrorResponse::new(
+            "Aucun fichier fourni".to_string(),
+            400
+        ));
+    }
+
+    // Traiter le décodage en arrière-plan
     let data_clone = data.clone();
     let job_id_clone = job_id.clone();
 
     tokio::spawn(async move {
-        let result = process_decode_upload(&mut payload, &data_clone, job_id_clone.clone()).await;
-        
+        let result = process_decode_data(&fasta_data, &data_clone, job_id_clone.clone()).await;
+
         // Mettre à jour le job avec le résultat
         let mut jobs = data_clone.jobs.write().await;
         if let Some(job) = jobs.get_mut(&job_id_clone) {
@@ -242,7 +309,7 @@ pub async fn api_decode(
                     job.error = Some(format!("Erreur de décodage: {}", e));
                 }
             }
-            job.updated_at = chrono::Utc::now();
+            job.updated_at = Utc::now();
         }
     });
 
@@ -253,34 +320,15 @@ pub async fn api_decode(
     })
 }
 
-/// Traite l'upload et le décodage
-async fn process_decode_upload(
-    payload: &mut Multipart,
+/// Traite les données de décodage
+async fn process_decode_data(
+    fasta_data: &[u8],
     data: &web::Data<AppState>,
     job_id: String,
 ) -> Result<(), String> {
-    let mut sequences = Vec::new();
-
-    while let Some(item) = payload.next().await {
-        let mut field = item.map_err(|e| format!("Erreur de champ: {}", e))?;
-        
-        if let Some(content_disposition) = field.content_disposition() {
-            if let Some(name) = content_disposition.get_filename() {
-                let mut file_data = Vec::new();
-                
-                while let Some(chunk) = field.next().await {
-                    let data = chunk.map_err(|e| format!("Erreur de chunk: {}", e))?;
-                    file_data.extend_from_slice(&data);
-                }
-                
-                // Parser le fichier FASTA
-                let seqs = parse_fasta(&file_data)
-                    .map_err(|e| format!("Erreur de parsing FASTA: {}", e))?;
-                
-                sequences.extend(seqs);
-            }
-        }
-    }
+    // Parser le fichier FASTA
+    let sequences = parse_fasta(fasta_data)
+        .map_err(|e| format!("Erreur de parsing FASTA: {}", e))?;
 
     if sequences.is_empty() {
         return Err("Aucune séquence ADN fournie".to_string());
@@ -302,10 +350,10 @@ async fn process_decode_upload(
 fn parse_fasta(data: &[u8]) -> Result<Vec<adn_core::DnaSequence>, String> {
     let content = String::from_utf8_lossy(data);
     let mut sequences = Vec::new();
-    
+
     let mut current_seq = String::new();
-    let mut current_id = None;
-    
+    let mut current_id: Option<String> = None;
+
     for line in content.lines() {
         if line.starts_with('>') {
             // Sauvegarder la séquence précédente
@@ -373,14 +421,14 @@ async fn save_decoded_result(
 }
 
 /// Route pour vérifier l'état d'un job
-#[instrument]
+#[get("/api/jobs/{job_id}")]
 pub async fn job_status(
     data: web::Data<AppState>,
     job_id: web::Path<String>,
 ) -> impl Responder {
     let jobs = data.jobs.read().await;
-    
-    match jobs.get(&job_id) {
+
+    match jobs.get(job_id.as_ref()) {
         Some(job) => HttpResponse::Ok().json(job),
         None => HttpResponse::NotFound().json(ErrorResponse::new(
             "Job non trouvé".to_string(),
@@ -390,13 +438,13 @@ pub async fn job_status(
 }
 
 /// Route pour télécharger un résultat
-#[instrument]
+#[get("/download/{job_id}")]
 pub async fn download_result(
     data: web::Data<AppState>,
     job_id: web::Path<String>,
 ) -> impl Responder {
-    let file_path = std::path::Path::new("uploads").join(format!("{}.decoded", job_id));
-    
+    let file_path = std::path::Path::new("uploads").join(format!("{}.decoded", job_id.as_ref()));
+
     match tokio::fs::read(&file_path).await {
         Ok(data) => HttpResponse::Ok()
             .content_type("application/octet-stream")
@@ -409,11 +457,11 @@ pub async fn download_result(
 }
 
 /// Route pour la santé de l'API
-#[instrument]
+#[get("/health")]
 pub async fn health_check() -> impl Responder {
     HttpResponse::Ok().json(serde_json::json!({
         "status": "healthy",
-        "timestamp": chrono::Utc::now(),
+        "timestamp": Utc::now(),
         "version": env!("CARGO_PKG_VERSION")
     }))
 }
