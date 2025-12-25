@@ -27,6 +27,8 @@ pub fn run(
     let encoder_type = match algorithm {
         EncodingAlgorithm::Fountain => EncoderType::Fountain,
         EncodingAlgorithm::Goldman => EncoderType::Goldman,
+        EncodingAlgorithm::Goldman2013 => EncoderType::Goldman2013,
+        EncodingAlgorithm::Grass2015 => EncoderType::Grass2015,
         EncodingAlgorithm::Adaptive => EncoderType::Adaptive,
         EncodingAlgorithm::Base3 => EncoderType::Base3,
     };
@@ -37,13 +39,25 @@ pub fn run(
         CompressionAlgorithm::None => CompressionType::None,
     };
 
+    // Use lenient constraints for algorithms that don't enforce GC/homopolymer limits
+    let constraints = match algorithm {
+        EncodingAlgorithm::Grass2015 => DnaConstraints {
+            gc_min: 0.0,
+            gc_max: 1.0,
+            max_homopolymer: 150,
+            max_sequence_length: 200,
+            allowed_bases: vec![adn_core::IupacBase::A, adn_core::IupacBase::C, adn_core::IupacBase::G, adn_core::IupacBase::T],
+        },
+        _ => DnaConstraints::default(),
+    };
+
     let config = EncoderConfig {
         encoder_type,
         chunk_size: 32,
         redundancy,
         compression_enabled: compress,
         compression_type,
-        constraints: DnaConstraints::default(),
+        constraints,
     };
 
     // 3. Encoder

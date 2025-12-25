@@ -109,6 +109,8 @@ enum Commands {
 pub enum EncodingAlgorithm {
     Fountain,
     Goldman,
+    Goldman2013,
+    Grass2015,
     Adaptive,
     Base3,
 }

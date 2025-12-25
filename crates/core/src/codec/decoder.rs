@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn test_decoder_creation() {
         let config = DecoderConfig::default();
-        let decoder = Decoder::new(config);
+        let _decoder = Decoder::new(config);
         // Juste vérifier que ça compile
     }
 

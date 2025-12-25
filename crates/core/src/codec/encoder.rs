@@ -23,6 +23,8 @@ pub enum EncoderType {
     Goldman2013,
     /// Goldman code - Codage de Huffman simple (legacy)
     Goldman,
+    /// Grass et al. 2015 - Nature Biotechnology 2015 (Reed-Solomon + 3-segment addressing)
+    Grass2015,
     /// Encodage adaptatif
     Adaptive,
     /// Encodage base-3 optimisé
@@ -108,6 +110,7 @@ impl Encoder {
                 EncoderType::ErlichZielinski2017 => self.encode_erlich_zielinski_2017(&chunks)?,
                 EncoderType::Goldman2013 => self.encode_goldman_2013(data)?,
                 EncoderType::Goldman => self.encode_goldman(&chunks)?,
+                EncoderType::Grass2015 => self.encode_grass_2015(data)?,
                 EncoderType::Adaptive => self.encode_adaptive(&chunks)?,
                 EncoderType::Base3 => self.encode_base3(&chunks)?,
             };
@@ -231,7 +234,7 @@ impl Encoder {
         // Paramètres Robust Soliton du papier EZ 2017
         let k = num_chunks as f64;
         let c = 0.1;  // Constante c du papier
-        let delta = 0.5;  // Paramètre δ du papier
+        let _delta = 0.5;  // Paramètre δ du papier (non utilisé dans cette implémentation)
 
         // Fonction Tau définie dans le papier
         let tau = |d: f64| -> f64 {
@@ -357,7 +360,7 @@ impl Encoder {
             seed += attempt as u64;  // Variante le seed
 
             let mut bases = Vec::with_capacity(payload.len() * 4);
-            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            let _rng = ChaCha8Rng::seed_from_u64(seed);  // rng non utilisé mais gardé pour seed reproductibilité
             let validator = crate::constraints::DnaConstraintValidator::with_constraints(
                 constraints.clone(),
             );
@@ -775,6 +778,20 @@ impl Encoder {
         let goldman_encoder = Goldman2013Encoder::new(self.config.constraints.clone());
         goldman_encoder.encode(data)
     }
+
+    /// Encodage Grass et al. 2015 - Nature Biotechnology 2015
+    ///
+    /// Spécifications du papier:
+    /// - Reed-Solomon (255, 223) comme code interne
+    /// - Addressing 3-segments (byte_offset, bit_offset, block_index)
+    /// - 4% de redondance logique
+    /// - Séquences 124nt
+    fn encode_grass_2015(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
+        use crate::codec::grass_2015::Grass2015Encoder;
+
+        let grass_encoder = Grass2015Encoder::new(self.config.constraints.clone());
+        grass_encoder.encode(data)
+    }
 }
 
 #[cfg(test)]
@@ -822,7 +839,7 @@ mod tests {
         // Même seed = même degré
         assert_eq!(degree1, degree2);
 
-        let degree3 = Encoder::sample_robust_soliton_degree(100, 43);
+        let _degree3 = Encoder::sample_robust_soliton_degree(100, 43);
         // Seed différent = potentiellement différent (mais pas garanti)
     }
 
