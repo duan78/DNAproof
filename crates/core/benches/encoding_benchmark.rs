@@ -43,7 +43,7 @@ fn benchmark_fountain_vs_goldman(c: &mut Criterion) {
     let mut group = c.benchmark_group("Algorithm Comparison");
     group.measurement_time(Duration::from_secs(15));
 
-    // Benchmark DNA Fountain
+    // Benchmark DNA Fountain (Custom)
     group.bench_function("fountain_encoding", |b| {
         let config = EncoderConfig {
             encoder_type: EncoderType::Fountain,
@@ -54,13 +54,13 @@ fn benchmark_fountain_vs_goldman(c: &mut Criterion) {
         };
 
         let encoder = Encoder::new(config).unwrap();
-        
+
         b.iter(|| {
             let _ = encoder.encode(black_box(&data));
         });
     });
 
-    // Benchmark Goldman
+    // Benchmark Goldman (Simple 2-bit)
     group.bench_function("goldman_encoding", |b| {
         let config = EncoderConfig {
             encoder_type: EncoderType::Goldman,
@@ -70,7 +70,58 @@ fn benchmark_fountain_vs_goldman(c: &mut Criterion) {
         };
 
         let encoder = Encoder::new(config).unwrap();
-        
+
+        b.iter(|| {
+            let _ = encoder.encode(black_box(&data));
+        });
+    });
+
+    // Benchmark Goldman 2013 (with LZ4)
+    group.bench_function("goldman_2013_encoding", |b| {
+        let config = EncoderConfig {
+            encoder_type: EncoderType::Goldman2013,
+            chunk_size: 32,
+            redundancy: 1.0,
+            compression_enabled: false,
+            ..Default::default()
+        };
+
+        let encoder = Encoder::new(config).unwrap();
+
+        b.iter(|| {
+            let _ = encoder.encode(black_box(&data));
+        });
+    });
+
+    // Benchmark Erlich-Zielinski 2017 (DNA Fountain)
+    group.bench_function("erlich_zielinski_2017_encoding", |b| {
+        let config = EncoderConfig {
+            encoder_type: EncoderType::ErlichZielinski2017,
+            chunk_size: 32,
+            redundancy: 1.05,
+            compression_enabled: true,
+            ..Default::default()
+        };
+
+        let encoder = Encoder::new(config).unwrap();
+
+        b.iter(|| {
+            let _ = encoder.encode(black_box(&data));
+        });
+    });
+
+    // Benchmark Grass 2015 (with Reed-Solomon)
+    group.bench_function("grass_2015_encoding", |b| {
+        let config = EncoderConfig {
+            encoder_type: EncoderType::Grass2015,
+            chunk_size: 32,
+            redundancy: 1.0,
+            compression_enabled: false,
+            ..Default::default()
+        };
+
+        let encoder = Encoder::new(config).unwrap();
+
         b.iter(|| {
             let _ = encoder.encode(black_box(&data));
         });

@@ -24,3 +24,14 @@ parking_lot = "0.12"  # Pour les structures thread-safe
 tracing = "0.1"  # Pour le logging avancé
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lru = "0.12"  # Pour le cache LRU
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "encoding_benchmark"
+harness = false
+
+[[bench]]
+name = "density_benchmark"
+harness = false
