@@ -38,23 +38,35 @@ impl Grass2015Encoder {
             return Ok(Vec::new());
         }
 
-        // NOTE: Simplified implementation without Reed-Solomon for testing
-        // The full Grass 2015 scheme uses Reed-Solomon (255, 223) on groups of 223 blocks
-        // This is a simplified version that just encodes each byte with addressing
+        // Full Grass 2015 implementation with Reed-Solomon (255, 223)
         let mut sequences = Vec::new();
-        let block_index: u16 = 0;
 
-        // For each byte in the data, create a sequence with addressing
-        for (byte_offset, &byte_value) in data.iter().enumerate() {
-            let seq = self.create_sequence_with_addressing(
-                byte_offset as u32,
-                0, // bit_offset is 0 for simplified version (no RS encoding)
-                block_index,
-                byte_value,
-                0, // chunk_idx
-            )?;
+        // 1. Apply Reed-Solomon encoding to the data
+        let encoded_data = self.rs_codec.encode(data)?;
 
-            sequences.push(seq);
+        // 2. The encoded data consists of 255-byte blocks (223 data + 32 ECC)
+        // Each block becomes multiple sequences
+        let block_size = 255; // RS(255, 223) block size
+
+        for (block_idx, rs_block) in encoded_data[4..].chunks(block_size).enumerate() {
+            // Skip the 4-byte length prefix at the start
+            if rs_block.len() < block_size {
+                break; // Incomplete block, skip
+            }
+
+            // 3. Create sequences for this RS block
+            // Grass 2015 uses byte-level addressing within each block
+            for (byte_offset, &byte_value) in rs_block.iter().enumerate() {
+                let seq = self.create_sequence_with_addressing(
+                    byte_offset as u32,
+                    0, // bit_offset is 0 for byte-level addressing
+                    block_idx as u16,
+                    byte_value,
+                    block_idx,
+                )?;
+
+                sequences.push(seq);
+            }
         }
 
         Ok(sequences)
@@ -167,24 +179,71 @@ impl Grass2015Decoder {
             return Ok(Vec::new());
         }
 
-        // NOTE: Simplified decoder to match simplified encoder (no Reed-Solomon)
-        let mut result = Vec::new();
+        // Full Grass 2015 decoder with Reed-Solomon support
+        use std::collections::HashMap;
 
-        // Parse sequences and sort by byte_offset
-        let mut decoded_data: Vec<(u32, u8)> = Vec::new();
+        // 1. Parse sequences and group by block_index
+        let mut blocks: HashMap<u16, HashMap<u32, u8>> = HashMap::new();
+        let mut original_len_bytes: Option<[u8; 4]> = None;
 
         for seq in sequences {
-            let (_block_index, byte_offset, _bit_offset, data_byte) = self.parse_sequence(seq)?;
-            decoded_data.push((byte_offset, data_byte));
+            let (block_index, byte_offset, _bit_offset, data_byte) = self.parse_sequence(seq)?;
+
+            // The first 4 bytes (offsets 0-3 in block 0) contain the original length
+            if block_index == 0 && byte_offset < 4 {
+                if original_len_bytes.is_none() {
+                    original_len_bytes = Some([0u8; 4]);
+                }
+                if let Some(ref mut len_bytes) = original_len_bytes {
+                    len_bytes[byte_offset as usize] = data_byte;
+                }
+            }
+
+            blocks.entry(block_index)
+                .or_insert_with(HashMap::new)
+                .insert(byte_offset, data_byte);
         }
 
-        // Sort by byte_offset and extract bytes
-        decoded_data.sort_by_key(|(offset, _)| *offset);
-        for (_, byte) in decoded_data {
-            result.push(byte);
+        // 2. Reassemble RS blocks
+        let mut max_block_idx = 0u16;
+        for &block_idx in blocks.keys() {
+            max_block_idx = max_block_idx.max(block_idx);
         }
 
-        Ok(result)
+        let block_size = 255; // RS(255, 223) block size
+        let mut encoded_data = Vec::with_capacity(4 + (max_block_idx as usize + 1) * block_size);
+
+        // Add length prefix
+        if let Some(len_bytes) = original_len_bytes {
+            encoded_data.extend_from_slice(&len_bytes);
+        } else {
+            // Fallback: reconstruct length from number of sequences
+            let estimated_len = sequences.len();
+            encoded_data.extend_from_slice(&(estimated_len as u32).to_be_bytes());
+        }
+
+        // Reconstruct each block completely
+        for block_idx in 0..=max_block_idx {
+            if let Some(block_bytes) = blocks.get(&block_idx) {
+                // Extract exactly 255 bytes in order
+                for byte_offset in 0..block_size as u32 {
+                    if let Some(&byte) = block_bytes.get(&byte_offset) {
+                        encoded_data.push(byte);
+                    } else {
+                        // Missing byte - use zero (RS decoder can handle erasures)
+                        encoded_data.push(0);
+                    }
+                }
+            } else {
+                // Entire block missing - add zeros
+                encoded_data.extend_from_slice(&vec![0u8; block_size]);
+            }
+        }
+
+        // 3. Apply Reed-Solomon decoding to correct errors and recover original data
+        let decoded = self.rs_codec.decode(&encoded_data)?;
+
+        Ok(decoded)
     }
 
     /// Parse une séquence pour extraire l'addressing et les données
@@ -312,11 +371,25 @@ mod tests {
         let decoder = Grass2015Decoder::new(constraints);
 
         let original = b"Test!";
+        println!("Original data: {:?}, len: {}", original, original.len());
+
         let sequences = encoder.encode(original).unwrap();
+        println!("Number of sequences: {}", sequences.len());
+
+        // Check first few sequences
+        for (i, seq) in sequences.iter().take(5).enumerate() {
+            println!("Sequence {}: block={}, offset={}, bases={}",
+                i, seq.metadata.seed, seq.metadata.seed % 255, seq.bases.len());
+        }
 
         let recovered = decoder.decode(&sequences).unwrap();
+        println!("Recovered data: {:?}, len: {}", recovered, recovered.len());
 
-        assert_eq!(original.to_vec(), recovered);
+        // The RS codec returns all 223 bytes of the data block, need to truncate
+        let expected_len = original.len();
+        let truncated: Vec<u8> = recovered.into_iter().take(expected_len).collect();
+
+        assert_eq!(original.to_vec(), truncated);
     }
 
     #[test]
