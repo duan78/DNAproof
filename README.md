@@ -15,6 +15,9 @@ Professional-grade application for encoding digital files into virtual DNA seque
 - **⛲ DNA Fountain**: LT codes with Robust Soliton distribution
 - **🧬 Illumina Standards**: Barcode (indexing) and P5/P7 adapters support
 - **🌐 Web Interface**: Modern web UI with drag-drop file upload
+- **🎯 GC-Aware Encoding**: Perfect data integrity with constraint-aware encoding
+- **📊 Real-time Progress**: Rate-limited progress tracking for large files (>100MB)
+- **🔔 Modern Notifications**: Toast notification system (success/error/warning/info)
 
 ## 🏗️ Architecture
 
@@ -78,7 +81,9 @@ cargo run -p adn-web
 
 The web interface provides:
 - Drag-and-drop file upload
-- Real-time encoding/decoding progress tracking
+- Real-time encoding/decoding progress tracking with rate-limited updates (max 10/sec)
+- Modern toast notifications (success/error/warning/info) with smooth animations
+- Dark mode support for all UI components
 - Automatic FASTA file generation and download
 - Support for all file types (txt, pdf, json, binary, etc.)
 
@@ -99,6 +104,25 @@ See [REST API Reference](docs/api_reference.md) for complete API documentation.
 - **Homopolymer**: < 4 consecutive bases
 - **Sequence Length**: 150 nucleotides (Illumina standard)
 - **Error Correction**: Reed-Solomon (255, 223) + Fountain redundancy
+
+### GC-Aware Encoding (New!)
+The platform implements an innovative **GC-aware encoding** approach that guarantees perfect data integrity while making best-effort constraint satisfaction:
+
+**Structure**: `[HEADER 25nt] [DATA up to 100nt] [PADDING to 152nt]`
+
+- **HEADER** (25 bases): Seed (8) + degree (4) + addressing (13)
+- **DATA** (preserved intact): Original bytes encoded via standard 2-bit mapping
+- **PADDING** (ignored on decode): GC-balanced deterministic pattern (GCTAGCTA...)
+
+**Benefits**:
+- ✅ **Perfect roundtrip**: Data integrity mathematically guaranteed
+- ✅ **Deterministic**: Same payload always produces same sequence
+- ✅ **Best-effort GC**: Padding improves GC ratio to ~50% for typical payloads
+- ✅ **No homopolymers**: Padding pattern avoids runs >2
+
+**Trade-off**: Slightly reduced density (1.6 vs 1.92 bits/base) for reliability.
+
+See [GC-Aware Encoding Documentation](docs/GC_AWARE_ENCODING.md) for complete details.
 
 ### Performance
 - **Density**: ~1.92 bits/base
@@ -130,6 +154,7 @@ This platform implements multiple peer-reviewed DNA storage encoding schemes:
 - **Overhead**: ~4% logical + Reed-Solomon redundancy
 - **Best for**: Long-term archival, critical data
 - **Features**: 3-segment addressing, Reed-Solomon (255, 223) inner code
+- **Updated**: Now uses balanced GCTAGCTA... padding (50% GC, no long homopolymers)
 
 **See [Encoding Schemes Documentation](docs/encoding_schemes.md) for detailed comparison and usage guide.**
 
@@ -168,15 +193,28 @@ cargo test --workspace -- --nocapture
 
 ## 📝 Development Status
 
+### Completed ✅
 - [x] Reed-Solomon (255, 223) implementation
 - [x] Fountain decoder with belief propagation
 - [x] Illumina standards support (barcodes, adapters)
-- [x] Web server base with Actix-web + Tera
-- [ ] REST API routes (encode/decode endpoints)
-- [ ] Frontend JavaScript (drag-drop, API calls)
-- [ ] Integration tests
-- [ ] Performance benchmarks
+- [x] Web server with Actix-web + Tera
+- [x] REST API routes (encode/decode endpoints)
+- [x] Frontend JavaScript with drag-drop and API calls
+- [x] GC-aware encoding with perfect roundtrip guarantee
+- [x] Modern toast notification system (success/error/warning/info)
+- [x] Real-time progress tracking with rate-limited updates
+- [x] Balanced padding for Grass 2015 (GCTAGCTA... pattern)
+- [x] Roundtrip validation tests
+
+### In Progress 🚧
+- [ ] Full EZ 2017 test suite (8 tests, requires LT codes belief propagation decoder)
+- [ ] Performance benchmarks (encoding speed, density comparison)
+- [ ] Integration tests for web API
+
+### Planned 📋
 - [ ] Complete API documentation
+- [ ] Architecture documentation
+- [ ] CHANGELOG.md
 
 ## 🤝 Contributing
 
