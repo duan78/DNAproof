@@ -132,7 +132,29 @@ impl Decoder {
                 let decoder = Grass2015Decoder::new(crate::sequence::DnaConstraints::default());
                 decoder.decode(sequences)
             }
-            "fountain" | "erlich_zielinski_2017" | "unknown" => {
+            "erlich_zielinski_2017" => {
+                // Utiliser le GC-Aware decoder pour EZ 2017
+                use crate::codec::gc_aware_encoding::GcAwareDecoder;
+                // Contraintes EZ 2017: GC 40-60%, homopolymer <4, 152nt
+                let ez_constraints = crate::sequence::DnaConstraints::new(
+                    0.40,  // GC min 40%
+                    0.60,  // GC max 60%
+                    3,     // Max homopolymer 3 (<4)
+                    152    // Max length 152nt
+                );
+                let decoder = GcAwareDecoder::new(ez_constraints);
+
+                // Le GC-Aware decoder décode une séquence à la fois
+                // Pour Fountain avec LT codes, on a besoin de plus de logique
+                // Pour l'instant, on retourne les données de la première séquence
+                // NOTE: Ceci est simplifié - le vrai décodage Fountain nécessite
+                // la logique LT codes avec belief propagation
+                if sequences.is_empty() {
+                    return Err(DnaError::Decoding("Aucune séquence fournie".to_string()));
+                }
+                decoder.decode(&sequences[0])
+            }
+            "fountain" | "unknown" => {
                 // Utiliser le décodeur générique pour Fountain et inconnu
                 self.decode(sequences)
             }

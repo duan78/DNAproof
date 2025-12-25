@@ -57,12 +57,49 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    // Créer le canal de progression pour les mises à jour temps réel
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<models::ProgressMessage>();
+
+    // Spawn task to handle progress updates (rate-limited to avoid contention)
+    let jobs_for_progress: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, models::JobState>>> =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let jobs_clone = jobs_for_progress.clone();
+
+    tokio::spawn(async move {
+        use tokio::time::{interval, Duration};
+        let mut ticker = interval(Duration::from_millis(100)); // Max 10 updates/second
+
+        let mut pending_updates: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+
+        loop {
+            tokio::select! {
+                // Receive progress messages
+                Some(msg) = progress_rx.recv() => {
+                    pending_updates.insert(msg.job_id, msg.progress);
+                }
+                // Periodically flush updates to job state
+                _ = ticker.tick() => {
+                    if !pending_updates.is_empty() {
+                        let mut jobs = jobs_clone.write().await;
+                        for (job_id, progress) in pending_updates.drain() {
+                            if let Some(job) = jobs.get_mut(&job_id) {
+                                job.progress = Some(progress);
+                                job.updated_at = chrono::Utc::now();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Créer l'état de l'application
     let app_state = web::Data::new(AppState {
         tera: std::sync::Arc::new(tera),
-        jobs: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        jobs: jobs_for_progress,
         config: config.clone(),
         database: database.map(std::sync::Arc::new),
+        progress_tx: Some(progress_tx),
     });
 
     tracing::info!("🧬 Démarrage du serveur ADN Storage sur http://{}:{}",

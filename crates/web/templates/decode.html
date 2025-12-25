@@ -59,11 +59,12 @@ decodeBtn.addEventListener('click', async () => {
         
         if (result.success) {
             document.getElementById('decodeResults').classList.remove('hidden');
+            notificationSystem.success('Décodage terminé', 'Votre fichier a été décodé avec succès');
         } else {
-            alert('Erreur: ' + (result.error || 'Erreur inconnue'));
+            notificationSystem.error('Erreur de décodage', result.error || 'Erreur inconnue');
         }
     } catch (error) {
-        alert('Erreur de connexion: ' + error.message);
+        notificationSystem.error('Erreur de connexion', error.message);
     } finally {
         decodeBtn.disabled = false;
     }

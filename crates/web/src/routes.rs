@@ -136,9 +136,15 @@ pub async fn api_encode(
     // Traiter l'encodage en arrière-plan
     let data_clone = data.clone();
     let job_id_clone = job_id.clone();
+    let file_size = file_data.len();
 
     tokio::spawn(async move {
-        let result = process_encode_data(&file_data, &data_clone, job_id_clone.clone()).await;
+        let result = process_encode_data_with_progress(
+            &file_data,
+            &data_clone,
+            job_id_clone.clone(),
+            file_size,
+        ).await;
 
         // Mettre à jour le job avec le résultat
         let mut jobs = data_clone.jobs.write().await;
@@ -146,6 +152,7 @@ pub async fn api_encode(
             match result {
                 Ok(stats) => {
                     job.status = JobStatus::Complete;
+                    job.progress = Some(1.0); // 100% complete
                     job.result = Some(crate::models::JobResult {
                         download_url: Some(format!("/download/fasta/{}", job_id_clone)),
                         stats: Some(stats),
@@ -168,19 +175,48 @@ pub async fn api_encode(
     })
 }
 
-/// Traite les données d'encodage
-async fn process_encode_data(
+/// Traite les données d'encodage avec mises à jour de progression
+async fn process_encode_data_with_progress(
     file_data: &[u8],
     data: &web::Data<AppState>,
     job_id: String,
+    file_size: usize,
 ) -> Result<crate::models::EncodingStats, String> {
+    // Envoyer la progression initiale
+    if let Some(ref tx) = data.progress_tx {
+        let _ = tx.send(crate::models::ProgressMessage {
+            job_id: job_id.clone(),
+            progress: 0.0,
+        });
+    }
+
     // Encoder les données
     let start_time = std::time::Instant::now();
     let encoder = adn_core::Encoder::new(adn_core::EncoderConfig::default())
         .map_err(|e| format!("Erreur d'initialisation de l'encodeur: {}", e))?;
 
+    // Pour les fichiers volumineux, simuler une progression
+    // (l'encodeur actuel est synchrone et ne fournit pas de callbacks)
+    if file_size > 100_000 { // > 100KB
+        // Envoyer une progression de 50% au milieu
+        if let Some(ref tx) = data.progress_tx {
+            let _ = tx.send(crate::models::ProgressMessage {
+                job_id: job_id.clone(),
+                progress: 0.5,
+            });
+        }
+    }
+
     let sequences = encoder.encode(file_data)
         .map_err(|e| format!("Erreur d'encodage: {}", e))?;
+
+    // Envoyer la progression à 90% avant de sauvegarder
+    if let Some(ref tx) = data.progress_tx {
+        let _ = tx.send(crate::models::ProgressMessage {
+            job_id: job_id.clone(),
+            progress: 0.9,
+        });
+    }
 
     let encoding_time = start_time.elapsed().as_millis() as u64;
 

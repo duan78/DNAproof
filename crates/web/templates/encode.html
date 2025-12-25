@@ -192,7 +192,7 @@ encodeBtn.addEventListener('click', async () => {
     } catch (error) {
         console.error('Erreur:', error);
         document.getElementById('progress').classList.add('hidden');
-        alert('Erreur: ' + error.message);
+        notificationSystem.error('Erreur d\'encodage', error.message);
         encodeBtn.disabled = false;
         encodeBtn.textContent = '🧬 Encoder en ADN';
     }
@@ -231,7 +231,7 @@ async function pollJobStatus(jobId) {
             clearInterval(pollInterval);
             console.error('Erreur polling:', error);
             document.getElementById('progress').classList.add('hidden');
-            alert('Erreur: ' + error.message);
+            notificationSystem.error('Erreur de communication', error.message);
             encodeBtn.disabled = false;
             encodeBtn.textContent = '🧬 Encoder en ADN';
         }

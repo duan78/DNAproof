@@ -193,7 +193,12 @@ impl Encoder {
     /// - Contraintes biochemical: GC 40-60%, homopolymer <4
     /// - Longueur d'oligo: 152nt (± quelques bases)
     /// - Overhead théorique: 1.03-1.07× (minimum)
+    ///
+    /// NOTE: Utilise maintenant le GC-Aware encoding qui préserve les données intactes
+    /// Structure: [HEADER 25nt] [DATA up to 100nt] [PADDING GC to reach 152nt]
     fn encode_erlich_zielinski_2017(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        use crate::codec::gc_aware_encoding::GcAwareEncoder;
+
         // Contraintes Erlich-Zielinski 2017
         let ez_constraints = DnaConstraints::new(
             0.40,  // GC min 40%
@@ -201,6 +206,8 @@ impl Encoder {
             3,     // Max homopolymer 3 (<4)
             152    // Max length 152nt (spécification papier)
         );
+
+        let gc_aware_encoder = GcAwareEncoder::new(ez_constraints.clone());
 
         let num_chunks = chunks.len();
         // Redondance plus faible avec EZ 2017 (1.03-1.07 recommandé)
@@ -219,12 +226,8 @@ impl Encoder {
             // XOR des chunks
             let payload = Self::xor_chunks(&selected_chunks)?;
 
-            // Convertir en ADN avec contraintes EZ 2017 strictes
-            let dna = self.payload_to_dna_with_constraints(
-                payload,
-                seed as u64,
-                &ez_constraints,
-            )?;
+            // Utiliser le GC-Aware encoder qui préserve les données intactes
+            let dna = gc_aware_encoder.encode(payload, seed as u64, degree)?;
 
             // Validation stricte des contraintes EZ 2017
             Self::validate_erlich_zielinski_2017_sequence(&dna)?;

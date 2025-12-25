@@ -99,9 +99,16 @@ impl Grass2015Encoder {
         let data_bases = self.encode_byte_with_rotation(data_byte, bases.len())?;
         bases.extend_from_slice(&data_bases);
 
-        // 3. Padding si nécessaire pour atteindre 124nt
+        // 3. Padding équilibré pour atteindre 124nt
         while bases.len() < self.sequence_length {
-            bases.push(IupacBase::A); // Padding avec A
+            // Utiliser un pattern GC-équilibré au lieu de seulement 'A'
+            // Pattern: GCTAGCTA... (50% GC, évite homopolymères)
+            let balanced_pattern = [
+                IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A,
+            ];
+
+            let position = bases.len() % balanced_pattern.len();
+            bases.push(balanced_pattern[position]);
         }
 
         let sequence = DnaSequence::with_encoding_scheme(

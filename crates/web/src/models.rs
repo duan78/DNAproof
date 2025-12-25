@@ -8,6 +8,13 @@ use adn_core::{EncoderConfig, DecoderConfig};
 use adn_core::codec::EncoderType;
 use chrono::{DateTime, Utc};
 
+/// Message de progression pour les mises à jour temps réel
+#[derive(Debug, Clone)]
+pub struct ProgressMessage {
+    pub job_id: String,
+    pub progress: f64,
+}
+
 /// État global de l'application
 #[derive(Clone)]
 pub struct AppState {
@@ -15,6 +22,7 @@ pub struct AppState {
     pub jobs: Arc<tokio::sync::RwLock<HashMap<String, JobState>>>,
     pub config: crate::config::AppConfig,
     pub database: Option<Arc<adn_storage::DatabaseManager>>,
+    pub progress_tx: Option<tokio::sync::mpsc::UnboundedSender<ProgressMessage>>,
 }
 
 /// État d'un job d'encodage/décodage
