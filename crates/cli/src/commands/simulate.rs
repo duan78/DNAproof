@@ -42,7 +42,7 @@ pub fn run(
 
     for seq in &sequences {
         for _ in 0..iterations {
-            let (corrupted, metrics) = channel.transmit(seq)?;
+            let (_corrupted, metrics) = channel.transmit(seq)?;
             collector.add(metrics);
         }
         pb.inc(1);

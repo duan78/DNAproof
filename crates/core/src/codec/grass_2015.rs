@@ -167,7 +167,7 @@ impl Grass2015Encoder {
 /// Décodeur Grass 2015
 pub struct Grass2015Decoder {
     rs_codec: ReedSolomonCodec,
-    constraints: DnaConstraints,
+    _constraints: DnaConstraints,
 }
 
 impl Grass2015Decoder {
@@ -176,7 +176,7 @@ impl Grass2015Decoder {
         let rs_codec = ReedSolomonCodec::new();
         Self {
             rs_codec,
-            constraints,
+            _constraints: constraints,
         }
     }
 
@@ -207,7 +207,7 @@ impl Grass2015Decoder {
             }
 
             blocks.entry(block_index)
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(byte_offset, data_byte);
         }
 
@@ -262,7 +262,7 @@ impl Grass2015Decoder {
         }
 
         // 1. Extraire l'addressing (9 premières bases)
-        let byte_offset = self.decode_address_value(&bases[0..4], 0)? as u32;
+        let byte_offset = self.decode_address_value(&bases[0..4], 0)?;
         let bit_offset = self.decode_address_value(&bases[4..6], 4)? as u8;
         let block_index = self.decode_address_value(&bases[6..9], 6)? as u16;
 
@@ -289,9 +289,8 @@ impl Grass2015Decoder {
             }
         };
 
-        for i in 0..num_bases {
-            let base = bases[i];
-            let bits = base_to_bits(base)?;
+        for (i, base) in bases.iter().enumerate().take(num_bases) {
+            let bits = base_to_bits(*base)?;
 
             // Inverser la rotation
             let rotation = (start_rotation + i) % 4;
@@ -322,9 +321,8 @@ impl Grass2015Decoder {
         let mut byte: u8 = 0;
         let rotation = position % 4;
 
-        for bit_pos in 0..4 {
-            let base = bases[bit_pos];
-            let bits = base_to_bits(base)?;
+        for (bit_pos, base) in bases.iter().enumerate().take(4) {
+            let bits = base_to_bits(*base)?;
 
             // Inverser la rotation
             let two_bits = (bits + 4 - rotation) % 4;

@@ -90,60 +90,19 @@ impl Goldman2013Encoder {
         for (byte_pos, &byte) in chunk.iter().enumerate() {
             // Encoder chaque octet en 4 bases (2 bits par base)
             for bit_pos in 0..4 {
-                let two_bits = ((byte >> (6 - bit_pos * 2)) & 0b11) as usize;
+                let two_bits = (byte >> (6 - bit_pos * 2)) & 0b11;
 
                 // Appliquer rotation basée sur position pour éviter homopolymères
                 let rotation = (start_offset + byte_pos + bit_pos) % 4;
 
                 // Sélectionner la base avec rotation
-                let base = standard_bases[(two_bits + rotation) % 4];
+                let base = standard_bases[(two_bits as usize + rotation) % 4];
 
                 bases.push(base);
             }
         }
 
         Ok(bases)
-    }
-
-    /// Vérifie si on peut ajouter une base sans dépasser les contraintes GC
-    fn can_append_for_gc(&self, bases: &[IupacBase], new_base: IupacBase) -> bool {
-        let len = bases.len();
-        if len == 0 {
-            return true;
-        }
-
-        // Vérifier homopolymer
-        let max_homopolymer = self.constraints.max_homopolymer;
-        if let Some(last) = bases.last() {
-            if *last == new_base {
-                let run = bases.iter().rev().take_while(|&&b| b == new_base).count();
-                if run >= max_homopolymer {
-                    return false;
-                }
-            }
-        }
-
-        // Estimation GC (simplifiée)
-        let gc_count = bases.iter().filter(|b| b.is_gc()).count()
-            + if new_base.is_gc() { 1 } else { 0 };
-        let gc_ratio = gc_count as f64 / (len + 1) as f64;
-
-        gc_ratio >= self.constraints.gc_min && gc_ratio <= self.constraints.gc_max
-    }
-
-    /// Trouve une base alternative respectant les contraintes
-    fn find_alternative_base(&self, preferred: IupacBase, bases: &[IupacBase]) -> Result<IupacBase> {
-        let candidates = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
-
-        for &base in &candidates {
-            if base != preferred && self.can_append_for_gc(bases, base) {
-                return Ok(base);
-            }
-        }
-
-        Err(DnaError::ConstraintViolation(
-            "Impossible de trouver une base alternative respectant GC".to_string()
-        ))
     }
 
     /// Ajoute l'addressing 8-byte (16 bits pour supporter jusqu'à 65535 séquences)
@@ -173,7 +132,7 @@ impl Goldman2013Encoder {
         // Encoder l'index sur 8 bases avec rotation pour éviter homopolymères
         // Utiliser une rotation qui change à chaque position
         for i in 0..8 {
-            let two_bits = ((idx >> (i * 2)) & 0b11) as usize;
+            let two_bits = (idx >> (i * 2)) & 0b11;
 
             // Appliquer une rotation basée sur la position pour éviter homopolymères
             // La rotation change à chaque position (0, 1, 2, 3, 0, 1, 2, 3, ...)
@@ -189,13 +148,13 @@ impl Goldman2013Encoder {
 
 /// Décodeur Goldman 2013
 pub struct Goldman2013Decoder {
-    constraints: DnaConstraints,
+    _constraints: DnaConstraints,
 }
 
 impl Goldman2013Decoder {
     /// Crée un nouveau décodeur Goldman 2013
     pub fn new(constraints: DnaConstraints) -> Self {
-        Self { constraints }
+        Self { _constraints: constraints }
     }
 
     /// Décode des séquences ADN en données
@@ -264,9 +223,8 @@ impl Goldman2013Decoder {
         let mut idx: usize = 0;
 
         // Décoder les 8 bases (16 bits) en inversant la rotation
-        for i in 0..8 {
-            let base = bases[i];
-            let bits = base_to_bits(base)?;
+        for (i, base) in bases.iter().enumerate().take(8) {
+            let bits = base_to_bits(*base)?;
 
             // Inverser la rotation: (x + r) % 4 = bits  =>  x = (bits - r + 4) % 4
             // où r = i % 4
@@ -285,7 +243,7 @@ impl Goldman2013Decoder {
         let mut bytes = Vec::new();
 
         // Vérifier qu'on a un nombre multiple de 4 bases
-        if bases.len() % 4 != 0 {
+        if !bases.len().is_multiple_of(4) {
             return Err(DnaError::Decoding(format!(
                 "Nombre de bases non multiple de 4: {}", bases.len()
             )));

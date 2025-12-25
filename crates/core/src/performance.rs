@@ -20,8 +20,10 @@ impl Default for PerformanceCache {
 impl PerformanceCache {
     /// Crée un nouveau cache avec une capacité donnée
     pub fn new(capacity: usize) -> Self {
+        // Garantir au moins 1 pour éviter panic sur unwrap
+        let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(1).unwrap());
         Self {
-            cache: Mutex::new(lru::LruCache::new(NonZeroUsize::new(capacity).unwrap())),
+            cache: Mutex::new(lru::LruCache::new(cap)),
         }
     }
 
@@ -65,7 +67,7 @@ impl PerformanceOptimizer {
         data.par_chunks(self.parallelism)
             .map(|chunk| {
                 chunk.iter()
-                    .map(|item| operation(item))
+                    .map(&operation)
                     .collect::<Vec<_>>()
             })
             .flatten()

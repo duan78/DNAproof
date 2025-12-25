@@ -3,12 +3,11 @@
 use actix_web::{web, HttpResponse, Responder, HttpRequest, get, post};
 use actix_multipart::Multipart;
 use futures::StreamExt;
-use std::path::PathBuf;
-use tracing::{info, error, instrument};
+use tracing::{info, error};
 use uuid::Uuid;
 use chrono::Utc;
 
-use crate::models::{AppState, EncodeRequest, EncodeResponse, DecodeRequest, DecodeResponse, JobStatus, ErrorResponse};
+use crate::models::{AppState, EncodeResponse, DecodeResponse, JobStatus, ErrorResponse};
 
 /// Route pour la page d'accueil
 #[get("/")]
@@ -70,7 +69,7 @@ pub async fn decode_page(data: web::Data<AppState>) -> impl Responder {
 pub async fn api_encode(
     data: web::Data<AppState>,
     mut payload: Multipart,
-    req: HttpRequest,
+    _req: HttpRequest,
 ) -> impl Responder {
     info!("Nouvelle requête d'encodage");
 
@@ -90,7 +89,7 @@ pub async fn api_encode(
 
     // Traiter le fichier uploadé AVANT de spawner (Multipart n'est pas Send)
     let mut file_data = Vec::new();
-    let mut file_name = None;
+    let mut _file_name = None;
 
     while let Some(item) = payload.next().await {
         let field = match item {
@@ -106,7 +105,7 @@ pub async fn api_encode(
 
         if let Some(content_disposition) = field.content_disposition() {
             if let Some(name) = content_disposition.get_filename() {
-                file_name = Some(name.to_string());
+                _file_name = Some(name.to_string());
 
                 let mut field = field;
                 while let Some(chunk_result) = field.next().await {
@@ -236,7 +235,7 @@ async fn process_encode_data_with_progress(
     // Sauvegarder dans la base de données si activé
     if let Some(db) = &data.database {
         let pool = db.pool().unwrap();
-        let mut repo = adn_storage::SequenceRepository::new(std::sync::Arc::new(pool.clone()));
+        let repo = adn_storage::SequenceRepository::new(std::sync::Arc::new(pool.clone()));
 
         for seq in &sequences {
             if let Err(e) = repo.save_sequence(seq).await {
@@ -380,7 +379,7 @@ async fn process_decode_data(
         .map_err(|e| format!("Erreur de décodage: {}", e))?;
 
     // Sauvegarder le résultat pour téléchargement
-    save_decoded_result(&data, &job_id, &decoded_data).await
+    save_decoded_result(data, &job_id, &decoded_data).await
         .map_err(|e| format!("Erreur de sauvegarde du résultat: {}", e))?;
 
     Ok(())
@@ -395,7 +394,7 @@ fn parse_fasta(data: &[u8]) -> Result<Vec<adn_core::DnaSequence>, String> {
     let mut current_id: Option<String> = None;
 
     for line in content.lines() {
-        if line.starts_with('>') {
+        if let Some(stripped) = line.strip_prefix('>') {
             // Sauvegarder la séquence précédente
             if !current_seq.is_empty() && current_id.is_some() {
                 sequences.push(parse_sequence(&current_id.unwrap(), &current_seq)?);
@@ -403,7 +402,7 @@ fn parse_fasta(data: &[u8]) -> Result<Vec<adn_core::DnaSequence>, String> {
             }
             
             // Nouvelle séquence
-            current_id = Some(line[1..].trim().to_string());
+            current_id = Some(stripped.trim().to_string());
         } else {
             current_seq.push_str(line);
         }
@@ -465,88 +464,207 @@ async fn save_fasta_file(
 }
 
 /// Sauvegarde le résultat décodé
+
 async fn save_decoded_result(
-    data: &web::Data<AppState>,
+
+    _data: &web::Data<AppState>,
+
     job_id: &str,
+
     decoded_data: &[u8],
+
 ) -> Result<(), String> {
+
     let upload_dir = std::path::Path::new("uploads");
+
     
-    if !upload_dir.exists() {
-        std::fs::create_dir_all(upload_dir)
-            .map_err(|e| format!("Erreur de création du dossier: {}", e))?;
-    }
+
+        if !upload_dir.exists() {
+
     
+
+            std::fs::create_dir_all(upload_dir)
+
+    
+
+                .map_err(|e| format!("Erreur de création du dossier: {}", e))?;
+
+    
+
+        }
+
+    
+
     let file_path = upload_dir.join(format!("{}.decoded", job_id));
+
     
+
     tokio::fs::write(&file_path, decoded_data)
+
         .await
+
         .map_err(|e| format!("Erreur d'écriture du fichier: {}", e))?;
+
     
+
     Ok(())
+
 }
+
+
+
+
 
 /// Route pour vérifier l'état d'un job
+
 #[get("/api/jobs/{job_id}")]
+
 pub async fn job_status(
+
     data: web::Data<AppState>,
+
     job_id: web::Path<String>,
+
 ) -> impl Responder {
+
     let jobs = data.jobs.read().await;
 
+
+
     match jobs.get(job_id.as_ref()) {
+
         Some(job) => HttpResponse::Ok().json(job),
+
         None => HttpResponse::NotFound().json(ErrorResponse::new(
+
             "Job non trouvé".to_string(),
+
             404
+
         )),
+
     }
+
 }
+
+
+
+
 
 /// Route pour télécharger un résultat
+
+
+
+
+
 #[get("/download/{job_id}")]
+
+
+
+
+
 pub async fn download_result(
-    data: web::Data<AppState>,
+
+
+
+
+
+    _data: web::Data<AppState>,
+
+
+
+
+
     job_id: web::Path<String>,
+
+
+
+
+
 ) -> impl Responder {
+
     let file_path = std::path::Path::new("uploads").join(format!("{}.decoded", job_id.as_ref()));
 
+
+
     match tokio::fs::read(&file_path).await {
+
         Ok(data) => HttpResponse::Ok()
+
             .content_type("application/octet-stream")
+
             .body(data),
+
         Err(_) => HttpResponse::NotFound().json(ErrorResponse::new(
+
             "Fichier non trouvé".to_string(),
+
             404
+
         )),
+
     }
+
 }
+
+
+
+
 
 /// Route pour télécharger un fichier FASTA
+
 #[get("/download/fasta/{job_id}")]
+
 pub async fn download_fasta(
+
     job_id: web::Path<String>,
+
 ) -> impl Responder {
+
     let file_path = std::path::Path::new("uploads").join(format!("{}.fasta", job_id.as_ref()));
 
+
+
     match tokio::fs::read(&file_path).await {
+
         Ok(data) => HttpResponse::Ok()
+
             .content_type("text/x-fasta")
+
             .insert_header(("Content-Disposition", format!("attachment; filename=\"{}.fasta\"", job_id.as_ref())))
+
             .body(data),
+
         Err(_) => HttpResponse::NotFound().json(ErrorResponse::new(
+
             "Fichier FASTA non trouvé".to_string(),
+
             404
+
         )),
+
     }
+
 }
 
+
+
+
+
 /// Route pour la santé de l'API
+
 #[get("/health")]
+
 pub async fn health_check() -> impl Responder {
+
     HttpResponse::Ok().json(serde_json::json!({
+
         "status": "healthy",
+
         "timestamp": Utc::now(),
+
         "version": env!("CARGO_PKG_VERSION")
+
     }))
+
 }

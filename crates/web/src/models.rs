@@ -1,7 +1,6 @@
 //! Modèles de données pour l'API web
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use std::collections::HashMap;
 use std::sync::Arc;
 use adn_core::{EncoderConfig, DecoderConfig};
@@ -20,7 +19,7 @@ pub struct ProgressMessage {
 pub struct AppState {
     pub tera: Arc<tera::Tera>,
     pub jobs: Arc<tokio::sync::RwLock<HashMap<String, JobState>>>,
-    pub config: crate::config::AppConfig,
+    pub _config: crate::config::AppConfig,
     pub database: Option<Arc<adn_storage::DatabaseManager>>,
     pub progress_tx: Option<tokio::sync::mpsc::UnboundedSender<ProgressMessage>>,
 }
@@ -195,14 +194,6 @@ impl ErrorResponse {
         Self {
             error,
             details: None,
-            code,
-        }
-    }
-
-    pub fn with_details(error: String, details: String, code: u16) -> Self {
-        Self {
-            error,
-            details: Some(details),
             code,
         }
     }

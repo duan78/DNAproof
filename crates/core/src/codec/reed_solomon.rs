@@ -113,7 +113,7 @@ impl ReedSolomonCodec {
         let original_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
         let encoded_data = &data[4..];
 
-        if encoded_data.len() % block_size != 0 {
+        if !encoded_data.len().is_multiple_of(block_size) {
             return Err(DnaError::Correction(format!(
                 "Longueur des données invalide pour Reed-Solomon: {} (pas multiple de {})",
                 encoded_data.len(),
@@ -165,7 +165,7 @@ impl ReedSolomonCodec {
         let original_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
         let encoded_data = &data[4..];
 
-        if encoded_data.len() % block_size != 0 {
+        if !encoded_data.len().is_multiple_of(block_size) {
             return Err(DnaError::Correction(
                 "Longueur des données invalide pour Reed-Solomon".to_string()
             ));
@@ -250,7 +250,7 @@ impl ReedSolomonCodec {
         if data_len == 0 {
             0
         } else {
-            (data_len + self.max_data_block - 1) / self.max_data_block
+            data_len.div_ceil(self.max_data_block)
         }
     }
 

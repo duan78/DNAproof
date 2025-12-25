@@ -1,7 +1,5 @@
 //! Modèles d'erreur pour la simulation
 
-use rand::{Rng, SeedableRng};
-use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 /// Type d'erreur ADN

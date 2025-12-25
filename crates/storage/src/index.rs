@@ -19,9 +19,9 @@ pub struct SequenceIndex {
 /// Métadonnées d'indexation
 #[derive(Debug, Clone)]
 struct SequenceMeta {
-    id: String,
-    file: String,
-    seed: u64,
+    _id: String,
+    _file: String,
+    _seed: u64,
 }
 
 impl SequenceIndex {
@@ -41,16 +41,16 @@ impl SequenceIndex {
         let seed = sequence.metadata.seed;
 
         let meta = SequenceMeta {
-            id: id.clone(),
-            file: file.clone(),
-            seed,
+            _id: id.clone(),
+            _file: file.clone(),
+            _seed: seed,
         };
 
         // Index par ID
         self.by_id.insert(id.clone(), meta.clone());
 
         // Index par fichier
-        self.by_file.entry(file).or_insert_with(Vec::new).push(id.clone());
+        self.by_file.entry(file).or_default().push(id.clone());
 
         // Index par seed
         self.by_seed.insert(seed, id);

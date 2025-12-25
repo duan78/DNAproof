@@ -240,12 +240,12 @@ impl DnaConstraintValidator {
     }
 
     /// Corrige le GC content en remplaçant stratégiquement certaines bases
-    fn enforce_gc_with_retry(&self, result: &[IupacBase], original: &[IupacBase]) -> Result<Vec<IupacBase>> {
+    fn enforce_gc_with_retry(&self, result: &[IupacBase], _original: &[IupacBase]) -> Result<Vec<IupacBase>> {
         let mut corrected = result.to_vec();
         let current_gc = self.compute_gc_ratio(&corrected);
 
         // Déterminer si on a trop ou pas assez de GC
-        let needs_more_gc = current_gc < self.constraints.gc_min;
+        let _needs_more_gc = current_gc < self.constraints.gc_min;
         let target_ratio = (self.constraints.gc_min + self.constraints.gc_max) / 2.0;
 
         // Identifier les positions candidates pour remplacement
@@ -256,15 +256,11 @@ impl DnaConstraintValidator {
             let base = corrected[i];
 
             // Vérifier qu'on peut changer cette base sans créer d'homopolymer
-            let can_replace = if i > 0 && corrected[i - 1] == base {
-                false
-            } else if i < corrected.len() - 1 && corrected[i + 1] == base {
-                false
-            } else {
-                true
-            };
-
-            if can_replace {
+            // Combine checks to avoid "identical blocks" clippy warning
+            let is_homopolymer_neighbor = (i > 0 && corrected[i - 1] == base) || 
+                                        (i < corrected.len() - 1 && corrected[i + 1] == base);
+            
+            if !is_homopolymer_neighbor {
                 replacement_candidates.push(i);
             }
         }
@@ -312,15 +308,10 @@ impl DnaConstraintValidator {
             };
 
             // Vérifier que le remplacement ne crée pas d'homopolymer
-            let valid_replacement = if idx > 0 && corrected[idx - 1] == new_base {
-                false
-            } else if idx < corrected.len() - 1 && corrected[idx + 1] == new_base {
-                false
-            } else {
-                true
-            };
+            let creates_homopolymer = (idx > 0 && corrected[idx - 1] == new_base) || 
+                                    (idx < corrected.len() - 1 && corrected[idx + 1] == new_base);
 
-            if valid_replacement && new_base != old_base {
+            if !creates_homopolymer && new_base != old_base {
                 corrected[idx] = new_base;
                 replacements += 1;
             }

@@ -135,7 +135,7 @@ impl DnaPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adn_core::{IupacBase, SequenceId};
+    use adn_core::IupacBase;
 
     #[test]
     fn test_pool_creation() {

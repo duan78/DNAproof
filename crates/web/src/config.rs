@@ -9,7 +9,7 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub workers: usize,
-    pub upload_limit: usize,
+    pub _upload_limit: usize,
     pub static_files: PathBuf,
     pub templates: PathBuf,
 }
@@ -20,7 +20,7 @@ impl Default for ServerConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,
             workers: 4,
-            upload_limit: 100 * 1024 * 1024, // 100MB
+            _upload_limit: 100 * 1024 * 1024, // 100MB
             static_files: PathBuf::from("./static"),
             templates: PathBuf::from("./templates"),
         }
@@ -46,21 +46,11 @@ impl Default for DatabaseConfig {
 }
 
 /// Configuration complète de l'application
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub logging: LoggingConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            database: DatabaseConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
 }
 
 /// Configuration du logging
@@ -82,7 +72,7 @@ impl Default for LoggingConfig {
 impl AppConfig {
     /// Charge la configuration depuis un fichier
     pub fn load_from_file(path: &str) -> Result<Self, config::ConfigError> {
-        let mut settings = config::Config::builder()
+        let settings = config::Config::builder()
             .add_source(config::File::with_name(path))
             .build()?;
 

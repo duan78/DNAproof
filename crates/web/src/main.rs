@@ -97,7 +97,7 @@ async fn main() -> std::io::Result<()> {
     let app_state = web::Data::new(AppState {
         tera: std::sync::Arc::new(tera),
         jobs: jobs_for_progress,
-        config: config.clone(),
+        _config: config.clone(),
         database: database.map(std::sync::Arc::new),
         progress_tx: Some(progress_tx),
     });

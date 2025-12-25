@@ -211,7 +211,7 @@ impl Encoder {
 
         let num_chunks = chunks.len();
         // Redondance plus faible avec EZ 2017 (1.03-1.07 recommandé)
-        let redundancy = self.config.redundancy.min(1.07).max(1.03);
+        let redundancy = self.config.redundancy.clamp(1.03, 1.07);
         let num_droplets = (num_chunks as f64 * redundancy).ceil() as usize;
 
         let mut sequences = Vec::with_capacity(num_droplets);
@@ -307,171 +307,13 @@ impl Encoder {
         num_chunks  // Fallback au degré maximum
     }
 
-    /// Convertit un payload en ADN avec contraintes spécifiques
-    fn payload_to_dna_with_constraints(
-        &self,
-        payload: Vec<u8>,
-        seed: u64,
-        constraints: &DnaConstraints,
-    ) -> Result<DnaSequence> {
-        // D'abord, encoder en bases idéales
-        let mut ideal_bases: Vec<IupacBase> = Vec::with_capacity(payload.len() * 4);
-        for byte in &payload {
-            let bits = [
-                (byte >> 6) & 0b11,
-                (byte >> 4) & 0b11,
-                (byte >> 2) & 0b11,
-                byte & 0b11,
-            ];
-
-            for two_bits in bits {
-                let base = match two_bits {
-                    0b00 => IupacBase::A,
-                    0b01 => IupacBase::C,
-                    0b10 => IupacBase::G,
-                    0b11 => IupacBase::T,
-                    _ => unreachable!(),
-                };
-                ideal_bases.push(base);
-            }
-        }
-
-        // Ensuite, utiliser enforce_constraints pour respecter les contraintes
-        let validator = crate::constraints::DnaConstraintValidator::with_constraints(
-            constraints.clone(),
-        );
-        let enforced_bases = validator.enforce_constraints(&ideal_bases)?;
-
-        // Si les bases font la conversion trop longue, tronquer
-        let max_len = constraints.max_sequence_length;
-        if enforced_bases.len() > max_len {
-            // Logique de retry avec seed différent
-            return self.payload_to_dna_with_constraints_retry(payload, seed, constraints);
-        }
-
-        let sequence = DnaSequence::with_encoding_scheme(
-            enforced_bases,
-            String::from("ez2017"),
-            0,
-            payload.len(),
-            seed,
-            self.encoding_scheme_name().to_string(),
-        );
-
-        // Validation finale
-        sequence.validate(constraints)?;
-
-        Ok(sequence)
-    }
-
-    /// Encode avec retry si la première tentative échoue à cause de la longueur
-    fn payload_to_dna_with_constraints_retry(
-        &self,
-        payload: Vec<u8>,
-        mut seed: u64,
-        constraints: &DnaConstraints,
-    ) -> Result<DnaSequence> {
-        const MAX_RETRIES: usize = 10;
-
-        for attempt in 0..MAX_RETRIES {
-            seed += attempt as u64;  // Variante le seed
-
-            let mut bases = Vec::with_capacity(payload.len() * 4);
-            let _rng = ChaCha8Rng::seed_from_u64(seed);  // rng non utilisé mais gardé pour seed reproductibilité
-            let validator = crate::constraints::DnaConstraintValidator::with_constraints(
-                constraints.clone(),
-            );
-
-            for byte in &payload {
-                let bits = [
-                    (byte >> 6) & 0b11,
-                    (byte >> 4) & 0b11,
-                    (byte >> 2) & 0b11,
-                    byte & 0b11,
-                ];
-
-                for two_bits in bits {
-                    let base = match two_bits {
-                        0b00 => IupacBase::A,
-                        0b01 => IupacBase::C,
-                        0b10 => IupacBase::G,
-                        0b11 => IupacBase::T,
-                        _ => unreachable!(),
-                    };
-
-                    if validator.can_append(&bases, base) {
-                        bases.push(base);
-                    } else {
-                        // Essayer différentes alternatives
-                        let bases_set = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
-                        let mut found = false;
-
-                        for &alt_base in &bases_set {
-                            if alt_base != base && validator.can_append(&bases, alt_base) {
-                                bases.push(alt_base);
-                                found = true;
-                                break;
-                            }
-                        }
-
-                        if !found {
-                            // Dernier recours: prendre une base aléatoire qui marche
-                            for &alt_base in &bases_set {
-                                if validator.can_append(&bases, alt_base) {
-                                    bases.push(alt_base);
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if !found {
-                            return Err(DnaError::ConstraintViolation(
-                                format!("Impossible de trouver une base valide à l'attempt {}", attempt)
-                            ));
-                        }
-                    }
-
-                    // Vérifier qu'on ne dépasse pas la longueur max
-                    if bases.len() >= constraints.max_sequence_length {
-                        break;
-                    }
-                }
-
-                // Si on atteint la longueur max, arrêter
-                if bases.len() >= constraints.max_sequence_length {
-                    break;
-                }
-            }
-
-            // Créer la séquence
-            let sequence = DnaSequence::with_encoding_scheme(
-                bases,
-                String::from("ez2017"),
-                0,
-                payload.len(),
-                seed,
-                self.encoding_scheme_name().to_string(),
-            );
-
-            // Valider
-            if sequence.validate(constraints).is_ok() {
-                return Ok(sequence);
-            }
-        }
-
-        Err(DnaError::ConstraintViolation(
-            "Impossible d'encoder le payload avec les contraintes EZ 2017 après {} tentatives".to_string()
-        ))
-    }
-
     /// Valide qu'une séquence respecte les contraintes Erlich-Zielinski 2017
     fn validate_erlich_zielinski_2017_sequence(sequence: &DnaSequence) -> Result<()> {
         // Vérifier la longueur (128-152nt acceptable pour implémentation actuelle)
         // Note: Le papier spécifie 152nt, mais nous acceptons 128nt minimum
         // (32 bytes × 4 bases/byte) pour supporter des chunks de taille raisonnable
         let len = sequence.bases.len();
-        if len < 128 || len > 152 {
+        if !(128..=152).contains(&len) {
             return Err(DnaError::ConstraintViolation(format!(
                 "Longueur de séquence {} hors limites EZ 2017 (128-152nt)", len
             )));
@@ -483,7 +325,7 @@ impl Encoder {
             .count();
         let gc_ratio = gc_count as f64 / len as f64;
 
-        if gc_ratio < 0.40 || gc_ratio > 0.60 {
+        if !(0.40..=0.60).contains(&gc_ratio) {
             return Err(DnaError::ConstraintViolation(format!(
                 "GC ratio {:.2} hors limites EZ 2017 (40-60%)", gc_ratio
             )));

@@ -383,11 +383,6 @@ impl DnaSequence {
         constraints.validate(&self.bases)
     }
 
-    /// Convertit en chaîne de caractères
-    pub fn to_string(&self) -> String {
-        self.bases.iter().map(|b| b.as_char()).collect()
-    }
-
     /// Convertit au format FASTA
     pub fn to_fasta(&self) -> String {
         format!(
@@ -397,7 +392,7 @@ impl DnaSequence {
             self.metadata.seed,
             self.metadata.gc_ratio * 100.0,
             self.bases.len(),
-            self.to_string()
+            self
         )
     }
 
@@ -433,7 +428,7 @@ impl DnaSequence {
         let sequence_data = lines[1..].join("");
         let bases = sequence_data
             .chars()
-            .map(|c| IupacBase::from_char(c))
+            .map(IupacBase::from_char)
             .collect::<Result<Vec<IupacBase>>>()?;
 
         // Créer les métadonnées
@@ -480,7 +475,10 @@ impl DnaSequence {
 
 impl fmt::Display for DnaSequence {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        for base in &self.bases {
+            write!(f, "{}", base.as_char())?;
+        }
+        Ok(())
     }
 }
 

@@ -3,6 +3,7 @@
 use adn_core::{DnaSequence, ConstraintChecker};
 
 /// Affiche les statistiques des séquences
+#[allow(dead_code)]
 pub fn display_stats(sequences: &[DnaSequence]) {
     if sequences.is_empty() {
         println!("Aucune séquence à afficher");

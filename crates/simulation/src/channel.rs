@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn test_channel_creation() {
         let config = ChannelConfig::default();
-        let channel = DnaChannel::new(config);
+        let _channel = DnaChannel::new(config);
         // Juste vérifier que ça compile
     }
 
@@ -140,7 +140,7 @@ mod tests {
         let bases = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
         let seq = DnaSequence::new(bases, "test.txt".to_string(), 0, 4, 42);
 
-        let (corrupted, metrics) = channel.transmit(&seq).unwrap();
+        let (_corrupted, metrics) = channel.transmit(&seq).unwrap();
 
         assert_eq!(metrics.total_bases, 4);
     }
@@ -156,9 +156,6 @@ mod tests {
         let bases = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
         let seq = DnaSequence::new(bases, "test.txt".to_string(), 0, 4, 42);
 
-        let (corrupted, metrics) = channel.transmit(&seq).unwrap();
-
-        // Avec un taux de 50%, on devrait avoir quelques substitutions
-        assert!(metrics.substitutions >= 0);
+        let (_corrupted, _metrics) = channel.transmit(&seq).unwrap();
     }
 }

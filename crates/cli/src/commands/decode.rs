@@ -57,7 +57,7 @@ fn read_fasta(path: &PathBuf) -> Result<Vec<DnaSequence>> {
             continue;
         }
 
-        if line.starts_with('>') {
+        if let Some(stripped) = line.strip_prefix('>') {
             // Sauvegarder la séquence précédente
             if !current_seq.is_empty() {
                 if let Ok(seq) = DnaSequence::from_str(
@@ -73,7 +73,7 @@ fn read_fasta(path: &PathBuf) -> Result<Vec<DnaSequence>> {
             }
 
             // Extraire l'ID de la ligne header
-            let parts: Vec<&str> = line[1..].split('|').collect();
+            let parts: Vec<&str> = stripped.split('|').collect();
             current_id = Some(parts[0].to_string());
             current_seq = String::new();
         } else {

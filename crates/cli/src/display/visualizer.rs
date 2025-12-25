@@ -3,6 +3,7 @@
 use adn_core::DnaSequence;
 
 /// Affiche les séquences
+#[allow(dead_code)]
 pub fn display_sequences(sequences: &[DnaSequence]) {
     for (i, seq) in sequences.iter().enumerate() {
         println!("Séquence {}/{}", i + 1, sequences.len());

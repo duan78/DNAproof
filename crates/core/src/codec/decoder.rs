@@ -203,14 +203,6 @@ impl Decoder {
         })
     }
 
-    /// Valide les séquences d'entrée
-    fn validate_sequences(&self, sequences: &[DnaSequence]) -> Result<()> {
-        for seq in sequences {
-            seq.validate(&crate::DnaConstraints::default())?;
-        }
-        Ok(())
-    }
-
     /// Vérifie l'intégrité des données décodées
     fn verify_integrity(&self, data: &[u8]) -> Result<()> {
         // Vérification basique de la taille
@@ -296,7 +288,7 @@ pub struct FountainDecoder {
     droplets: Vec<Droplet>,
     received: usize,
     required: usize,
-    chunk_size: usize,
+    _chunk_size: usize,
 }
 
 impl FountainDecoder {
@@ -308,7 +300,7 @@ impl FountainDecoder {
             droplets: Vec::new(),
             received: 0,
             required: required_chunks,
-            chunk_size,
+            _chunk_size: chunk_size,
         }
     }
 

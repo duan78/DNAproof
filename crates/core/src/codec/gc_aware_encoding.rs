@@ -18,7 +18,7 @@ use crate::codec::reed_solomon::ReedSolomonCodec;
 /// Encodeur GC-Aware pour Erlich-Zielinski 2017
 pub struct GcAwareEncoder {
     constraints: DnaConstraints,
-    rs_codec: ReedSolomonCodec,
+    _rs_codec: ReedSolomonCodec,
 }
 
 impl GcAwareEncoder {
@@ -27,7 +27,7 @@ impl GcAwareEncoder {
         let rs_codec = ReedSolomonCodec::new();
         Self {
             constraints,
-            rs_codec,
+            _rs_codec: rs_codec,
         }
     }
 
@@ -43,11 +43,7 @@ impl GcAwareEncoder {
 
         // 3. Calculer le padding nécessaire pour équilibrer GC
         let current_length = header.len() + data_bases.len();
-        let padding_needed = if current_length < 152 {
-            152 - current_length
-        } else {
-            0
-        };
+        let padding_needed = 152_usize.saturating_sub(current_length);
 
         // 4. Générer le padding GC-équilibré
         let padding = self.generate_gc_padding(
@@ -153,7 +149,7 @@ impl GcAwareEncoder {
     }
 
     /// Génère un addressing équilibré pour le header
-    fn generate_balanced_addressing(&self, length: usize, start_rotation: usize) -> Result<Vec<IupacBase>> {
+    fn generate_balanced_addressing(&self, length: usize, _start_rotation: usize) -> Result<Vec<IupacBase>> {
         // Pattern qui aide avec GC: alterner GC/AT
         let gc_bases = [IupacBase::G, IupacBase::C];
         let at_bases = [IupacBase::A, IupacBase::T];
@@ -210,8 +206,8 @@ impl GcAwareEncoder {
         let start_offset = if let Some(last) = last_base {
             // Trouver le premier offset dans le pattern qui n'est pas `last`
             let mut offset = 0;
-            for i in 0..balanced_pattern.len() {
-                if balanced_pattern[i] != last {
+            for (i, base) in balanced_pattern.iter().enumerate() {
+                if *base != last {
                     offset = i;
                     break;
                 }
@@ -260,99 +256,17 @@ impl GcAwareEncoder {
 
         Ok(padding)
     }
-
-    /// Sélectionne une base GC en évitant les homopolymères
-    fn select_gc_base(
-        &self,
-        existing: &[IupacBase],
-        last: Option<IupacBase>,
-        consecutive_count: &mut usize,
-    ) -> Result<IupacBase> {
-        let gc_bases = [IupacBase::G, IupacBase::C];
-
-        for &base in &gc_bases {
-            if let Some(last_base) = last {
-                if base == last_base {
-                    continue; // Éviter répétition
-                }
-            }
-
-            // Vérifier si on peut ajouter cette base
-            let mut test_bases = existing.to_vec();
-            test_bases.push(base);
-
-            if self.can_append_for_gc(&test_bases, base) {
-                return Ok(base);
-            }
-        }
-
-        // Fallback: première base GC
-        Ok(gc_bases[0])
-    }
-
-    /// Sélectionne une base AT en évitant les homopolymères
-    fn select_at_base(
-        &self,
-        existing: &[IupacBase],
-        last: Option<IupacBase>,
-        consecutive_count: &mut usize,
-    ) -> Result<IupacBase> {
-        let at_bases = [IupacBase::A, IupacBase::T];
-
-        for &base in &at_bases {
-            if let Some(last_base) = last {
-                if base == last_base {
-                    continue;
-                }
-            }
-
-            let mut test_bases = existing.to_vec();
-            test_bases.push(base);
-
-            if self.can_append_for_gc(&test_bases, base) {
-                return Ok(base);
-            }
-        }
-
-        Ok(at_bases[0])
-    }
-
-    /// Vérifie si on peut ajouter une base sans violer les contraintes GC
-    fn can_append_for_gc(&self, bases: &[IupacBase], new_base: IupacBase) -> bool {
-        let len = bases.len();
-        if len == 0 {
-            return true;
-        }
-
-        // Vérifier homopolymer
-        let max_homopolymer = self.constraints.max_homopolymer;
-        if let Some(last) = bases.last() {
-            if *last == new_base {
-                let run = bases.iter().rev().take_while(|&&b| b == new_base).count();
-                if run >= max_homopolymer {
-                    return false;
-                }
-            }
-        }
-
-        // Estimation GC
-        let gc_count = bases.iter().filter(|b| b.is_gc()).count()
-            + if new_base.is_gc() { 1 } else { 0 };
-        let gc_ratio = gc_count as f64 / (len + 1) as f64;
-
-        gc_ratio >= self.constraints.gc_min && gc_ratio <= self.constraints.gc_max
-    }
 }
 
 /// Décodeur GC-Aware pour Erlich-Zielinski 2017
 pub struct GcAwareDecoder {
-    constraints: DnaConstraints,
+    _constraints: DnaConstraints,
 }
 
 impl GcAwareDecoder {
     /// Crée un nouveau décodeur GC-aware
     pub fn new(constraints: DnaConstraints) -> Self {
-        Self { constraints }
+        Self { _constraints: constraints }
     }
 
     /// Décode une séquence ADN GC-aware en payload
@@ -368,7 +282,7 @@ impl GcAwareDecoder {
         }
 
         // Structure: [HEADER 25] [DATA payload_len*4 bases] [PADDING rest]
-        let header = &bases[0..25];
+        let _header = &bases[0..25];
 
         // La longueur du payload est stockée dans metadata.chunk_size
         let payload_len = sequence.metadata.chunk_size;
@@ -391,37 +305,9 @@ impl GcAwareDecoder {
         Ok(payload)
     }
 
-    /// Décode une valeur encodée avec rotation
-    fn decode_value_2bit(&self, bases: &[IupacBase], start_rotation: usize) -> Result<u32> {
-        let base_to_bits = |b: IupacBase| -> Result<usize> {
-            match b {
-                IupacBase::A => Ok(0),
-                IupacBase::C => Ok(1),
-                IupacBase::G => Ok(2),
-                IupacBase::T => Ok(3),
-                _ => Err(DnaError::Decoding(format!("Base invalide: {:?}", b))),
-            }
-        };
-
-        let mut value: u32 = 0;
-
-        for i in 0..bases.len() {
-            let base = bases[i];
-            let bits = base_to_bits(base)?;
-
-            // Inverser la rotation
-            let rotation = (start_rotation + i) % 4;
-            let two_bits = (bits + 4 - rotation) % 4;
-
-            value |= (two_bits as u32) << (i * 2);
-        }
-
-        Ok(value)
-    }
-
     /// Décode les bases de données en octets
     fn decode_data(&self, bases: &[IupacBase]) -> Result<Vec<u8>> {
-        if bases.len() % 4 != 0 {
+        if !bases.len().is_multiple_of(4) {
             return Err(DnaError::Decoding(format!(
                 "Nombre de bases non multiple de 4: {}", bases.len()
             )));
@@ -432,7 +318,7 @@ impl GcAwareDecoder {
         for chunk_idx in 0..(bases.len() / 4) {
             let mut byte: u8 = 0;
 
-            for bit_pos in 0..4 {
+            for (bit_pos, _) in bases.iter().enumerate().take(4) {
                 let base_idx = chunk_idx * 4 + bit_pos;
                 let base = bases[base_idx];
 
