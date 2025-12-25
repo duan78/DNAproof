@@ -26,9 +26,9 @@ impl Goldman2013Encoder {
 
     /// Encode des données en séquences ADN
     pub fn encode(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
-        // 1. Compression Huffman (simplifiée - utiliser LZ4 pour l'instant)
-        // Pour MVP: pas de compression pour éviter les problèmes avec petits fichiers
-        let compressed = data.to_vec(); // self.compress_huffman(data)?;
+        // 1. Compression LZ4 (pratique, meilleure que Huffman pour plupart des cas)
+        // Note: LZ4 avec checksum pour intégrité des données
+        let compressed = self.compress_huffman(data)?;
 
         // 2. Diviser en chunks de 3 octets (pour 3-base rotation)
         let chunk_size = 3;
@@ -220,10 +220,10 @@ impl Goldman2013Decoder {
             result.extend_from_slice(&data);
         }
 
-        // Pas de décompression pour MVP
-        // let decompressed = self.decompress_huffman(&result)?;
+        // Décompression LZ4
+        let decompressed = self.decompress_huffman(&result)?;
 
-        Ok(result)
+        Ok(decompressed)
     }
 
     /// Parse une séquence pour extraire l'index et les données
