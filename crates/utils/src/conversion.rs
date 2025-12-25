@@ -184,11 +184,13 @@ mod tests {
     fn test_specific_byte_conversion() {
         let converter = BytesToDna::new();
 
-        // 0b10101010 -> G T G T
+        // 0b10101010 -> G G G G (10 10 10 10 in binary = 2 2 2 2 -> G G G G)
         let bases = converter.convert(&[0b10101010]);
 
         assert_eq!(bases.len(), 4);
         assert_eq!(bases[0], IupacBase::G);
-        assert_eq!(bases[1], IupacBase::T);
+        assert_eq!(bases[1], IupacBase::G);
+        assert_eq!(bases[2], IupacBase::G);
+        assert_eq!(bases[3], IupacBase::G);
     }
 }
