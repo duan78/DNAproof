@@ -4,6 +4,8 @@ use crate::error::{DnaError, Result};
 use crate::sequence::{DnaSequence, IupacBase};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 // Importer les macros depuis la racine du crate
 pub use crate::{log_operation, log_error};
@@ -53,6 +55,92 @@ impl Decoder {
     /// Crée un nouveau décodeur
     pub fn new(config: DecoderConfig) -> Self {
         Self { config }
+    }
+
+    /// Décode automatiquement depuis un fichier FASTA en détectant le schéma d'encodage
+    pub fn decode_from_fasta_auto(&self, fasta_path: &str) -> Result<Vec<u8>> {
+        log_operation!("decode_from_fasta_auto", {
+            // Lire le fichier FASTA
+            let file = File::open(fasta_path)
+                .map_err(|e| DnaError::Decoding(format!("Impossible d'ouvrir {}: {}", fasta_path, e)))?;
+
+            let reader = BufReader::new(file);
+            let mut sequences = Vec::new();
+
+            // Lire le fichier et détecter le schéma
+            let mut detected_scheme = None;
+            let mut current_fasta = String::new();
+
+            for line in reader.lines() {
+                let line = line
+                    .map_err(|e| DnaError::Decoding(format!("Erreur lecture: {}", e)))?;
+
+                if line.starts_with('>') {
+                    // Nouvelle séquence, parser la précédente si elle existe
+                    if !current_fasta.is_empty() {
+                        let seq = DnaSequence::from_fasta(&current_fasta)?;
+                        sequences.push(seq);
+                    }
+                    current_fasta = line.clone() + "\n";
+
+                    // Détecter le schéma depuis l'en-tête
+                    if detected_scheme.is_none() && line.contains("scheme:") {
+                        let scheme_part = line
+                            .split("scheme:")
+                            .nth(1)
+                            .and_then(|s| s.split('|').next())
+                            .unwrap_or("unknown");
+                        detected_scheme = Some(scheme_part.to_string());
+                    }
+                } else {
+                    current_fasta.push_str(&line);
+                    current_fasta.push('\n');
+                }
+            }
+
+            // Parser la dernière séquence
+            if !current_fasta.is_empty() {
+                let seq = DnaSequence::from_fasta(&current_fasta)?;
+                sequences.push(seq);
+            }
+
+            if sequences.is_empty() {
+                return Err(DnaError::Decoding("Aucune séquence trouvée".to_string()));
+            }
+
+            // Décoder avec le bon schéma
+            self.decode_with_detected_scheme(&sequences, detected_scheme)
+        })
+    }
+
+    /// Décode avec le schéma détecté
+    fn decode_with_detected_scheme(
+        &self,
+        sequences: &[DnaSequence],
+        scheme: Option<String>,
+    ) -> Result<Vec<u8>> {
+        let scheme = scheme.as_deref().unwrap_or("unknown");
+
+        match scheme {
+            "goldman_2013" => {
+                use crate::codec::goldman_2013::Goldman2013Decoder;
+                let decoder = Goldman2013Decoder::new(crate::sequence::DnaConstraints::default());
+                decoder.decode(sequences)
+            }
+            "grass_2015" => {
+                use crate::codec::grass_2015::Grass2015Decoder;
+                let decoder = Grass2015Decoder::new(crate::sequence::DnaConstraints::default());
+                decoder.decode(sequences)
+            }
+            "fountain" | "erlich_zielinski_2017" | "unknown" => {
+                // Utiliser le décodeur générique pour Fountain et inconnu
+                self.decode(sequences)
+            }
+            _ => {
+                // Schéma non reconnu, tenter le décodage générique
+                self.decode(sequences)
+            }
+        }
     }
 
     /// Décode des séquences ADN en données avec gestion des erreurs améliorée

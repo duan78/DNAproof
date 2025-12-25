@@ -150,6 +150,8 @@ pub struct SequenceMetadata {
     pub checksum: String,
     /// Seed utilisé pour la génération
     pub seed: u64,
+    /// Schéma d'encodage utilisé
+    pub encoding_scheme: String,
 }
 
 impl SequenceMetadata {
@@ -160,6 +162,7 @@ impl SequenceMetadata {
         chunk_index: usize,
         chunk_size: usize,
         seed: u64,
+        encoding_scheme: String,
     ) -> Self {
         // Calcul du ratio GC
         let gc_count = bases.iter().filter(|b| b.is_gc()).count();
@@ -218,6 +221,7 @@ impl SequenceMetadata {
             entropy,
             checksum,
             seed,
+            encoding_scheme,
         }
     }
 }
@@ -339,6 +343,32 @@ impl DnaSequence {
             chunk_index,
             chunk_size,
             seed,
+            "unknown".to_string(), // Default encoding scheme
+        );
+
+        Self {
+            bases,
+            id: SequenceId::generate(),
+            metadata,
+        }
+    }
+
+    /// Crée une nouvelle séquence ADN avec un schéma d'encodage spécifié
+    pub fn with_encoding_scheme(
+        bases: Vec<IupacBase>,
+        original_file: String,
+        chunk_index: usize,
+        chunk_size: usize,
+        seed: u64,
+        encoding_scheme: String,
+    ) -> Self {
+        let metadata = SequenceMetadata::compute(
+            &bases,
+            original_file,
+            chunk_index,
+            chunk_size,
+            seed,
+            encoding_scheme,
         );
 
         Self {
@@ -361,13 +391,66 @@ impl DnaSequence {
     /// Convertit au format FASTA
     pub fn to_fasta(&self) -> String {
         format!(
-            ">{}|seed:{}|gc:{:.2}|len:{}\n{}\n",
+            ">{}|scheme:{}|seed:{}|gc:{:.2}|len:{}\n{}\n",
             self.id,
+            self.metadata.encoding_scheme,
             self.metadata.seed,
             self.metadata.gc_ratio * 100.0,
             self.bases.len(),
             self.to_string()
         )
+    }
+
+    /// Parse une séquence depuis une ligne FASTA
+    pub fn from_fasta(fasta: &str) -> Result<Self> {
+        let lines: Vec<&str> = fasta.trim().lines().collect();
+
+        if lines.is_empty() {
+            return Err(DnaError::Decoding("Fasta vide".to_string()));
+        }
+
+        // Parser l'en-tête
+        let header = lines[0];
+        if !header.starts_with('>') {
+            return Err(DnaError::Decoding("Format FASTA invalide: pas d'en-tête >".to_string()));
+        }
+
+        // Extraire les métadonnées depuis l'en-tête
+        let metadata_parts = header[1..].split('|').collect::<Vec<_>>();
+        let mut scheme = "unknown".to_string();
+        let mut seed = 0u64;
+
+        for part in metadata_parts {
+            if part.contains("scheme:") {
+                scheme = part.split(':').nth(1).unwrap_or("unknown").to_string();
+            } else if part.contains("seed:") {
+                let seed_str = part.split(':').nth(1).unwrap_or("0");
+                seed = seed_str.parse().unwrap_or(0);
+            }
+        }
+
+        // Parser les bases
+        let sequence_data = lines[1..].join("");
+        let bases = sequence_data
+            .chars()
+            .map(|c| IupacBase::from_char(c))
+            .collect::<Result<Vec<IupacBase>>>()?;
+
+        // Créer les métadonnées
+        let metadata = SequenceMetadata::compute(
+            &bases,
+            String::from("fasta"),
+            0,
+            bases.len(),
+            seed,
+            scheme,
+        );
+
+        Ok(Self {
+            bases,
+            id: SequenceId::generate(),
+            metadata,
+        })
     }
 
     /// Retourne la longueur de la séquence
@@ -415,7 +498,7 @@ mod tests {
     #[test]
     fn test_gc_content() {
         let bases = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
-        let metadata = SequenceMetadata::compute(&bases, "test.txt".to_string(), 0, 4, 0);
+        let metadata = SequenceMetadata::compute(&bases, "test.txt".to_string(), 0, 4, 0, "test".to_string());
 
         assert_eq!(metadata.gc_ratio, 0.5);
     }
@@ -429,7 +512,7 @@ mod tests {
             IupacBase::C,
             IupacBase::G,
         ];
-        let metadata = SequenceMetadata::compute(&bases, "test.txt".to_string(), 0, 5, 0);
+        let metadata = SequenceMetadata::compute(&bases, "test.txt".to_string(), 0, 5, 0, "test".to_string());
 
         assert_eq!(metadata.max_homopolymer, 3);
     }

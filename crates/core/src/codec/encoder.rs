@@ -91,6 +91,19 @@ impl Encoder {
         Ok(Self { config })
     }
 
+    /// Retourne le nom du schéma d'encodage actuel
+    fn encoding_scheme_name(&self) -> &'static str {
+        match self.config.encoder_type {
+            EncoderType::Fountain => "fountain",
+            EncoderType::ErlichZielinski2017 => "erlich_zielinski_2017",
+            EncoderType::Goldman2013 => "goldman_2013",
+            EncoderType::Goldman => "goldman",
+            EncoderType::Grass2015 => "grass_2015",
+            EncoderType::Adaptive => "adaptive",
+            EncoderType::Base3 => "base3",
+        }
+    }
+
     /// Encode des données en séquences ADN avec optimisation de performance
     pub fn encode(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
         log_operation!("encode_data", {
@@ -333,12 +346,13 @@ impl Encoder {
             return self.payload_to_dna_with_constraints_retry(payload, seed, constraints);
         }
 
-        let sequence = DnaSequence::new(
+        let sequence = DnaSequence::with_encoding_scheme(
             enforced_bases,
             String::from("ez2017"),
             0,
             payload.len(),
             seed,
+            self.encoding_scheme_name().to_string(),
         );
 
         // Validation finale
@@ -428,12 +442,13 @@ impl Encoder {
             }
 
             // Créer la séquence
-            let sequence = DnaSequence::new(
+            let sequence = DnaSequence::with_encoding_scheme(
                 bases,
                 String::from("ez2017"),
                 0,
                 payload.len(),
                 seed,
+                self.encoding_scheme_name().to_string(),
             );
 
             // Valider
@@ -643,12 +658,13 @@ impl Encoder {
         }
 
         // Créer la séquence avec validation optimisée
-        let sequence = DnaSequence::new(
+        let sequence = DnaSequence::with_encoding_scheme(
             bases,
             String::from("encoded"),
             0,
             payload_len,
             seed,
+            self.encoding_scheme_name().to_string(),
         );
 
         // Valider avec cache
@@ -708,12 +724,13 @@ impl Encoder {
         for (i, chunk) in chunks.iter().enumerate() {
             let bases = self.chunk_to_bases(chunk)?;
 
-            let sequence = DnaSequence::new(
+            let sequence = DnaSequence::with_encoding_scheme(
                 bases,
                 String::from("goldman"),
                 i,
                 chunk.len(),
                 i as u64,
+                self.encoding_scheme_name().to_string(),
             );
 
             // Note: Old Goldman encoder doesn't handle GC/homopolymer constraints

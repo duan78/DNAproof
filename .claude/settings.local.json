@@ -24,7 +24,8 @@
       "Bash(readlink:*)",
       "Bash(ls:*)",
       "Bash(rustc:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(cargo run:*)"
     ]
   }
 }

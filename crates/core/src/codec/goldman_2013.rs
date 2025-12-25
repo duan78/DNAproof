@@ -43,12 +43,13 @@ impl Goldman2013Encoder {
             // 4. Ajouter addressing 4-byte (simplifié pour l'instant)
             let full_sequence = self.add_addressing(bases, idx)?;
 
-            let sequence = DnaSequence::new(
+            let sequence = DnaSequence::with_encoding_scheme(
                 full_sequence,
                 format!("goldman_2013_{}", idx),
                 idx,
                 chunk.len(),
                 idx as u64,
+                "goldman_2013".to_string(),
             );
 
             // Valider les contraintes

@@ -92,12 +92,13 @@ impl Grass2015Encoder {
             bases.push(IupacBase::A); // Padding avec A
         }
 
-        let sequence = DnaSequence::new(
+        let sequence = DnaSequence::with_encoding_scheme(
             bases,
             format!("grass_2015_{}_{}_{}", chunk_idx, block_index, byte_offset),
             chunk_idx,
             1,
             chunk_idx as u64,
+            "grass_2015".to_string(),
         );
 
         // Valider les contraintes
