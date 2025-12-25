@@ -169,10 +169,27 @@ impl DnaConstraintValidator {
         let mut result = Vec::with_capacity(bases.len());
 
         for &base in bases {
-            // Si on ne peut pas ajouter cette base, essayer une alternative
-            if !self.can_append(&result, base) {
-                // Essayer une base alternative
-                let alt_base = self.suggest_base_for_gc(&result).unwrap_or_else(|| {
+            // Calculer le GC ratio actuel
+            let current_gc = self.compute_gc_ratio(&result);
+
+            // Déterminer si on doit forcer un ajustement GC
+            let needs_gc_adjustment = if result.len() > 10 {
+                // Ne commencer à ajuster qu'après avoir assez de bases
+                let target_gc = (self.constraints.gc_min + self.constraints.gc_max) / 2.0;
+                let tolerance = (self.constraints.gc_max - self.constraints.gc_min) / 4.0; // Tolérance quart de la plage
+
+                current_gc < target_gc - tolerance || current_gc > target_gc + tolerance
+            } else {
+                false
+            };
+
+            // Choisir la base appropriée
+            let chosen_base = if needs_gc_adjustment {
+                // Forcer une base qui équilibre le GC
+                self.suggest_base_for_gc(&result).unwrap_or(base)
+            } else if !self.can_append(&result, base) {
+                // Si on ne peut pas ajouter cette base (homopolymer), essayer une alternative
+                self.suggest_base_for_gc(&result).unwrap_or_else(|| {
                     // Choisir une base différente de la dernière
                     match result.last() {
                         Some(IupacBase::A) => IupacBase::C,
@@ -181,23 +198,138 @@ impl DnaConstraintValidator {
                         Some(IupacBase::T) => IupacBase::A,
                         _ => IupacBase::A,
                     }
-                });
+                })
+            } else {
+                base
+            };
 
-                if self.can_append(&result, alt_base) {
-                    result.push(alt_base);
-                } else {
+            // Vérifier qu'on peut ajouter la base choisie
+            if self.can_append(&result, chosen_base) {
+                result.push(chosen_base);
+            } else {
+                // Dernière tentative: cycle through bases jusqu'à trouver une valide
+                let alternatives = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
+                let mut found = false;
+
+                for &alt in &alternatives {
+                    if alt != chosen_base && self.can_append(&result, alt) {
+                        result.push(alt);
+                        found = true;
+                        break;
+                    }
+                }
+
+                if !found {
                     return Err(DnaError::ConstraintViolation(
                         "Impossible de satisfaire les contraintes".to_string(),
                     ));
                 }
-            } else {
-                result.push(base);
             }
         }
 
-        // Vérification finale
+        // Vérification finale et ajustement GC si nécessaire
+        let final_gc = self.compute_gc_ratio(&result);
+
+        // Si le GC final est hors limites, essayer de corriger en remplaçant certaines bases
+        if final_gc < self.constraints.gc_min || final_gc > self.constraints.gc_max {
+            return self.enforce_gc_with_retry(&result, bases);
+        }
+
         self.validate_sequence(&result)?;
         Ok(result)
+    }
+
+    /// Corrige le GC content en remplaçant stratégiquement certaines bases
+    fn enforce_gc_with_retry(&self, result: &[IupacBase], original: &[IupacBase]) -> Result<Vec<IupacBase>> {
+        let mut corrected = result.to_vec();
+        let current_gc = self.compute_gc_ratio(&corrected);
+
+        // Déterminer si on a trop ou pas assez de GC
+        let needs_more_gc = current_gc < self.constraints.gc_min;
+        let target_ratio = (self.constraints.gc_min + self.constraints.gc_max) / 2.0;
+
+        // Identifier les positions candidates pour remplacement
+        // On cherche des bases qu'on peut changer sans affecter les homopolymères
+        let mut replacement_candidates = Vec::new();
+
+        for i in 0..corrected.len() {
+            let base = corrected[i];
+
+            // Vérifier qu'on peut changer cette base sans créer d'homopolymer
+            let can_replace = if i > 0 && corrected[i - 1] == base {
+                false
+            } else if i < corrected.len() - 1 && corrected[i + 1] == base {
+                false
+            } else {
+                true
+            };
+
+            if can_replace {
+                replacement_candidates.push(i);
+            }
+        }
+
+        // Mélanger les candidats pour remplacement aléatoire
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        replacement_candidates.shuffle(&mut rng);
+
+        // Remplacer des bases jusqu'à atteindre le target GC
+        let max_replacements = (corrected.len() / 10).max(5); // Max 10% des bases
+        let mut replacements = 0;
+
+        for &idx in &replacement_candidates {
+            if replacements >= max_replacements {
+                break;
+            }
+
+            let test_gc = self.compute_gc_ratio(&corrected);
+
+            if (test_gc >= self.constraints.gc_min && test_gc <= self.constraints.gc_max)
+                || (test_gc - target_ratio).abs() < 0.01 {
+                // GC est bon, on arrête
+                break;
+            }
+
+            let old_base = corrected[idx];
+            let needs_gc_now = self.compute_gc_ratio(&corrected) < target_ratio;
+
+            // Choisir une base de remplacement
+            let new_base = if needs_gc_now {
+                // Besoin de GC, choisir G ou C
+                if idx > 0 && corrected[idx - 1] != IupacBase::G {
+                    IupacBase::G
+                } else {
+                    IupacBase::C
+                }
+            } else {
+                // Besoin de AT, choisir A ou T
+                if idx > 0 && corrected[idx - 1] != IupacBase::A {
+                    IupacBase::A
+                } else {
+                    IupacBase::T
+                }
+            };
+
+            // Vérifier que le remplacement ne crée pas d'homopolymer
+            let valid_replacement = if idx > 0 && corrected[idx - 1] == new_base {
+                false
+            } else if idx < corrected.len() - 1 && corrected[idx + 1] == new_base {
+                false
+            } else {
+                true
+            };
+
+            if valid_replacement && new_base != old_base {
+                corrected[idx] = new_base;
+                replacements += 1;
+            }
+        }
+
+        // Validation finale
+        self.validate_sequence(&corrected)?;
+
+        Ok(corrected)
     }
 }
 

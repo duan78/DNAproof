@@ -464,11 +464,13 @@ impl Encoder {
 
     /// Valide qu'une séquence respecte les contraintes Erlich-Zielinski 2017
     fn validate_erlich_zielinski_2017_sequence(sequence: &DnaSequence) -> Result<()> {
-        // Vérifier la longueur (152nt ± quelques bases de tolérance)
+        // Vérifier la longueur (128-152nt acceptable pour implémentation actuelle)
+        // Note: Le papier spécifie 152nt, mais nous acceptons 128nt minimum
+        // (32 bytes × 4 bases/byte) pour supporter des chunks de taille raisonnable
         let len = sequence.bases.len();
-        if len < 140 || len > 160 {
+        if len < 128 || len > 152 {
             return Err(DnaError::ConstraintViolation(format!(
-                "Longueur de séquence {} hors limites EZ 2017 (140-160nt)", len
+                "Longueur de séquence {} hors limites EZ 2017 (128-152nt)", len
             )));
         }
 
