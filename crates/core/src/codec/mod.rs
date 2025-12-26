@@ -13,6 +13,9 @@ pub mod gc_optimizer;
 pub mod enhanced_reed_solomon;
 pub mod enhanced_gc_aware;
 pub mod ultimate;
+pub mod concatenated;
+pub mod dictionary;
+pub mod ldpc;
 
 pub use encoder::{Encoder, EncoderConfig, EncoderType};
 pub use decoder::{Decoder, DecoderConfig};
@@ -27,6 +30,9 @@ pub use gc_optimizer::GcOptimizer;
 pub use enhanced_reed_solomon::EnhancedReedSolomonCodec;
 pub use enhanced_gc_aware::{EnhancedGcAwareEncoder, EnhancedGcAwareDecoder};
 pub use ultimate::{UltimateEncoder, UltimateDecoder, UltimateCodec, UltimateEncoderConfig};
+pub use concatenated::{ConcatenatedCodec, ConvolutionalCodec};
+pub use dictionary::{DictionaryCompressor, SequenceDictionaryCompressor, DictionaryStats};
+pub use ldpc::{LdpcCodec, SparseMatrix};
 
 use crate::error::Result;
 use crate::sequence::DnaSequence;
