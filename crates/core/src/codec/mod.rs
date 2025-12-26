@@ -7,6 +7,12 @@ pub mod goldman_2013;
 pub mod grass_2015;
 pub mod gc_aware_encoding;
 pub mod huffman;
+pub mod spreading;
+pub mod adaptive;
+pub mod gc_optimizer;
+pub mod enhanced_reed_solomon;
+pub mod enhanced_gc_aware;
+pub mod ultimate;
 
 pub use encoder::{Encoder, EncoderConfig, EncoderType};
 pub use decoder::{Decoder, DecoderConfig};
@@ -15,6 +21,12 @@ pub use goldman_2013::{Goldman2013Encoder, Goldman2013Decoder};
 pub use grass_2015::{Grass2015Encoder, Grass2015Decoder};
 pub use gc_aware_encoding::{GcAwareEncoder, GcAwareDecoder};
 pub use huffman::{HuffmanCompressor, DnaHuffmanCompressor};
+pub use spreading::SpreadingCode;
+pub use adaptive::{AdaptiveEncoder, DataType, DataAnalyzer};
+pub use gc_optimizer::GcOptimizer;
+pub use enhanced_reed_solomon::EnhancedReedSolomonCodec;
+pub use enhanced_gc_aware::{EnhancedGcAwareEncoder, EnhancedGcAwareDecoder};
+pub use ultimate::{UltimateEncoder, UltimateDecoder, UltimateCodec, UltimateEncoderConfig};
 
 use crate::error::Result;
 use crate::sequence::DnaSequence;
