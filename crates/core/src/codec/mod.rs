@@ -6,6 +6,7 @@ pub mod reed_solomon;
 pub mod goldman_2013;
 pub mod grass_2015;
 pub mod gc_aware_encoding;
+pub mod huffman;
 
 pub use encoder::{Encoder, EncoderConfig, EncoderType};
 pub use decoder::{Decoder, DecoderConfig};
@@ -13,6 +14,7 @@ pub use reed_solomon::ReedSolomonCodec;
 pub use goldman_2013::{Goldman2013Encoder, Goldman2013Decoder};
 pub use grass_2015::{Grass2015Encoder, Grass2015Decoder};
 pub use gc_aware_encoding::{GcAwareEncoder, GcAwareDecoder};
+pub use huffman::{HuffmanCompressor, DnaHuffmanCompressor};
 
 use crate::error::Result;
 use crate::sequence::DnaSequence;

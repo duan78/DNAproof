@@ -121,6 +121,7 @@ async fn main() -> std::io::Result<()> {
             .service(routes::encode_page)
             .service(routes::decode_page)
             .service(routes::api_encode)
+            .service(routes::api_encode_stream)
             .service(routes::api_decode)
             .service(routes::job_status)
             .service(routes::download_result)

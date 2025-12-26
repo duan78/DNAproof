@@ -110,7 +110,8 @@ impl DnaPool {
 
     /// Sauvegarde le pool sur disque
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self.sequences)?;
+        let json = serde_json::to_string_pretty(&self.sequences)
+            .map_err(|e| adn_core::error::DnaError::Serialization(e.to_string()))?;
         std::fs::write(path, json)?;
         Ok(())
     }
@@ -118,7 +119,8 @@ impl DnaPool {
     /// Charge un pool depuis disque
     pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let json = std::fs::read_to_string(path)?;
-        let sequences: HashMap<String, DnaSequence> = serde_json::from_str(&json)?;
+        let sequences: HashMap<String, DnaSequence> = serde_json::from_str(&json)
+            .map_err(|e| adn_core::error::DnaError::Serialization(e.to_string()))?;
 
         self.sequences = sequences;
 

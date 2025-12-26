@@ -29,7 +29,7 @@ pub enum DnaError {
     Io(#[from] std::io::Error),
 
     #[error("Erreur de sérialisation: {0}")]
-    Serialization(#[from] serde_json::Error),
+    Serialization(String),
 
     #[error("Erreur d'encodage: {0}")]
     Encoding(String),

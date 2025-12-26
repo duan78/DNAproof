@@ -9,6 +9,9 @@ use chrono::Utc;
 
 use crate::models::{AppState, EncodeResponse, DecodeResponse, JobStatus, ErrorResponse};
 
+pub mod streaming_routes;
+pub use streaming_routes::api_encode_stream;
+
 /// Route pour la page d'accueil
 #[get("/")]
 pub async fn index(data: web::Data<AppState>) -> impl Responder {

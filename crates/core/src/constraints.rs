@@ -29,6 +29,16 @@ pub struct DnaConstraintValidator {
     constraints: DnaConstraints,
 }
 
+/// Validateur de contraintes ADN avec calculs incrémentaux
+pub struct IncrementalConstraintValidator {
+    constraints: DnaConstraints,
+    // État pour les calculs incrémentaux
+    gc_count: usize,
+    total_count: usize,
+    current_homopolymer_run: usize,
+    last_base: Option<IupacBase>,
+}
+
 impl DnaConstraintValidator {
     /// Crée un nouveau validateur avec les contraintes par défaut
     pub fn new() -> Self {
@@ -328,6 +338,160 @@ impl Default for DnaConstraintValidator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl IncrementalConstraintValidator {
+    /// Crée un nouveau validateur incrémental avec les contraintes par défaut
+    pub fn new() -> Self {
+        Self {
+            constraints: DnaConstraints::default(),
+            gc_count: 0,
+            total_count: 0,
+            current_homopolymer_run: 0,
+            last_base: None,
+        }
+    }
+
+    /// Crée un validateur incrémental avec des contraintes personnalisées
+    pub fn with_constraints(constraints: DnaConstraints) -> Self {
+        Self {
+            constraints,
+            gc_count: 0,
+            total_count: 0,
+            current_homopolymer_run: 0,
+            last_base: None,
+        }
+    }
+
+    /// Retourne les contraintes actuelles
+    pub fn constraints(&self) -> &DnaConstraints {
+        &self.constraints
+    }
+
+    /// Réinitialise l'état incrémental
+    pub fn reset(&mut self) {
+        self.gc_count = 0;
+        self.total_count = 0;
+        self.current_homopolymer_run = 0;
+        self.last_base = None;
+    }
+
+    /// Ajoute une base et met à jour les statistiques incrémentales
+    pub fn add_base(&mut self, base: IupacBase) -> Result<()> {
+        // Mettre à jour le compteur GC
+        if base.is_gc() {
+            self.gc_count += 1;
+        }
+        self.total_count += 1;
+
+        // Mettre à jour l'homopolymer
+        if let Some(last_base) = self.last_base {
+            if last_base == base {
+                self.current_homopolymer_run += 1;
+                
+                // Vérifier la contrainte d'homopolymer
+                if self.current_homopolymer_run > self.constraints.max_homopolymer {
+                    return Err(DnaError::HomopolymerRun {
+                        base: base.as_char(),
+                        count: self.current_homopolymer_run,
+                    });
+                }
+            } else {
+                self.current_homopolymer_run = 1;
+            }
+        } else {
+            self.current_homopolymer_run = 1;
+        }
+        self.last_base = Some(base);
+
+        // Vérifier la contrainte de longueur
+        if self.total_count > self.constraints.max_sequence_length {
+            return Err(DnaError::SequenceTooLong {
+                len: self.total_count,
+                max: self.constraints.max_sequence_length,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Calcule le ratio GC actuel
+    pub fn current_gc_ratio(&self) -> f64 {
+        if self.total_count == 0 {
+            0.5 // Valeur par défaut pour éviter la division par zéro
+        } else {
+            self.gc_count as f64 / self.total_count as f64
+        }
+    }
+
+    /// Vérifie si le ratio GC actuel est dans les limites
+    pub fn check_gc_constraint(&self) -> Result<()> {
+        let gc_ratio = self.current_gc_ratio();
+        if gc_ratio < self.constraints.gc_min || gc_ratio > self.constraints.gc_max {
+            return Err(DnaError::GcContentOutOfRange {
+                gc: gc_ratio,
+                min: self.constraints.gc_min,
+                max: self.constraints.gc_max,
+            });
+        }
+        Ok(())
+    }
+
+    /// Valide la séquence complète avec l'état actuel
+    pub fn validate_current(&self) -> Result<()> {
+        // Vérifier le ratio GC
+        self.check_gc_constraint()?;
+
+        // Vérifier la longueur
+        if self.total_count > self.constraints.max_sequence_length {
+            return Err(DnaError::SequenceTooLong {
+                len: self.total_count,
+                max: self.constraints.max_sequence_length,
+            });
+        }
+
+        // Vérifier l'homopolymer (déjà vérifié dans add_base)
+        if self.current_homopolymer_run > self.constraints.max_homopolymer {
+            return Err(DnaError::HomopolymerRun {
+                base: self.last_base.unwrap().as_char(),
+                count: self.current_homopolymer_run,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Valide une séquence complète en utilisant l'approche incrémentale
+    pub fn validate_sequence_incremental(&mut self, bases: &[IupacBase]) -> Result<()> {
+        self.reset();
+        
+        for &base in bases {
+            self.add_base(base)?;
+        }
+        
+        self.validate_current()
+    }
+
+    /// Retourne les statistiques actuelles
+    pub fn current_stats(&self) -> IncrementalStats {
+        IncrementalStats {
+            total_bases: self.total_count,
+            gc_count: self.gc_count,
+            gc_ratio: self.current_gc_ratio(),
+            current_homopolymer_run: self.current_homopolymer_run,
+            max_homopolymer_run: self.current_homopolymer_run, // Note: cela ne suit que le run actuel
+        }
+    }
+}
+
+/// Statistiques incrémentales
+#[derive(Debug, Clone)]
+pub struct IncrementalStats {
+    pub total_bases: usize,
+    pub gc_count: usize,
+    pub gc_ratio: f64,
+    pub current_homopolymer_run: usize,
+    pub max_homopolymer_run: usize,
 }
 
 /// Checker de contraintes (version simplifiée)
