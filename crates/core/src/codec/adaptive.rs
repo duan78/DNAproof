@@ -8,7 +8,6 @@ use crate::sequence::{DnaSequence, DnaConstraints};
 use crate::codec::reed_solomon::ReedSolomonCodec;
 use crate::codec::gc_aware_encoding::GcAwareEncoder;
 use crate::codec::huffman::HuffmanCompressor;
-use std::collections::HashMap;
 
 /// Type de données détecté
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

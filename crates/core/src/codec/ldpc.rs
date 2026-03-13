@@ -9,7 +9,7 @@
 //!
 //! Algorithme : Belief Propagation (Sum-Product Algorithm)
 
-use crate::error::{DnaError, Result};
+use crate::error::Result;
 
 /// Matrice de parité creuse (H matrix)
 ///
@@ -72,24 +72,6 @@ impl SparseMatrix {
     /// Itère sur les lignes
     pub fn iter_rows(&self) -> impl Iterator<Item = &[usize]> {
         self.rows.iter().map(|v| v.as_slice())
-    }
-}
-
-/// Message dans le belief propagation
-#[derive(Debug, Clone, Copy)]
-struct LrpMessage {
-    /// Log-likelihood ratio
-    llr: f64,
-}
-
-impl LrpMessage {
-    fn new(llr: f64) -> Self {
-        Self { llr }
-    }
-
-    /// Box function (tanh pour LRP)
-    fn box_function(&self) -> f64 {
-        self.llr.tanh()
     }
 }
 
@@ -202,7 +184,7 @@ impl LdpcCodec {
         let decoded_bits = self.hard_decision(&llr);
 
         // Retirer les bits de parité (garder seulement les données)
-        let data_len = (decoded_bits.len() * 4) / 5; // Estimation
+        // On garde 80% des bits (les 20% restants sont la parité)
         let data_bits = &decoded_bits[..decoded_bits.len().saturating_sub(decoded_bits.len() / 5)];
 
         Ok(self.bits_to_bytes(data_bits))
@@ -453,7 +435,7 @@ mod tests {
         }
 
         // Vérifier que c'est un mot de code valide
-        let result = codec.check_codeword(&llr);
+        let _result = codec.check_codeword(&llr);
         // Le résultat dépend de la matrice H, on ne fait pas d'assertion stricte
     }
 }

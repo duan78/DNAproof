@@ -4,8 +4,7 @@
 //! les contraintes GC, en utilisant la programmation dynamique pour explorer
 //! tous les chemins possibles.
 
-use crate::error::{DnaError, Result};
-use crate::sequence::{DnaConstraints, IupacBase};
+use crate::sequence::IupacBase;
 use std::collections::{HashMap, HashSet, BinaryHeap};
 
 /// État pour la programmation dynamique

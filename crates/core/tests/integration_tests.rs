@@ -1,7 +1,7 @@
 //! Tests d'intégration pour ADN Core
 
 use adn_core::{Encoder, Decoder, EncoderConfig, DecoderConfig, DnaSequence, DnaConstraints, IupacBase};
-use adn_core::codec::{EncoderType, encoder::CompressionType};
+use adn_core::codec::EncoderType;
 use std::time::Instant;
 
 /// Helper function to create lenient constraints for testing
@@ -103,7 +103,7 @@ fn test_multiple_roundtrips() {
 
 #[test]
 fn test_sequence_validation() {
-    let mut valid_sequence = DnaSequence::new(
+    let valid_sequence = DnaSequence::new(
         vec![
             adn_core::IupacBase::A,
             adn_core::IupacBase::C,

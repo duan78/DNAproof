@@ -3,7 +3,7 @@
 //! Ce module étend Reed-Solomon avec un code d'étalement pour protéger
 //! contre les burst errors courants dans le séquençage ADN.
 
-use crate::error::{DnaError, Result};
+use crate::error::Result;
 use crate::codec::reed_solomon::ReedSolomonCodec;
 use crate::codec::spreading::SpreadingCode;
 

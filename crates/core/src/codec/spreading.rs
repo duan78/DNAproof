@@ -6,7 +6,6 @@
 //!
 //! Principe: Matrix interleaving - écrire en colonnes, lire en lignes
 
-use crate::error::{DnaError, Result};
 
 /// Code d'étalement pour protéger contre les burst errors
 pub struct SpreadingCode {
@@ -41,7 +40,7 @@ impl SpreadingCode {
     /// # Exemple
     /// Entrée: [1, 2, 3, 4, 5, 6, 7, 8, 9] avec block_size=4
     /// Matrix 4x4 (9 éléments, donc partiellement remplie):
-    /// ```
+    /// ```text
     /// 1  5  9  -
     /// 2  6  -  -
     /// 3  7  -  -
@@ -98,29 +97,20 @@ impl SpreadingCode {
         }
 
         let block_size = self.block_size;
-
-        // Calculer les dimensions
         let num_cols = (data.len() + block_size - 1) / block_size;
-        let num_rows = block_size;
 
-        // Recréer la matrice comme dans interleave
-        let mut matrix = vec![0u8; num_rows * num_cols];
+        // Le résultat a la même taille que l'entrée
+        let mut result = vec![0u8; data.len()];
 
-        // Remplir la matrice comme lors de l'interleave (par lignes)
-        for (i, &byte) in data.iter().enumerate() {
-            matrix[i] = byte;
-        }
-
-        // Lire par colonnes (l'inverse de l'écriture par colonnes dans interleave)
-        let mut result = Vec::with_capacity(data.len());
-        for col in 0..num_cols {
-            for row in 0..num_rows {
+        // Parcourir dans le même ordre que interleave lit les données
+        // (par lignes), et placer chaque byte à sa position originale
+        let mut read_idx = 0;
+        for row in 0..block_size {
+            for col in 0..num_cols {
                 let original_pos = col * block_size + row;
-                if original_pos < data.len() {
-                    let idx = row * num_cols + col;
-                    if idx < data.len() {
-                        result.push(matrix[idx]);
-                    }
+                if original_pos < data.len() && read_idx < data.len() {
+                    result[original_pos] = data[read_idx];
+                    read_idx += 1;
                 }
             }
         }
@@ -145,7 +135,7 @@ impl SpreadingCode {
 
 impl Default for SpreadingCode {
     fn default() -> Self {
-        Self::default()
+        Self::new(32)
     }
 }
 
@@ -184,7 +174,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TODO: Fix deinterleave for non-block-aligned data
     fn test_interleave_non_multiple_block_size() {
         let spreading = SpreadingCode::new(4);
 

@@ -7,8 +7,8 @@
 //! - GC-aware encoding avec padding optimal
 
 use crate::error::{DnaError, Result};
-use crate::sequence::{DnaSequence, DnaConstraints, IupacBase};
-use crate::codec::adaptive::{AdaptiveEncoder, DataAnalyzer, CompressionMethod, DataType};
+use crate::sequence::{DnaSequence, DnaConstraints};
+use crate::codec::adaptive::{AdaptiveEncoder, CompressionMethod};
 use crate::codec::enhanced_reed_solomon::EnhancedReedSolomonCodec;
 use crate::codec::enhanced_gc_aware::{EnhancedGcAwareEncoder, EnhancedGcAwareDecoder};
 
@@ -155,6 +155,11 @@ impl UltimateEncoder {
         &self.config
     }
 
+    /// Retourne les contraintes ADN utilisées
+    pub fn constraints(&self) -> &DnaConstraints {
+        &self.constraints
+    }
+
     /// Analyse les données et retourne un rapport
     pub fn analyze_data(&self, data: &[u8]) -> Result<String> {
         if let Some(adaptive) = &self.adaptive_encoder {
@@ -206,6 +211,11 @@ impl UltimateDecoder {
         let decoded = self.rs_codec.decode(&chunks)?;
 
         Ok(decoded)
+    }
+
+    /// Retourne les contraintes ADN utilisées
+    pub fn constraints(&self) -> &DnaConstraints {
+        &self.constraints
     }
 }
 
@@ -259,6 +269,7 @@ impl UltimateCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sequence::IupacBase;
 
     #[test]
     fn test_ultimate_codec_roundtrip() {
