@@ -42,24 +42,37 @@ impl Grass2015Encoder {
         let mut sequences = Vec::new();
 
         // 1. Apply Reed-Solomon encoding to the data
+        // Format: [4-byte length prefix][RS blocks of 255 bytes each]
         let encoded_data = self.rs_codec.encode(data)?;
 
-        // 2. The encoded data consists of 255-byte blocks (223 data + 32 ECC)
-        // Each block becomes multiple sequences
+        // 2. The encoded data consists of 4-byte length prefix + 255-byte blocks
         let block_size = 255; // RS(255, 223) block size
 
+        // 3. Encode the 4-byte length prefix first
+        // Use bit_offset = 1 as a marker to distinguish from data bytes
+        for (byte_offset, &byte_value) in encoded_data[0..4].iter().enumerate() {
+            let seq = self.create_sequence_with_addressing(
+                byte_offset as u32,
+                1, // bit_offset = 1 marks this as length prefix data
+                0, // block_index = 0 for length prefix
+                byte_value,
+                0,
+            )?;
+            sequences.push(seq);
+        }
+
+        // 4. Encode the RS blocks (starting from offset 4)
         for (block_idx, rs_block) in encoded_data[4..].chunks(block_size).enumerate() {
-            // Skip the 4-byte length prefix at the start
             if rs_block.len() < block_size {
                 break; // Incomplete block, skip
             }
 
-            // 3. Create sequences for this RS block
+            // Create sequences for this RS block
             // Grass 2015 uses byte-level addressing within each block
             for (byte_offset, &byte_value) in rs_block.iter().enumerate() {
                 let seq = self.create_sequence_with_addressing(
                     byte_offset as u32,
-                    0, // bit_offset is 0 for byte-level addressing
+                    0, // bit_offset = 0 for data bytes
                     block_idx as u16,
                     byte_value,
                     block_idx,
@@ -191,27 +204,23 @@ impl Grass2015Decoder {
 
         // 1. Parse sequences and group by block_index
         let mut blocks: HashMap<u16, HashMap<u32, u8>> = HashMap::new();
-        let mut original_len_bytes: Option<[u8; 4]> = None;
+        let mut original_len_bytes: [u8; 4] = [0u8; 4];
 
         for seq in sequences {
-            let (block_index, byte_offset, _bit_offset, data_byte) = self.parse_sequence(seq)?;
+            let (block_index, byte_offset, bit_offset, data_byte) = self.parse_sequence(seq)?;
 
-            // The first 4 bytes (offsets 0-3 in block 0) contain the original length
-            if block_index == 0 && byte_offset < 4 {
-                if original_len_bytes.is_none() {
-                    original_len_bytes = Some([0u8; 4]);
-                }
-                if let Some(ref mut len_bytes) = original_len_bytes {
-                    len_bytes[byte_offset as usize] = data_byte;
-                }
+            // bit_offset = 1 marks the 4-byte length prefix
+            if bit_offset == 1 && byte_offset < 4 {
+                original_len_bytes[byte_offset as usize] = data_byte;
+            } else if bit_offset == 0 {
+                // Regular data block
+                blocks.entry(block_index)
+                    .or_default()
+                    .insert(byte_offset, data_byte);
             }
-
-            blocks.entry(block_index)
-                .or_default()
-                .insert(byte_offset, data_byte);
         }
 
-        // 2. Reassemble RS blocks
+        // 2. Find the maximum block index
         let mut max_block_idx = 0u16;
         for &block_idx in blocks.keys() {
             max_block_idx = max_block_idx.max(block_idx);
@@ -221,13 +230,7 @@ impl Grass2015Decoder {
         let mut encoded_data = Vec::with_capacity(4 + (max_block_idx as usize + 1) * block_size);
 
         // Add length prefix
-        if let Some(len_bytes) = original_len_bytes {
-            encoded_data.extend_from_slice(&len_bytes);
-        } else {
-            // Fallback: reconstruct length from number of sequences
-            let estimated_len = sequences.len();
-            encoded_data.extend_from_slice(&(estimated_len as u32).to_be_bytes());
-        }
+        encoded_data.extend_from_slice(&original_len_bytes);
 
         // Reconstruct each block completely
         for block_idx in 0..=max_block_idx {

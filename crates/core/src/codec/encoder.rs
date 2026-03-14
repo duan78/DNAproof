@@ -527,36 +527,48 @@ impl Encoder {
         current: &[IupacBase],
         _rng: &mut ChaCha8Rng,
     ) -> Result<IupacBase> {
+        let validator = crate::constraints::DnaConstraintValidator::with_constraints(
+            self.config.constraints.clone(),
+        );
+
         let bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
 
-        // Essayer d'abord la base préférée
+        // Calculate current GC ratio
+        let gc_ratio = if current.is_empty() {
+            0.5
+        } else {
+            current.iter().filter(|b| b.is_gc()).count() as f64 / current.len() as f64
+        };
+
+        let target_gc = (self.config.constraints.gc_min + self.config.constraints.gc_max) / 2.0;
+
+        // First, try bases that improve GC balance and can be appended
         for &base in &bases {
             if base == preferred {
                 continue;
             }
 
-            let gc_ratio = if current.is_empty() {
-                0.5
-            } else {
-                current.iter().filter(|b| b.is_gc()).count() as f64 / current.len() as f64
-            };
-
-            // Vérifier si cette base nous rapproche du GC cible
-            let target_gc = (self.config.constraints.gc_min + self.config.constraints.gc_max) / 2.0;
-
             let is_gc = base.is_gc();
             let improves_gc = (gc_ratio < target_gc && is_gc) || (gc_ratio > target_gc && !is_gc);
 
-            if improves_gc && self.config.constraints.validate(&[base]).is_ok() {
+            if improves_gc && validator.can_append(current, base) {
                 return Ok(base);
             }
         }
 
-        // Fallback: première base valide
-        for base in bases {
-            if self.config.constraints.validate(&[base]).is_ok() {
+        // Fallback: any base that can be appended (ignoring GC improvement)
+        for &base in &bases {
+            if base == preferred {
+                continue;
+            }
+            if validator.can_append(current, base) {
                 return Ok(base);
             }
+        }
+
+        // Last resort: even the preferred base if it can be appended
+        if validator.can_append(current, preferred) {
+            return Ok(preferred);
         }
 
         Err(DnaError::ConstraintViolation(

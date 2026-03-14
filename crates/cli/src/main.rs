@@ -62,7 +62,7 @@ enum Commands {
         output: PathBuf,
 
         /// Ignorer les erreurs de checksum
-        #[arg(short, long)]
+        #[arg(short = 'k', long)]
         ignore_checksum: bool,
     },
 

@@ -40,11 +40,31 @@ pub fn run(
     };
 
     // Use lenient constraints for algorithms that don't enforce GC/homopolymer limits
+    // Each algorithm has different requirements:
+    // - Grass2015: Uses padding that may not meet strict GC constraints
+    // - Goldman2013: Uses rotation but may produce sequences outside 40-60% GC
+    // - Fountain: May fail to find valid bases with strict constraints
+    // - Adaptive: Falls back to Fountain
+    // - Goldman (legacy): Simple encoding without GC optimization
     let constraints = match algorithm {
         EncodingAlgorithm::Grass2015 => DnaConstraints {
             gc_min: 0.0,
             gc_max: 1.0,
             max_homopolymer: 150,
+            max_sequence_length: 200,
+            allowed_bases: vec![adn_core::IupacBase::A, adn_core::IupacBase::C, adn_core::IupacBase::G, adn_core::IupacBase::T],
+        },
+        EncodingAlgorithm::Goldman2013 | EncodingAlgorithm::Goldman => DnaConstraints {
+            gc_min: 0.20,  // More lenient for Goldman's rotation-based encoding
+            gc_max: 0.80,
+            max_homopolymer: 6,
+            max_sequence_length: 200,
+            allowed_bases: vec![adn_core::IupacBase::A, adn_core::IupacBase::C, adn_core::IupacBase::G, adn_core::IupacBase::T],
+        },
+        EncodingAlgorithm::Fountain | EncodingAlgorithm::Adaptive => DnaConstraints {
+            gc_min: 0.20,  // More lenient for Fountain codes
+            gc_max: 0.80,
+            max_homopolymer: 6,
             max_sequence_length: 200,
             allowed_bases: vec![adn_core::IupacBase::A, adn_core::IupacBase::C, adn_core::IupacBase::G, adn_core::IupacBase::T],
         },
