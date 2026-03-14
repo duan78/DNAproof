@@ -96,12 +96,12 @@ impl Grass2015Encoder {
     ) -> Result<DnaSequence> {
         let mut bases = Vec::with_capacity(self.sequence_length);
 
-        // 1. Addressing 3-segments (9 bases total)
-        // byte_offset (4 bytes = 32 bits) → 4 bases avec rotation
+        // 1. Addressing 3-segments (14 bases total)
+        // byte_offset (4 bases = 8 bits = 0-255) for position within RS block
         let addr1 = self.encode_address_value(byte_offset, 0)?;
-        // bit_offset (1 byte = 8 bits) → 2 bases
+        // bit_offset (2 bases = 4 bits) - used as marker (0=data, 1=length prefix)
         let addr2 = self.encode_address_value(bit_offset as u32, 4)?;
-        // block_index (2 bytes = 16 bits) → 3 bases
+        // block_index (8 bases = 16 bits = 0-65535) for up to 65536 RS blocks (~16MB)
         let addr3 = self.encode_address_value(block_index as u32, 6)?;
 
         bases.extend_from_slice(&addr1);
@@ -142,9 +142,9 @@ impl Grass2015Encoder {
     /// Encode une valeur d'adressage sur n bases avec rotation
     fn encode_address_value(&self, value: u32, start_rotation: usize) -> Result<Vec<IupacBase>> {
         let num_bases = match start_rotation {
-            0 => 4,  // byte_offset
-            4 => 2,  // bit_offset
-            6 => 3,  // block_index
+            0 => 4,  // byte_offset (8 bits)
+            4 => 2,  // bit_offset (4 bits)
+            6 => 8,  // block_index (16 bits) - supports up to ~16MB files
             _ => return Err(DnaError::Encoding("Invalid start rotation".to_string())),
         };
 
@@ -260,19 +260,19 @@ impl Grass2015Decoder {
     fn parse_sequence(&self, seq: &DnaSequence) -> Result<(u16, u32, u8, u8)> {
         let bases = &seq.bases;
 
-        if bases.len() < 13 {
+        if bases.len() < 18 {
             return Err(DnaError::Decoding("Séquence trop courte".to_string()));
         }
 
-        // 1. Extraire l'addressing (9 premières bases)
+        // 1. Extraire l'addressing (14 premières bases)
+        // byte_offset: 4 bases, bit_offset: 2 bases, block_index: 8 bases
         let byte_offset = self.decode_address_value(&bases[0..4], 0)?;
         let bit_offset = self.decode_address_value(&bases[4..6], 4)? as u8;
-        let block_index = self.decode_address_value(&bases[6..9], 6)? as u16;
+        let block_index = self.decode_address_value(&bases[6..14], 6)? as u16;
 
         // 2. Extraire les données (4 bases après l'addressing)
-        // Les données commencent après l'addressing 9-segment (positions 9-12)
-        let data_bases = &bases[9..13];
-        let data_byte = self.decode_byte_with_rotation(data_bases, 9)?;
+        let data_bases = &bases[14..18];
+        let data_byte = self.decode_byte_with_rotation(data_bases, 14)?;
 
         Ok((block_index, byte_offset, bit_offset, data_byte))
     }
