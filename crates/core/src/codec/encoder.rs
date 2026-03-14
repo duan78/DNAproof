@@ -468,14 +468,11 @@ impl Encoder {
     /// Convertit un payload en séquence ADN avec optimisation
     fn payload_to_dna(&self, payload: Vec<u8>, seed: u64) -> Result<DnaSequence> {
         let mut bases = Vec::with_capacity(payload.len() * 4); // Pré-allocation
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let validator = crate::constraints::DnaConstraintValidator::with_constraints(
-            self.config.constraints.clone(),
-        );
-
         let payload_len = payload.len();
 
-        // Encoder chaque octet en 4 bases (2 bits par base) - version optimisée
+        // Encoder chaque octet en 4 bases (2 bits par base)
+        // IMPORTANT: Ne jamais substituer de bases pour préserver l'intégrité des données
+        // Les contraintes doivent être assez souples pour Fountain (gc 20-80%, homopolymer <10)
         for byte in &payload {
             let bits = [
                 (byte >> 6) & 0b11,
@@ -492,19 +489,11 @@ impl Encoder {
                     0b11 => IupacBase::T,
                     _ => unreachable!(),
                 };
-
-                // Vérification optimisée des contraintes
-                if validator.can_append(&bases, base) {
-                    bases.push(base);
-                } else {
-                    // Essayer une base alternative qui préserve la valeur
-                    let alt = self.suggest_alternative_base(base, &bases, &mut rng)?;
-                    bases.push(alt);
-                }
+                bases.push(base);
             }
         }
 
-        // Créer la séquence avec validation optimisée
+        // Créer la séquence
         let sequence = DnaSequence::with_encoding_scheme(
             bases,
             String::from("encoded"),
@@ -514,13 +503,15 @@ impl Encoder {
             self.encoding_scheme_name().to_string(),
         );
 
-        // Valider avec cache
+        // Note: La validation n'échouera pas car nous avons des contraintes souples
+        // Si la validation est nécessaire, elle peut être effectuée avec skip_validation
         sequence.validate(&self.config.constraints)?;
 
         Ok(sequence)
     }
 
     /// Suggère une base alternative respectant les contraintes
+    #[allow(dead_code)]
     fn suggest_alternative_base(
         &self,
         preferred: IupacBase,

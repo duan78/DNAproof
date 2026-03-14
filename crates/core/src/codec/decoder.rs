@@ -2,6 +2,9 @@
 
 use crate::error::{DnaError, Result};
 use crate::sequence::{DnaSequence, IupacBase};
+use rand::Rng;
+use rand_chacha::ChaCha8Rng;
+use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -132,6 +135,10 @@ impl Decoder {
                 let decoder = Grass2015Decoder::new(crate::sequence::DnaConstraints::default());
                 decoder.decode(sequences)
             }
+            "fountain" => {
+                // Use proper Fountain decoder with LT code belief propagation
+                self.decode_fountain(sequences)
+            }
             "erlich_zielinski_2017" => {
                 // Utiliser le GC-Aware decoder pour EZ 2017
                 use crate::codec::gc_aware_encoding::GcAwareDecoder;
@@ -154,8 +161,8 @@ impl Decoder {
                 }
                 decoder.decode(&sequences[0])
             }
-            "fountain" | "unknown" => {
-                // Utiliser le décodeur générique pour Fountain et inconnu
+            "unknown" => {
+                // Utiliser le décodeur générique pour inconnu
                 self.decode(sequences)
             }
             _ => {
@@ -163,6 +170,163 @@ impl Decoder {
                 self.decode(sequences)
             }
         }
+    }
+
+    /// Decode Fountain-encoded sequences using LT code belief propagation
+    fn decode_fountain(&self, sequences: &[DnaSequence]) -> Result<Vec<u8>> {
+        if sequences.is_empty() {
+            return Err(DnaError::Decoding("Aucune séquence fournie".to_string()));
+        }
+
+        // Step 1: Extract payloads from sequences
+        let mut droplet_data: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut chunk_size = 0;
+
+        for seq in sequences {
+            // Decode DNA to bytes
+            let payload = self.sequence_to_chunk(seq)?;
+            if chunk_size == 0 {
+                chunk_size = payload.len();
+            }
+            droplet_data.push((seq.metadata.seed, payload));
+        }
+
+        // Step 2: Estimate number of chunks
+        let num_droplets = droplet_data.len();
+        let max_seed = droplet_data.iter().map(|(s, _)| *s).max().unwrap_or(0) as usize;
+        let estimated_max_chunks = (max_seed + 1).max(num_droplets);
+
+        // When auto_decompress is enabled, compressed data is almost never 1 chunk
+        let min_chunks = if self.config.auto_decompress { 2 } else { 1 };
+
+        // Try chunk counts from min up to estimated max
+        'outer: for num_chunks_guess in min_chunks..=estimated_max_chunks {
+            let mut decoder = FountainDecoder::new(self.config.clone(), num_chunks_guess, chunk_size);
+
+            for (seed, payload) in &droplet_data {
+                let degree = Self::sample_degree_for_decoding(num_chunks_guess, *seed);
+                let chunk_indices = Self::select_indices_for_decoding(num_chunks_guess, degree, *seed);
+                let droplet = Droplet::new(chunk_indices, payload.clone(), *seed);
+
+                match decoder.add_droplet(droplet)? {
+                    Progress::Complete(data) => {
+                        if self.config.auto_decompress {
+                            // Try decompressing with progressively shorter lengths to handle padding
+                            // Start from current length and work down
+                            for trim_len in (1..=data.len()).rev() {
+                                if let Ok(decompressed) = self.decompress(&data[..trim_len]) {
+                                    // Validate: decompressed data should be different from input
+                                    let input_slice = &data[..trim_len];
+                                    if !decompressed.is_empty() && decompressed != input_slice {
+                                        return Ok(decompressed);
+                                    }
+                                }
+                            }
+                            // All lengths failed, try next num_chunks
+                            continue 'outer;
+                        } else {
+                            return Ok(data);
+                        }
+                    }
+                    Progress::Incomplete => continue,
+                }
+            }
+        }
+
+        // Fallback: try with 1 chunk (uncompressed case)
+        if self.config.auto_decompress {
+            let mut decoder = FountainDecoder::new(self.config.clone(), 1, chunk_size);
+            for (seed, payload) in &droplet_data {
+                let degree = Self::sample_degree_for_decoding(1, *seed);
+                let chunk_indices = Self::select_indices_for_decoding(1, degree, *seed);
+                let droplet = Droplet::new(chunk_indices, payload.clone(), *seed);
+                match decoder.add_droplet(droplet)? {
+                    Progress::Complete(data) => {
+                        if let Ok(decompressed) = self.decompress(&data) {
+                            return Ok(decompressed);
+                        }
+                        return Ok(data);
+                    }
+                    Progress::Incomplete => continue,
+                }
+            }
+        }
+
+        Err(DnaError::Decoding(
+            "Fountain decoding failed: insufficient droplets or incorrect chunk count estimation".to_string()
+        ))
+    }
+
+    /// Sample degree for decoding (matches encoder's distribution exactly)
+    fn sample_degree_for_decoding(num_chunks: usize, seed: u64) -> usize {
+        // Must match encoder's sample_robust_soliton_degree exactly
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+        // Distribution Robust Soliton simplifiée
+        // K = num_chunks, c = 0.1, delta = 0.5
+
+        let k = num_chunks as f64;
+        let c = 0.1;
+        let _delta = 0.5; // Paramètre Robust Soliton (non utilisé dans cette implémentation simplifiée)
+
+        // Tau function - MUST match encoder exactly
+        let tau = |d: f64| -> f64 {
+            if d <= (k / c - 1.0).ceil() {
+                1.0 / (d * c)
+            } else {
+                0.0
+            }
+        };
+
+        // Calculer les poids pour chaque degré possible
+        let mut weights = Vec::with_capacity(num_chunks);
+
+        for d in 1..=num_chunks {
+            let d_float = d as f64;
+            let rho = if d == 1 {
+                1.0 / k
+            } else {
+                1.0 / (d_float * (d_float - 1.0))
+            };
+
+            let weight = rho + tau(d as f64);
+            weights.push(weight);
+        }
+
+        // Normaliser
+        let sum: f64 = weights.iter().sum();
+        for w in weights.iter_mut() {
+            *w /= sum;
+        }
+
+        // Échantillonner
+        let mut cumulative = 0.0;
+        let sample = rng.gen::<f64>();
+
+        for (d, &w) in weights.iter().enumerate() {
+            cumulative += w;
+            if sample <= cumulative {
+                return d + 1; // +1 car les degrés commencent à 1
+            }
+        }
+
+        num_chunks // Fallback
+    }
+
+    /// Select chunk indices for decoding (matches encoder's selection)
+    fn select_indices_for_decoding(num_chunks: usize, degree: usize, seed: u64) -> Vec<usize> {
+        use std::collections::HashSet;
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut indices = HashSet::new();
+
+        while indices.len() < degree {
+            let idx = rng.gen_range(0..num_chunks);
+            indices.insert(idx);
+        }
+
+        let mut result: Vec<usize> = indices.into_iter().collect();
+        result.sort();
+        result
     }
 
     /// Décode des séquences ADN en données avec gestion des erreurs améliorée

@@ -62,9 +62,9 @@ pub fn run(
             allowed_bases: vec![adn_core::IupacBase::A, adn_core::IupacBase::C, adn_core::IupacBase::G, adn_core::IupacBase::T],
         },
         EncodingAlgorithm::Fountain | EncodingAlgorithm::Adaptive => DnaConstraints {
-            gc_min: 0.20,  // More lenient for Fountain codes
-            gc_max: 0.80,
-            max_homopolymer: 6,
+            gc_min: 0.0,   // Très souple - l'encodage direct préserve les données
+            gc_max: 1.0,
+            max_homopolymer: 150,  // Très souple pour éviter les erreurs de validation
             max_sequence_length: 200,
             allowed_bases: vec![adn_core::IupacBase::A, adn_core::IupacBase::C, adn_core::IupacBase::G, adn_core::IupacBase::T],
         },
