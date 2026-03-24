@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(original, recovered);
 
         // Vérifier la taille encodée
-        let expected_blocks = (original.len() + 223 - 1) / 223; // 45 blocs
+        let expected_blocks = original.len().div_ceil(223); // 45 blocs
         let expected_size = 4 + expected_blocks * 255; // 4 + 11475 = 11479 bytes
         assert_eq!(encoded.len(), expected_size);
     }

@@ -399,13 +399,13 @@ impl DnaHuffmanCompressor {
             let code_length = compressed[pos] as usize;
             pos += 1;
             
-            if pos + (code_length + 7) / 8 > compressed.len() {
+            if pos + code_length.div_ceil(8) > compressed.len() {
                 return Err(DnaError::Decoding("Code trop court dans la table".to_string()));
             }
             
             // Lire le code binaire
             let mut code_bits = Vec::new();
-            let code_byte_count = (code_length + 7) / 8;
+            let code_byte_count = code_length.div_ceil(8);
             
             for i in 0..code_byte_count {
                 if pos + i >= compressed.len() {

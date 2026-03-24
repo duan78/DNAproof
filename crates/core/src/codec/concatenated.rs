@@ -67,7 +67,7 @@ impl ConvolutionalCodec {
         }
 
         // Pack bits into bytes
-        let mut output = Vec::with_capacity((output_bits.len() + 7) / 8);
+        let mut output = Vec::with_capacity(output_bits.len().div_ceil(8));
         for chunk in output_bits.chunks(8) {
             let mut byte = 0u8;
             for (i, &bit) in chunk.iter().enumerate() {
@@ -221,7 +221,7 @@ impl ConcatenatedCodec {
 
     /// Convertit un tableau de bits en bytes
     fn bits_to_bytes(&self, bits: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity((bits.len() + 7) / 8);
+        let mut bytes = Vec::with_capacity(bits.len().div_ceil(8));
 
         for chunk in bits.chunks(8) {
             let mut byte = 0u8;

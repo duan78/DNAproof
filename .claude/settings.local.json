@@ -25,7 +25,9 @@
       "Bash(ls:*)",
       "Bash(rustc:*)",
       "Bash(git checkout:*)",
-      "Bash(cargo run:*)"
+      "Bash(cargo run:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(grep -B3 \"manually reimplementing \\\\`div_ceil\\\\`\")"
     ]
   }
 }

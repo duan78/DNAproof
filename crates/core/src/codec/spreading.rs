@@ -26,11 +26,6 @@ impl SpreadingCode {
         Self { block_size }
     }
 
-    /// Crée avec la taille par défaut (32)
-    pub fn default() -> Self {
-        Self::new(32)
-    }
-
     /// Entrelace les données pour distribuer les burst errors
     ///
     /// # Principe
@@ -59,7 +54,7 @@ impl SpreadingCode {
         let block_size = self.block_size;
 
         // Calculer les dimensions de la matrice
-        let num_cols = (data.len() + block_size - 1) / block_size;
+        let num_cols = data.len().div_ceil(block_size);
         let num_rows = block_size;
 
         // Créer une matrice
@@ -97,7 +92,7 @@ impl SpreadingCode {
         }
 
         let block_size = self.block_size;
-        let num_cols = (data.len() + block_size - 1) / block_size;
+        let num_cols = data.len().div_ceil(block_size);
 
         // Le résultat a la même taille que l'entrée
         let mut result = vec![0u8; data.len()];

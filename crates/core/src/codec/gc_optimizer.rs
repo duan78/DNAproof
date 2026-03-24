@@ -7,6 +7,13 @@
 use crate::sequence::IupacBase;
 use std::collections::{HashMap, HashSet, BinaryHeap};
 
+/// Contraintes GC pour l'optimiseur
+#[derive(Debug, Clone, Copy)]
+struct GcConstraints {
+    min: f64,
+    max: f64,
+}
+
 /// État pour la programmation dynamique
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DpState {
@@ -127,13 +134,16 @@ impl GcOptimizer {
         }
 
         // Utiliser l'algorithme de recherche
+        let gc_constraints = GcConstraints {
+            min: target_gc_min,
+            max: target_gc_max,
+        };
         let result = self.find_padding_internal(
             current_bases,
             current_gc_count,
             last_base,
             current_run,
-            target_gc_min,
-            target_gc_max,
+            gc_constraints,
             max_homopolymer,
         );
 
@@ -150,12 +160,11 @@ impl GcOptimizer {
         current_gc_count: usize,
         last_base: IupacBase,
         current_run: usize,
-        target_gc_min: f64,
-        target_gc_max: f64,
+        gc_constraints: GcConstraints,
         max_homopolymer: usize,
     ) -> Option<Vec<IupacBase>> {
         let total_bases = current_bases.len();
-        let _target_gc = (target_gc_min + target_gc_max) / 2.0;
+        let _target_gc = (gc_constraints.min + gc_constraints.max) / 2.0;
 
         // Initialiser la file de priorité avec l'état initial
         let initial_state = DpState {
@@ -184,7 +193,7 @@ impl GcOptimizer {
             let new_total = total_bases + state.pos;
             let current_gc_ratio = state.gc_count as f64 / new_total as f64;
 
-            if current_gc_ratio >= target_gc_min && current_gc_ratio <= target_gc_max {
+            if current_gc_ratio >= gc_constraints.min && current_gc_ratio <= gc_constraints.max {
                 return Some(sequence);
             }
 

@@ -340,6 +340,12 @@ impl Default for DnaConstraintValidator {
     }
 }
 
+impl Default for IncrementalConstraintValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IncrementalConstraintValidator {
     /// Crée un nouveau validateur incrémental avec les contraintes par défaut
     pub fn new() -> Self {

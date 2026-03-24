@@ -12,9 +12,10 @@ use std::collections::HashMap;
 pub use crate::{log_operation, log_error};
 
 /// Type d'algorithme d'encodage
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum EncoderType {
     /// DNA Fountain - LT codes avec distribution robust soliton
+    #[default]
     Fountain,
     /// Erlich-Zielinski 2017 - DNA Fountain avec paramètres validés (Science 2017)
     /// Paramètres: c=0.1, δ=0.5, GC 40-60%, homopolymer <4, 152nt
@@ -29,12 +30,6 @@ pub enum EncoderType {
     Adaptive,
     /// Encodage base-3 optimisé
     Base3,
-}
-
-impl Default for EncoderType {
-    fn default() -> Self {
-        Self::Fountain
-    }
 }
 
 /// Configuration de l'encodeur

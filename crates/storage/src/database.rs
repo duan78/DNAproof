@@ -168,9 +168,9 @@ impl DatabasePool {
                 // Cette méthode retourne SqliteRow pour compatibilité avec SQLite
                 let _rows = sqlx::query(query).fetch_all(pool).await?;
                 // PostgreSQL n'est pas encore supporté pour fetch_all avec SqliteRow
-                return Err(crate::StorageError::DatabaseError(
+                Err(crate::StorageError::DatabaseError(
                     "PostgreSQL fetch_all non supporté - utiliser SQLite pour cette opération".to_string()
-                ));
+                ))
             }
         }
     }

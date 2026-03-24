@@ -72,7 +72,7 @@ impl HybridCache {
         // Créer le répertoire s'il n'existe pas
         if !cache_dir.exists() {
             fs::create_dir_all(&cache_dir)
-                .map_err(|e| crate::error::DnaError::Io(e))?;
+                .map_err(crate::error::DnaError::Io)?;
         }
         
         *dir_guard = Some(cache_dir);
@@ -98,7 +98,7 @@ impl HybridCache {
                     .map_err(|e| crate::error::DnaError::Serialization(e.to_string()))?;
                 
                 fs::write(&file_path, serialized)
-                    .map_err(|e| crate::error::DnaError::Io(e))?;
+                    .map_err(crate::error::DnaError::Io)?;
                 
                 // Vérifier et nettoyer si nécessaire
                 self.cleanup_disk_cache()?;
