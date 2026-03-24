@@ -13,7 +13,7 @@ pub mod performance;
 // Réexportations principales
 pub use error::{DnaError, Result};
 pub use sequence::{DnaSequence, DnaConstraints, IupacBase, SequenceId, SequenceMetadata};
-pub use codec::{Encoder, Decoder, EncoderConfig, DecoderConfig, ReedSolomonCodec};
+pub use codec::{Encoder, Decoder, EncoderConfig, DecoderConfig, ReedSolomonCodec, EncoderType};
 pub use constraints::{ConstraintChecker, DnaConstraintValidator, IncrementalConstraintValidator, IncrementalStats};
 pub use bio::{IlluminaBarcode, IlluminaAdapter, IlluminaSystem, IlluminaConfig, IlluminaValidator, AdapterType, BarcodePosition};
 pub use logging::init_logging;
