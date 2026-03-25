@@ -432,7 +432,7 @@ mod tests {
         test_bases.extend_from_slice(&padding);
 
         let final_gc = optimizer.compute_gc_ratio(&test_bases);
-        assert!(final_gc >= 0.40 && final_gc <= 0.60,
+        assert!((0.40..=0.60).contains(&final_gc),
             "GC final {} devrait être dans [0.40, 0.60]", final_gc);
     }
 

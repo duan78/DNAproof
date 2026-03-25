@@ -74,7 +74,7 @@ fn test_ez2017_gc_content_constraint() {
         let gc_ratio = gc_count as f64 / seq.bases.len() as f64;
 
         assert!(
-            gc_ratio >= 0.40 && gc_ratio <= 0.60,
+            (0.40..=0.60).contains(&gc_ratio),
             "Séquence {} GC ratio {:.2} hors limites 40-60%",
             i, gc_ratio
         );
@@ -137,7 +137,7 @@ fn test_ez2017_sequence_length() {
 
         // Tolérance de ±24nt (128-152nt pour notre implémentation)
         assert!(
-            len >= 128 && len <= 152,
+            (128..=152).contains(&len),
             "Séquence {} longueur {} hors limites EZ 2017 (128-152nt)",
             i, len
         );
@@ -212,7 +212,7 @@ fn test_ez2017_overhead() {
 
     // L'overhead doit être proche de la redondance configurée (1.05)
     assert!(
-        overhead >= 1.0 && overhead <= 1.15,
+        (1.0..=1.15).contains(&overhead),
         "Overhead {:.2} hors de la plage attendue (1.0-1.15)",
         overhead
     );
@@ -288,8 +288,7 @@ fn test_ez2017_droplet_tolerance() {
     // Avec 20% de perte et redundancy=1.3, on devrait encore pouvoir décoder
     // Note: Ce test dépend de l'implémentation du décodeur Fountain
     // Il peut échouer si le décodeur n'est pas encore optimal
-    if result.is_ok() {
-        let decoded = result.unwrap();
+    if let Ok(decoded) = result {
         assert_eq!(original_data.to_vec(), decoded, "Decode failed after droplet loss");
         println!("✓ Successfully decoded with 20% droplet loss");
     } else {

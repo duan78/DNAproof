@@ -454,7 +454,7 @@ mod tests {
         let seq = DnaSequence::new(bases, "test".to_string(), 0, 50, 42);
 
         // Ajouter indexing
-        let indexed = system.add_indexing(&[seq.clone()]).unwrap();
+        let indexed = system.add_indexing(std::slice::from_ref(&seq)).unwrap();
 
         assert!(!indexed.is_empty());
         assert!(indexed[0].bases.len() > seq.bases.len());

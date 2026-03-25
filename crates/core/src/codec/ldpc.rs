@@ -396,11 +396,11 @@ mod tests {
 
         // Les 8 premiers devraient être positifs (bit=0)
         // Les 8 derniers devraient être négatifs (bit=1)
-        for i in 0..8 {
-            assert!(llr[i] > 0.0);
+        for item in llr.iter().take(8) {
+            assert!(*item > 0.0);
         }
-        for i in 8..16 {
-            assert!(llr[i] < 0.0);
+        for item in llr.iter().take(16).skip(8) {
+            assert!(*item < 0.0);
         }
     }
 
@@ -427,11 +427,11 @@ mod tests {
 
         // Créer un LLR qui satisfait H*x=0
         let mut llr = vec![0.0f64; 40];
-        for i in 0..20 {
-            llr[i] = 1.0; // Bits 0
+        for item in llr.iter_mut().take(20) {
+            *item = 1.0; // Bits 0
         }
-        for i in 20..40 {
-            llr[i] = -1.0; // Bits 1
+        for item in llr.iter_mut().take(40).skip(20) {
+            *item = -1.0; // Bits 1
         }
 
         // Vérifier que c'est un mot de code valide

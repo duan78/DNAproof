@@ -213,8 +213,8 @@ mod tests {
 
         // Simuler un burst error sur 4 octets consécutifs
         let mut corrupted = interleaved.clone();
-        for i in 4..8 {
-            corrupted[i] = 0xFF; // Corrompre
+        for item in corrupted.iter_mut().take(8).skip(4) {
+            *item = 0xFF; // Corrompre
         }
 
         let recovered = spreading.deinterleave(&corrupted);

@@ -2,6 +2,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use adn_core::{Encoder, EncoderConfig, EncoderType};
+use adn_core::codec::encoder::CompressionType;
 use std::time::Duration;
 
 fn benchmark_encoding(c: &mut Criterion) {
@@ -160,7 +161,7 @@ fn benchmark_compression(c: &mut Criterion) {
             chunk_size: 32,
             redundancy: 1.5,
             compression_enabled: true,
-            compression_type: adn_core::CompressionType::Lz4,
+            compression_type: CompressionType::Lz4,
             ..Default::default()
         };
 
