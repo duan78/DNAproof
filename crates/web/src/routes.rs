@@ -399,8 +399,10 @@ fn parse_fasta(data: &[u8]) -> Result<Vec<adn_core::DnaSequence>, String> {
     for line in content.lines() {
         if let Some(stripped) = line.strip_prefix('>') {
             // Sauvegarder la séquence précédente
-            if !current_seq.is_empty() && current_id.is_some() {
-                sequences.push(parse_sequence(&current_id.unwrap(), &current_seq)?);
+            if !current_seq.is_empty() {
+                if let Some(id) = &current_id {
+                    sequences.push(parse_sequence(id, &current_seq)?);
+                }
                 current_seq.clear();
             }
             
@@ -412,8 +414,10 @@ fn parse_fasta(data: &[u8]) -> Result<Vec<adn_core::DnaSequence>, String> {
     }
     
     // Sauvegarder la dernière séquence
-    if !current_seq.is_empty() && current_id.is_some() {
-        sequences.push(parse_sequence(&current_id.unwrap(), &current_seq)?);
+    if !current_seq.is_empty() {
+        if let Some(id) = &current_id {
+            sequences.push(parse_sequence(id, &current_seq)?);
+        }
     }
     
     Ok(sequences)
@@ -467,7 +471,6 @@ async fn save_fasta_file(
 }
 
 /// Sauvegarde le résultat décodé
-
 async fn save_decoded_result(
 
     _data: &web::Data<AppState>,

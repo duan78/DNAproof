@@ -5,7 +5,7 @@ use tracing::info;
 use uuid::Uuid;
 use chrono::Utc;
 use futures::{StreamExt, TryStreamExt};
-use std::io::{Error, ErrorKind};
+use std::io::Error;
 
 use crate::models::{AppState, EncodeResponse, JobStatus, ErrorResponse};
 use adn_core::codec::encoder::EncoderType;
@@ -87,7 +87,7 @@ async fn process_streaming_encode(
     
     // Utiliser un buffer pour accumuler les données
     let mut stream = payload
-        .map_err(|e| Error::new(ErrorKind::Other, format!("Erreur de streaming: {}", e)));
+        .map_err(|e| Error::other(format!("Erreur de streaming: {}", e)));
     
     // Lire le stream en chunks
     while let Some(chunk_result) = stream.next().await {
@@ -97,7 +97,7 @@ async fn process_streaming_encode(
                 bytes_received += chunk.len();
                 
                 // Envoyer la progression toutes les 100KB
-                if bytes_received % 102400 == 0 {
+                if bytes_received.is_multiple_of(102400) {
                     if let Some(ref tx) = data.progress_tx {
                         let progress = (bytes_received as f64 / (bytes_received as f64 + chunk.len() as f64)).min(0.9);
                         let _ = tx.send(crate::models::ProgressMessage {
