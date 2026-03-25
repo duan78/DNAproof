@@ -27,7 +27,9 @@
       "Bash(git checkout:*)",
       "Bash(cargo run:*)",
       "Bash(cargo clippy:*)",
-      "Bash(grep -B3 \"manually reimplementing \\\\`div_ceil\\\\`\")"
+      "Bash(grep -B3 \"manually reimplementing \\\\`div_ceil\\\\`\")",
+      "Bash(source \"$HOME/.cargo/env\")",
+      "Bash(cargo --version)"
     ]
   }
 }
