@@ -29,7 +29,9 @@
       "Bash(cargo clippy:*)",
       "Bash(grep -B3 \"manually reimplementing \\\\`div_ceil\\\\`\")",
       "Bash(source \"$HOME/.cargo/env\")",
-      "Bash(cargo --version)"
+      "Bash(cargo --version)",
+      "Bash(source ~/.cargo/env)",
+      "Bash(source ~/.bashrc)"
     ]
   }
 }
