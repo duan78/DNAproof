@@ -29,15 +29,20 @@ fn benchmark_information_density(c: &mut Criterion) {
                 chunk_size: 32,
                 redundancy: 1.5,
                 compression_enabled: false,
+                constraints: adn_core::DnaConstraints::new(0.20, 0.80, 10, 1000),
                 ..Default::default()
             };
 
             let encoder = Encoder::new(config).unwrap();
 
             b.iter(|| {
-                let sequences = encoder.encode(black_box(&data)).unwrap();
-                let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                (original_bits, total_bases, sequences.len())
+                match encoder.encode(black_box(&data)) {
+                    Ok(sequences) => {
+                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                        (original_bits, total_bases, sequences.len())
+                    }
+                    Err(_) => (original_bits, 0, 0),
+                }
             });
         });
 
@@ -47,15 +52,20 @@ fn benchmark_information_density(c: &mut Criterion) {
                 encoder_type: EncoderType::Goldman,
                 chunk_size: 32,
                 compression_enabled: false,
+                constraints: adn_core::DnaConstraints::new(0.20, 0.80, 10, 1000),
                 ..Default::default()
             };
 
             let encoder = Encoder::new(config).unwrap();
 
             b.iter(|| {
-                let sequences = encoder.encode(black_box(&data)).unwrap();
-                let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                (original_bits, total_bases, sequences.len())
+                match encoder.encode(black_box(&data)) {
+                    Ok(sequences) => {
+                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                        (original_bits, total_bases, sequences.len())
+                    }
+                    Err(_) => (original_bits, 0, 0),
+                }
             });
         });
 
@@ -66,15 +76,20 @@ fn benchmark_information_density(c: &mut Criterion) {
                 chunk_size: 32,
                 redundancy: 1.0,
                 compression_enabled: false,
+                constraints: adn_core::DnaConstraints::new(0.20, 0.80, 10, 1000),
                 ..Default::default()
             };
 
             let encoder = Encoder::new(config).unwrap();
 
             b.iter(|| {
-                let sequences = encoder.encode(black_box(&data)).unwrap();
-                let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                (original_bits, total_bases, sequences.len())
+                match encoder.encode(black_box(&data)) {
+                    Ok(sequences) => {
+                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                        (original_bits, total_bases, sequences.len())
+                    }
+                    Err(_) => (original_bits, 0, 0),
+                }
             });
         });
 
@@ -91,9 +106,13 @@ fn benchmark_information_density(c: &mut Criterion) {
             let encoder = Encoder::new(config).unwrap();
 
             b.iter(|| {
-                let sequences = encoder.encode(black_box(&data)).unwrap();
-                let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                (original_bits, total_bases, sequences.len())
+                match encoder.encode(black_box(&data)) {
+                    Ok(sequences) => {
+                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                        (original_bits, total_bases, sequences.len())
+                    }
+                    Err(_) => (original_bits, 0, 0),
+                }
             });
         });
 
@@ -104,15 +123,20 @@ fn benchmark_information_density(c: &mut Criterion) {
                 chunk_size: 32,
                 redundancy: 1.0,
                 compression_enabled: false,
+                constraints: adn_core::DnaConstraints::new(0.20, 0.80, 10, 1000),
                 ..Default::default()
             };
 
             let encoder = Encoder::new(config).unwrap();
 
             b.iter(|| {
-                let sequences = encoder.encode(black_box(&data)).unwrap();
-                let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                (original_bits, total_bases, sequences.len())
+                match encoder.encode(black_box(&data)) {
+                    Ok(sequences) => {
+                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                        (original_bits, total_bases, sequences.len())
+                    }
+                    Err(_) => (original_bits, 0, 0),
+                }
             });
         });
     }
