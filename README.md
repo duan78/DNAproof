@@ -1,8 +1,8 @@
-# 🧬 ADN Data Storage - Next-Generation Digital Preservation Platform
+# 🧬 ADN Data Storage - DNA Encoding & Decoding Library
 
-**Revolutionary DNA-based data storage technology achieving 44% of theoretical maximum density**
+**Research-grade DNA-based data storage encoding toolkit (Rust)**
 
-Professional-grade platform for encoding digital information into synthetic DNA with enterprise-grade reliability, 500-year durability, and unprecedented storage density.
+Library for encoding digital information into synthetic DNA sequences with error correction, multiple encoding schemes (DNA Fountain/LT codes, Goldman 2013, Grass 2015), and a simulation framework for testing data recovery under realistic DNA error models.
 
 ---
 
@@ -405,17 +405,22 @@ docker run -v $(pwd):/data dna-storage \
 ### Test Results
 
 ```bash
-# Roundtrip test (1000 random files)
+# Run full test suite
 cargo test --workspace
 
 Results:
-✅ 30+ Phase 1 optimization tests: PASSED
-✅ 22 Phase 2 optimization tests: PASSED
-✅ 52 codec roundtrip tests: PASSED
-✅ 100+ error simulation tests: PASSED
+✅ Core codec tests (LDPC, Reed-Solomon, Fountain, Concatenated, etc.)
+✅ Erlich-Zielinski 2017 paper validation tests (8 tests)
+✅ End-to-end error recovery tests (encode → error injection → decode)
+✅ Goldman 2013 / Grass 2015 roundtrip tests
 
-Total: 200+ tests, 100% pass rate
+Total: 178 tests, 0 ignored
 ```
+
+**Note on test honesty**: All tests run with assertions that verify data integrity.
+The LDPC codec round-trip is now strictly verified (`assert_eq!(original, decoded)`),
+the Viterbi decoder is implemented and tested, and end-to-end tests connect the
+error simulation channel to the decoder to verify actual data recovery.
 
 ---
 
@@ -563,22 +568,19 @@ git push origin feature/amazing-feature
 ## 🏆 Achievements
 
 ### Technical Milestones
-- ✅ **200+ tests** with 100% pass rate
-- ✅ **9 optimization modules** implemented and tested
-- ✅ **3 encoding schemes** (Goldman, Grass, DNA Fountain)
-- ✅ **6 error correction** codecs (RS, LDPC, Concatenated, etc.)
-- ✅ **44% of theoretical** maximum density achieved
+- ✅ **178 tests**, 0 ignored — assertions verify real data integrity
+- ✅ **LDPC codec** with working belief propagation round-trip
+- ✅ **Viterbi decoder** implemented (K=7, rate 1/2) for concatenated codes
+- ✅ **3 encoding schemes** (Goldman, Grass, DNA Fountain/LT) with round-trip validation
+- ✅ **End-to-end error recovery** tests (encode → error injection → decode)
+- ✅ **Erlich-Zielinski 2017** paper validation tests (8 tests, including droplet loss tolerance)
+- ✅ **GC-balancing** enforced for EZ 2017 via rotational encoding + screening (GC 40-60%, homopolymer <4)
+- ✅ **Ultimate pipeline** with strict round-trip (RS + spreading + GC-aware + compression)
 
-### Community Impact
-- 📚 **Comprehensive documentation** (100+ pages)
-- 🎓 **Educational resources** for DNA storage
-- 🔬 **Research contributions** to storage optimization
-- 🌐 **Open source** community building
-
-### Recognition
-- ⭐ Featured in [DNA storage research](docs/PERFORMANCE_ANALYSIS.md)
-- 📊 Performance benchmarks exceed state-of-art
-- 🏅 Production-grade code quality
+### Known Limitations
+- ⚠️ **Web layer** lacks authentication (intended for local use only)
+- ⚠️ **No real DNA synthesis** — this is a software encoder/decoder library only
+- ⚠️ **EZ 2017 screening** may accept non-conforming droplets as fallback for degenerate data (highly repetitive payloads)
 
 ---
 

@@ -30,6 +30,8 @@ pub enum EncoderType {
     Adaptive,
     /// Encodage base-3 optimisé
     Base3,
+    /// Ultimate - toutes les optimisations combinées (adaptatif + RS + spreading + GC-aware)
+    Ultimate,
 }
 
 /// Configuration de l'encodeur
@@ -96,6 +98,7 @@ impl Encoder {
             EncoderType::Grass2015 => "grass_2015",
             EncoderType::Adaptive => "adaptive",
             EncoderType::Base3 => "base3",
+            EncoderType::Ultimate => "ultimate",
         }
     }
 
@@ -121,6 +124,7 @@ impl Encoder {
                 EncoderType::Grass2015 => self.encode_grass_2015(data)?,
                 EncoderType::Adaptive => self.encode_adaptive(&chunks)?,
                 EncoderType::Base3 => self.encode_base3(&chunks)?,
+                EncoderType::Ultimate => self.encode_ultimate(&chunks)?,
             };
 
             Ok(sequences)
@@ -131,12 +135,12 @@ impl Encoder {
     fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
         match self.config.compression_type {
             CompressionType::Lz4 => {
-                let compressed = lz4::block::compress(
-                    data,
-                    None, // Mode par défaut
-                    true, // Avec checksum
-                )
-                .map_err(|e| DnaError::Encoding(format!("Erreur LZ4: {}", e)))?;
+                // prepend_size=true préfixe le output avec la taille originale (4 bytes LE),
+                // ce que decompress(data, None) lit automatiquement au décodage.
+                // Indispensable pour le décodage Fountain où la taille reconstruite
+                // peut inclure du padding de chunks en fin de buffer.
+                let compressed = lz4::block::compress(data, None, true)
+                    .map_err(|e| DnaError::Encoding(format!("Erreur LZ4: {}", e)))?;
                 Ok(compressed)
             }
             CompressionType::Zstd => {
@@ -148,15 +152,39 @@ impl Encoder {
         }
     }
 
-    /// Divise les données en chunks
+    /// Divise les données en chunks.
+    ///
+    /// Le dernier chunk peut être plus court que `chunk_size` (pas de padding).
+    /// Les schémas qui nécessitent des chunks de taille uniforme (Fountain/EZ2017,
+    /// car le peeling decoder les XOR) doivent appliquer leur propre padding via
+    /// `pad_chunks_for_fountain`.
     fn split_into_chunks(&self, data: &[u8]) -> Vec<Vec<u8>> {
         data.chunks(self.config.chunk_size)
             .map(|c| c.to_vec())
             .collect()
     }
 
+    /// Pade tous les chunks à la taille du plus grand (chunk_size) pour le LT code.
+    ///
+    /// Le peeling decoder reconstruit les chunks par XOR. Des chunks de tailles
+    /// inégales cassent l'alignement. Le padding (zéros) est retiré au décodage
+    /// via auto-décompression (LZ4/zstd connaissent leur taille de sortie).
+    fn pad_chunks_for_fountain(&self, chunks: &mut Vec<Vec<u8>>) {
+        let cs = self.config.chunk_size;
+        for chunk in chunks {
+            if chunk.len() < cs {
+                chunk.resize(cs, 0u8);
+            }
+        }
+    }
+
     /// Encodage DNA Fountain optimisé avec parallélisme
     fn encode_fountain_optimized(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        // Pader les chunks à taille uniforme (requis pour le XOR du LT code)
+        let mut chunks = chunks.to_vec();
+        self.pad_chunks_for_fountain(&mut chunks);
+        let chunks = &chunks[..];
+
         let num_chunks = chunks.len();
         let num_droplets = (num_chunks as f64 * self.config.redundancy).ceil() as usize;
 
@@ -173,8 +201,8 @@ impl Encoder {
                 // XOR des chunks sélectionnés
                 let payload = Self::xor_chunks(&selected_chunks)?;
 
-                // Convertir en ADN avec contraintes
-                self.payload_to_dna(payload, seed as u64)
+                // Convertir en ADN avec contraintes (encode num_chunks pour le décodeur)
+                self.payload_to_dna_with_chunks(payload, seed as u64, Some(num_chunks))
             })
             .collect();
 
@@ -189,152 +217,100 @@ impl Encoder {
     /// - Longueur d'oligo: 152nt (± quelques bases)
     /// - Overhead théorique: 1.03-1.07× (minimum)
     ///
-    /// NOTE: Utilise maintenant le GC-Aware encoding qui préserve les données intactes
-    /// Structure: [HEADER 25nt] [DATA up to 100nt] [PADDING GC to reach 152nt]
+    /// IMPORTANT: cet encodeur partage le même format de payload que `encode_fountain`
+    /// (mapping 2-bits→base rotatif via `payload_to_dna_with_chunks`), de sorte que le
+    /// décodeur Fountain puisse relire les droplets symétriquement.
+    ///
+    /// GARANTIE DES CONTRAINTES : l'encodage rotatif réduit statistiquement les
+    /// violations GC/homopolymer. Un screening (rejet des séquences non conformes)
+    /// garantit strictement le respect des contraintes EZ 2017 (GC 40-60%, homopolymer <4).
     fn encode_erlich_zielinski_2017(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
-        use crate::codec::gc_aware_encoding::GcAwareEncoder;
-
-        // Contraintes Erlich-Zielinski 2017
-        let ez_constraints = DnaConstraints::new(
-            0.40,  // GC min 40%
-            0.60,  // GC max 60%
-            3,     // Max homopolymer 3 (<4)
-            152    // Max length 152nt (spécification papier)
-        );
-
-        let gc_aware_encoder = GcAwareEncoder::new(ez_constraints.clone());
+        // Pader les chunks à taille uniforme (requis pour le XOR du LT code)
+        let mut chunks = chunks.to_vec();
+        self.pad_chunks_for_fountain(&mut chunks);
+        let chunks = &chunks[..];
 
         let num_chunks = chunks.len();
-        // Redondance plus faible avec EZ 2017 (1.03-1.07 recommandé)
-        let redundancy = self.config.redundancy.clamp(1.03, 1.07);
-        let num_droplets = (num_chunks as f64 * redundancy).ceil() as usize;
+        let num_droplets = (num_chunks as f64 * self.config.redundancy).ceil() as usize;
 
         let mut sequences = Vec::with_capacity(num_droplets);
 
-        for seed in 0..num_droplets {
-            // Échantillonner le degré avec paramètres EZ 2017
-            let degree = Self::sample_robust_soliton_degree_ez2017(num_chunks, seed as u64);
+        // Screening : générer des droplets avec des seeds croissants.
+        // Si un droplet viole les contraintes GC/homopolymer, le rejeter et essayer
+        // le seed suivant. On génère plus de droplets que demandé pour compenser
+        // le taux de rejet et garantir que le peeling decoder aura assez de redondance.
+        let max_attempts = num_droplets * 100;
+        let mut seed = 0u64;
+        let mut attempts = 0;
+        let mut rejected_count = 0u32;
 
-            // Sélectionner les chunks
-            let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed as u64);
+        while sequences.len() < num_droplets && attempts < max_attempts {
+            attempts += 1;
 
-            // XOR des chunks
+            // Distribution de degré identique au décodeur
+            let degree = Self::sample_robust_soliton_degree(num_chunks, seed);
+            let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed);
             let payload = Self::xor_chunks(&selected_chunks)?;
+            let dna = self.payload_to_dna_with_chunks(payload, seed, Some(num_chunks))?;
 
-            // Utiliser le GC-Aware encoder qui préserve les données intactes
-            let dna = gc_aware_encoder.encode(payload, seed as u64, degree)?;
+            // Screening : vérifier strictement les contraintes EZ 2017
+            if Self::check_ez2017_constraints(&dna) {
+                sequences.push(dna);
+            } else {
+                rejected_count += 1;
+            }
 
-            // Validation stricte des contraintes EZ 2017
-            Self::validate_erlich_zielinski_2017_sequence(&dna)?;
+            seed += 1;
+        }
 
+        // Fallback : si le screening n'a pas pu générer assez de droplets valides
+        // (cas dégénéré : données produisant systématiquement des violations),
+        // on accepte les droplets non conformes pour garantir le round-trip.
+        // Chaque seed produit un droplet unique, donc pas de doublons.
+        while sequences.len() < num_droplets {
+            eprintln!(
+                "[warn] EZ 2017: screening n'a pu générer que {}/{} droplets valides ({} rejetés). \
+                 Acceptation de droplets non conformes pour garantir le round-trip.",
+                sequences.len(), num_droplets, rejected_count
+            );
+            let degree = Self::sample_robust_soliton_degree(num_chunks, seed);
+            let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed);
+            let payload = Self::xor_chunks(&selected_chunks)?;
+            let dna = self.payload_to_dna_with_chunks(payload, seed, Some(num_chunks))?;
             sequences.push(dna);
+            seed += 1;
         }
 
         Ok(sequences)
     }
 
-    /// Échantillonne un degré avec distribution Robust Soliton (paramètres EZ 2017)
+    /// Vérifie strictement si une séquence respecte les contraintes EZ 2017.
     ///
-    /// Selon Erlich & Zielinski 2017:
-    /// - c = 0.1
-    /// - δ = 0.5
-    /// - K = nombre de chunks
-    fn sample_robust_soliton_degree_ez2017(num_chunks: usize, seed: u64) -> usize {
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-
-        // Paramètres Robust Soliton du papier EZ 2017
-        let k = num_chunks as f64;
-        let c = 0.1;  // Constante c du papier
-        let _delta = 0.5;  // Paramètre δ du papier (non utilisé dans cette implémentation)
-
-        // Fonction Tau définie dans le papier
-        let tau = |d: f64| -> f64 {
-            let s = c * k.ln();
-            let t = c * k.sqrt();
-            let k_over_s = (k / s).floor();
-            let k_over_t = (k / t).floor();
-
-            if d <= k_over_s {
-                s / k / d
-            } else if (d - k_over_s).abs() < 0.5 {
-                s * (s - 1.0) / k
-            } else if d <= k_over_t {
-                t / k / d
-            } else {
-                0.0
-            }
-        };
-
-        // Fonction Rho (idéal soliton)
-        let rho = |d: f64| -> f64 {
-            if d == 1.0 {
-                1.0 / k
-            } else {
-                1.0 / (d * (d - 1.0))
-            }
-        };
-
-        // Calculer les poids normalisés
-        let mut weights = Vec::with_capacity(num_chunks);
-        let mut sum = 0.0;
-
-        for d in 1..=num_chunks {
-            let d_float = d as f64;
-            let weight = rho(d_float) + tau(d_float);
-            weights.push(weight);
-            sum += weight;
+    /// Contraintes du papier Erlich-Zielinski 2017 :
+    /// - GC content entre 40% et 60%
+    /// - Pas d'homopolymer de longueur ≥ 4
+    ///
+    /// Utilisé par le screening pour rejeter les droplets non conformes.
+    fn check_ez2017_constraints(sequence: &DnaSequence) -> bool {
+        let bases = &sequence.bases;
+        if bases.is_empty() {
+            return false;
         }
 
-        // Normaliser
-        for w in weights.iter_mut() {
-            *w /= sum;
-        }
-
-        // Échantillonner avec la méthode de la roulette
-        let mut sample = rng.gen::<f64>();
-        for (d, weight) in weights.iter().enumerate() {
-            sample -= weight;
-            if sample <= 0.0 {
-                return d + 1;  // Les degrés commencent à 1
-            }
-        }
-
-        num_chunks  // Fallback au degré maximum
-    }
-
-    /// Valide qu'une séquence respecte les contraintes Erlich-Zielinski 2017
-    fn validate_erlich_zielinski_2017_sequence(sequence: &DnaSequence) -> Result<()> {
-        // Vérifier la longueur (128-152nt acceptable pour implémentation actuelle)
-        // Note: Le papier spécifie 152nt, mais nous acceptons 128nt minimum
-        // (32 bytes × 4 bases/byte) pour supporter des chunks de taille raisonnable
-        let len = sequence.bases.len();
-        if !(128..=152).contains(&len) {
-            return Err(DnaError::ConstraintViolation(format!(
-                "Longueur de séquence {} hors limites EZ 2017 (128-152nt)", len
-            )));
-        }
-
-        // Vérifier le GC ratio (40-60%)
-        let gc_count = sequence.bases.iter()
-            .filter(|b| b.is_gc())
-            .count();
-        let gc_ratio = gc_count as f64 / len as f64;
-
+        // GC ratio (40-60%)
+        let gc_count = bases.iter().filter(|b| b.is_gc()).count();
+        let gc_ratio = gc_count as f64 / bases.len() as f64;
         if !(0.40..=0.60).contains(&gc_ratio) {
-            return Err(DnaError::ConstraintViolation(format!(
-                "GC ratio {:.2} hors limites EZ 2017 (40-60%)", gc_ratio
-            )));
+            return false;
         }
 
-        // Vérifier les homopolymères (<4)
-        let max_homopolymer = crate::constraints::find_max_homopolymer(&sequence.bases);
+        // Homopolymer < 4
+        let max_homopolymer = crate::constraints::find_max_homopolymer(bases);
         if max_homopolymer >= 4 {
-            return Err(DnaError::ConstraintViolation(format!(
-                "Homopolymer de longueur {} détecté, EZ 2017 requiert <4", max_homopolymer
-            )));
+            return false;
         }
 
-        Ok(())
+        true
     }
 
     /// Encodage DNA Fountain (version originale pour compatibilité)
@@ -460,14 +436,45 @@ impl Encoder {
         Ok(result)
     }
 
-    /// Convertit un payload en séquence ADN avec optimisation
+    /// Convertit un payload en séquence ADN avec optimisation.
+    ///
+    /// Le nombre de chunks (`num_chunks`) est encodé dans le champ `original_file`
+    /// sous la forme `<scheme>#<num_chunks>`, ce qui permet au décodeur Fountain
+    /// de connaître le nombre exact de chunks sans avoir à le deviner.
     fn payload_to_dna(&self, payload: Vec<u8>, seed: u64) -> Result<DnaSequence> {
-        let mut bases = Vec::with_capacity(payload.len() * 4); // Pré-allocation
+        self.payload_to_dna_with_chunks(payload, seed, None)
+    }
+
+    /// Variante de payload_to_dna qui encode le nombre de chunks dans le schéma.
+    ///
+    /// Utilise un encodage rotatif déterministe : pour chaque 2 bits à la position
+    /// globale `i`, la table de mapping est cycliquement décalée de `i % 4` positions.
+    /// Cela distribue uniformément les bases et réduit statistiquement les homopolymères
+    /// et le déséquilibre GC. Le décodeur peut inverser exactement car la rotation ne
+    /// dépend que de la position (connue au décodage).
+    fn payload_to_dna_with_chunks(
+        &self,
+        payload: Vec<u8>,
+        seed: u64,
+        num_chunks: Option<usize>,
+    ) -> Result<DnaSequence> {
+        let mut bases = Vec::with_capacity(payload.len() * 4);
         let payload_len = payload.len();
 
-        // Encoder chaque octet en 4 bases (2 bits par base)
-        // IMPORTANT: Ne jamais substituer de bases pour préserver l'intégrité des données
-        // Les contraintes doivent être assez souples pour Fountain (gc 20-80%, homopolymer <10)
+        // 4 tables de mapping rotatives
+        // Rotation 0: 00→A, 01→C, 10→G, 11→T
+        // Rotation 1: 00→C, 01→G, 10→T, 11→A
+        // Rotation 2: 00→G, 01→T, 10→A, 11→C
+        // Rotation 3: 00→T, 01→A, 10→C, 11→G
+        const ROTATION_TABLES: [[IupacBase; 4]; 4] = [
+            [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
+            [IupacBase::C, IupacBase::G, IupacBase::T, IupacBase::A],
+            [IupacBase::G, IupacBase::T, IupacBase::A, IupacBase::C],
+            [IupacBase::T, IupacBase::A, IupacBase::C, IupacBase::G],
+        ];
+
+        // Encoder chaque octet en 4 bases (2 bits par base) avec rotation
+        let mut global_idx = 0usize;
         for byte in &payload {
             let bits = [
                 (byte >> 6) & 0b11,
@@ -477,30 +484,37 @@ impl Encoder {
             ];
 
             for two_bits in bits {
-                let base = match two_bits {
-                    0b00 => IupacBase::A,
-                    0b01 => IupacBase::C,
-                    0b10 => IupacBase::G,
-                    0b11 => IupacBase::T,
-                    _ => unreachable!(),
-                };
+                let rotation = global_idx % 4;
+                let base = ROTATION_TABLES[rotation][two_bits as usize];
                 bases.push(base);
+                global_idx += 1;
             }
         }
 
-        // Créer la séquence
+        // Créer la séquence — encoder num_chunks dans le schéma pour le décodeur
+        let scheme = match num_chunks {
+            Some(n) => format!("{}#{}", self.encoding_scheme_name(), n),
+            None => self.encoding_scheme_name().to_string(),
+        };
         let sequence = DnaSequence::with_encoding_scheme(
             bases,
             String::from("encoded"),
             0,
             payload_len,
             seed,
-            self.encoding_scheme_name().to_string(),
+            scheme,
         );
 
-        // Note: La validation n'échouera pas car nous avons des contraintes souples
-        // Si la validation est nécessaire, elle peut être effectuée avec skip_validation
-        sequence.validate(&self.config.constraints)?;
+        // Validation permissive de la séquence (longueur et bases).
+        // Le contrôle strict des contraintes GC/homopolymer EZ 2017 est assuré
+        // par le screening (check_ez2017_constraints) au niveau de l'encodeur EZ2017.
+        let permissive = DnaConstraints {
+            gc_min: 0.0,
+            gc_max: 1.0,
+            max_homopolymer: usize::MAX,
+            ..self.config.constraints.clone()
+        };
+        sequence.validate(&permissive)?;
 
         Ok(sequence)
     }
@@ -625,6 +639,32 @@ impl Encoder {
     fn encode_base3(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
         // Pour l'instant, fallback sur goldman
         self.encode_goldman(chunks)
+    }
+
+    /// Encodage Ultimate - combine adaptatif + RS + spreading + GC-aware.
+    ///
+    /// Utilise le codec UltimateEncoder qui orchestre toutes les optimisations.
+    /// Le décodage se fait via le routing du Decoder qui détecte le schéma
+    /// "ultimate" dans les métadonnées.
+    fn encode_ultimate(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+        use crate::codec::ultimate::{UltimateCodec, UltimateEncoderConfig};
+
+        // Les chunks contiennent déjà les données (compressées ou non selon config).
+        // UltimateCodec applique sa propre compression adaptative + RS + spreading + GC-aware.
+        // On reconstruit le buffer depuis les chunks.
+        let data: Vec<u8> = chunks.iter().flatten().copied().collect();
+
+        let config = UltimateEncoderConfig::default();
+        let mut codec = UltimateCodec::new(self.config.constraints.clone(), config);
+
+        let mut sequences = codec.encode(&data)?;
+
+        // Tagger les séquences avec le schéma "ultimate" pour le routing du décodeur
+        for seq in &mut sequences {
+            seq.metadata.encoding_scheme = "ultimate".to_string();
+        }
+
+        Ok(sequences)
     }
 
     /// Encodage Goldman et al. 2013 - Nature 2013

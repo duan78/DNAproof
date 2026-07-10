@@ -15,6 +15,9 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# ZCode session files
+.zcode/
+
 # Test files
 test_*.txt
 test_*.fasta

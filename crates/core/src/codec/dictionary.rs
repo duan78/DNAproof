@@ -197,14 +197,34 @@ impl DictionaryCompressor {
         self.reverse_dictionary.len()
     }
 
-    /// Retourne le taux de compression estimé
-    pub fn compression_ratio(&self) -> f64 {
-        if self.dict_size() == 0 {
-            1.0
-        } else {
-            // Estimation grossière
-            0.85 // 15% de gain
+    /// Retourne le taux de compression estimé pour une séquence donnée.
+    ///
+    /// Calcule le ratio réel (taille compressée / taille originale) en appliquant
+    /// la compression à la séquence fournie. Un ratio < 1.0 indique une compression.
+    pub fn compression_ratio_for(&self, sequence: &[IupacBase]) -> f64 {
+        if sequence.is_empty() {
+            return 1.0;
         }
+        let compressed = self.compress_sequence(sequence);
+        // Taille originale : 1 byte par base (encodage 2-bit)
+        let original_size = sequence.len();
+        compressed.len() as f64 / original_size as f64
+    }
+
+    /// Retourne le taux de compression théorique moyen basé sur le dictionnaire.
+    ///
+    /// Un motif de longueur L (L bytes en encodage 2-bit) est remplacé par 2 bytes
+    /// (marker 0xFF + index), soit un ratio de 2/L pour ce motif.
+    /// Cette valeur est une estimation du gain maximal si tous les motifs étaient utilisés.
+    pub fn estimated_compression_ratio(&self) -> f64 {
+        if self.reverse_dictionary.is_empty() {
+            return 1.0;
+        }
+        let total_ratio: f64 = self.reverse_dictionary
+            .iter()
+            .map(|motif| 2.0 / motif.len() as f64)
+            .sum();
+        total_ratio / self.reverse_dictionary.len() as f64
     }
 
     /// Vide le dictionnaire
@@ -261,7 +281,7 @@ impl SequenceDictionaryCompressor {
             size: self.compressor.dict_size(),
             min_motif_length: self.compressor.min_motif_length,
             max_motif_length: self.compressor.max_motif_length,
-            compression_ratio: self.compressor.compression_ratio(),
+            compression_ratio: self.compressor.estimated_compression_ratio(),
         }
     }
 }
@@ -332,14 +352,17 @@ mod tests {
     #[test]
     fn test_compression_ratio() {
         let compressor = DictionaryCompressor::new();
-        assert_eq!(compressor.compression_ratio(), 1.0);
+        // Dictionnaire vide : ratio estimé = 1.0 (pas de compression)
+        assert_eq!(compressor.estimated_compression_ratio(), 1.0);
 
         let mut compressor = DictionaryCompressor::new();
         compressor.build_dictionary(&[
             (0..20).flat_map(|_| [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T]).collect(),
         ]);
 
-        assert!(compressor.compression_ratio() < 1.0);
+        // Avec un dictionnaire, le ratio estimé moyen doit être < 1.0
+        // (les motifs de longueur L coûtent 2 bytes au lieu de L)
+        assert!(compressor.estimated_compression_ratio() < 1.0);
     }
 
     #[test]

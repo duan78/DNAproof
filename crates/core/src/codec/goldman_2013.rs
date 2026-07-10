@@ -5,7 +5,8 @@
 //! Nature 2013
 //!
 //! Caractéristiques:
-//! - Compression Huffman
+//! - Compression LZ4 (utilisée comme fallback pratique ; le papier original
+//!   utilise Huffman, mais l'implémentation Huffman complète n'est pas câblée ici)
 //! - Encodage 3-base rotation
 //! - Addressing 4-byte par oligo
 //! - Segments alternés addressing/data

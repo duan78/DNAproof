@@ -1,7 +1,6 @@
 //! Module de base de données pour le stockage ADN
 
 use sqlx::{Pool, Sqlite, Postgres};
-use async_trait::async_trait;
 use tracing::{info, instrument};
 
 /// Type de base de données supporté
@@ -27,14 +26,6 @@ impl Default for DatabaseConfig {
             max_connections: 5,
         }
     }
-}
-
-/// Trait pour les opérations de base de données
-#[async_trait]
-pub trait DatabaseOperations: Send + Sync {
-    async fn initialize(&self) -> crate::Result<()>;
-    async fn migrate(&self) -> crate::Result<()>;
-    async fn health_check(&self) -> crate::Result<()>;
 }
 
 /// Gestionnaire de base de données principal

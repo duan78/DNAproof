@@ -180,11 +180,29 @@ pub struct UltimateDecoder {
 }
 
 impl UltimateDecoder {
-    /// Crée un nouveau décodeur ultime
+    /// Crée un nouveau décodeur ultime avec les paramètres par défaut.
+    ///
+    /// Note : pour un round-trip correct, le décodeur doit avoir les mêmes
+    /// paramètres de spreading que l'encodeur. Utiliser `with_config()`.
     pub fn new(constraints: DnaConstraints) -> Self {
         Self {
             constraints: constraints.clone(),
             rs_codec: EnhancedReedSolomonCodec::new(),
+            gc_aware_decoder: EnhancedGcAwareDecoder::new(constraints),
+        }
+    }
+
+    /// Crée un décodeur avec la même configuration que l'encodeur.
+    ///
+    /// C'est essentiel pour que le spreading block_size et l'activation
+    /// du spreading correspondent entre encode et decode.
+    pub fn with_config(constraints: DnaConstraints, config: &UltimateEncoderConfig) -> Self {
+        let rs_codec = EnhancedReedSolomonCodec::new()
+            .with_spreading_block_size(config.spreading_block_size)
+            .with_spreading(config.use_spreading);
+        Self {
+            constraints: constraints.clone(),
+            rs_codec,
             gc_aware_decoder: EnhancedGcAwareDecoder::new(constraints),
         }
     }
@@ -208,9 +226,13 @@ impl UltimateDecoder {
         }
 
         // 2. Décoder Reed-Solomon (avec désentrelacement intégré)
-        let decoded = self.rs_codec.decode(&chunks)?;
+        let rs_decoded = self.rs_codec.decode(&chunks)?;
 
-        Ok(decoded)
+        // 3. Décompresser (LZ4 avec préfixe de taille, comme fait l'encodeur)
+        let decompressed = lz4::block::decompress(&rs_decoded, None)
+            .map_err(|e| DnaError::Decoding(format!("Erreur décompression LZ4: {}", e)))?;
+
+        Ok(decompressed)
     }
 
     /// Retourne les contraintes ADN utilisées
@@ -232,10 +254,13 @@ pub struct UltimateCodec {
 }
 
 impl UltimateCodec {
-    /// Crée un nouveau codec ultime
+    /// Crée un nouveau codec ultime.
+    ///
+    /// Le décodeur est configuré avec les mêmes paramètres de spreading que
+    /// l'encodeur pour garantir la cohérence du round-trip.
     pub fn new(constraints: DnaConstraints, config: UltimateEncoderConfig) -> Self {
-        let encoder = UltimateEncoder::new(constraints.clone(), config);
-        let decoder = UltimateDecoder::new(constraints);
+        let encoder = UltimateEncoder::new(constraints.clone(), config.clone());
+        let decoder = UltimateDecoder::with_config(constraints, &config);
 
         Self { encoder, decoder }
     }
@@ -287,7 +312,7 @@ mod tests {
         };
 
         let config = UltimateEncoderConfig {
-            use_adaptive: false, // Simplifier pour le test
+            use_adaptive: false,
             use_spreading: true,
             spreading_block_size: 16,
             use_optimal_padding: true,
@@ -301,8 +326,10 @@ mod tests {
 
         assert!(!sequences.is_empty());
 
-        // Note: Le décodage complet nécessite plus de travail sur l'alignement
-        // Pour l'instant, on vérifie juste que l'encodage fonctionne
+        // Round-trip strict : le décodeur est maintenant configuré avec les mêmes
+        // paramètres de spreading que l'encodeur.
+        let decoded = codec.decode(&sequences).unwrap();
+        assert_eq!(original.to_vec(), decoded, "Ultimate round-trip must be exact");
     }
 
     #[test]

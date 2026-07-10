@@ -113,6 +113,7 @@ pub enum EncodingAlgorithm {
     Grass2015,
     Adaptive,
     Base3,
+    Ultimate,
 }
 
 #[derive(clap::ValueEnum, Clone)]

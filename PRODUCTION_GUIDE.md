@@ -326,13 +326,14 @@ format = "compact"
 
 ## 📝 Journal des Changements
 
-### Version 1.0.0
+### Version 0.1.0
 
-- Première version stable
-- Support complet de l'encodage/décodage
-- Interface web et API REST
-- Base de données SQLite/PostgreSQL
-- Benchmarks et tests d'intégration
+- Version initiale (recherche/prototype)
+- Encodage/décodage : Goldman 2013, Grass 2015, DNA Fountain (LT codes)
+- Correction d'erreurs : Reed-Solomon (255,223), LDPC, codes concaténés (Viterbi)
+- Interface web locale et CLI
+- Base de données SQLite (Postgres partiellement supporté)
+- Tests end-to-end de récupération d'erreurs
 
 ### Version 1.1.0 (Planifiée)
 
@@ -357,4 +358,4 @@ Ce projet est sous licence MIT OR Apache-2.0. Voir le fichier LICENSE pour plus 
 
 ---
 
-🧬 ADN Data Storage - Stockage de données dans l'ADN virtuel | Version 1.0.0
+🧬 ADN Data Storage - Stockage de données dans l'ADN virtuel | Version 0.1.0

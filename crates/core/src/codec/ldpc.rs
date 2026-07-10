@@ -76,28 +76,24 @@ impl SparseMatrix {
 }
 
 /// Codec LDPC
+///
+/// Utilise un encodage systématique avec code régulier : pour k bits de données,
+/// on ajoute p = k/4 bits de parité (taux de code 4/5 ≈ 20% d'overhead).
+/// La matrice de parité H est construite dynamiquement pour chaque encodage
+/// afin de garantir la cohérence des dimensions entre encode et decode.
 pub struct LdpcCodec {
-    /// Matrice de parité H
-    h_matrix: SparseMatrix,
-    /// Taille de bloc (n)
-    block_size: usize,
     /// Nombre d'itérations de decoding
     max_iterations: usize,
 }
 
 impl LdpcCodec {
-    /// Crée un nouveau codec LDPC
+    /// Crée un nouveau codec LDPC.
     ///
-    /// n : taille totale du bloc (data + parity)
-    /// k : taille des données (sera calculé comme n * 4/5 pour 20% overhead)
-    pub fn new(n: usize) -> Self {
-        let k = (n * 4) / 5; // 80% données, 20% parité
-        let h_matrix = SparseMatrix::create_regular(n, k);
-
+    /// Note: le paramètre `n` historique est ignoré — la matrice H est désormais
+    /// construite dynamiquement à partir du nombre réel de bits de données.
+    pub fn new(_n: usize) -> Self {
         Self {
-            h_matrix,
-            block_size: n,
-            max_iterations: 10,
+            max_iterations: 20,
         }
     }
 
@@ -107,9 +103,10 @@ impl LdpcCodec {
         self
     }
 
-    /// Encode des données
+    /// Encode des données en ajoutant des bits de parité LDPC.
     ///
-    /// Systematic encoding : data d'origine + parity bits calculés
+    /// Format de sortie : [bits de données][bits de parité].
+    /// Le taux de parité est de 20% (1 bit de parité pour 4 bits de données).
     pub fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
         if data.is_empty() {
             return Ok(Vec::new());
@@ -119,186 +116,142 @@ impl LdpcCodec {
         let bits = self.bytes_to_bits(data);
         let k = bits.len();
 
-        // Calculer n pour avoir 20% de parité
+        // Calculer le nombre de bits de parité (taux 4/5)
         let parity_count = (k / 4).max(1);
         let n = k + parity_count;
 
-        // Pour l'encoding systématique, on commence avec les bits de données
+        // Construire la matrice H pour ces dimensions exactes
+        let h_matrix = SparseMatrix::create_regular(n, k);
+
+        // Codeword systématique : [data bits][parity bits]
         let mut codeword = bits.clone();
         codeword.resize(n, 0);
 
-        // Calculer les bits de parité
-        // Pour chaque ligne de H (équation de parité)
-        for (row_idx, row) in self.h_matrix.iter_rows().enumerate() {
+        // Calculer les bits de parité à partir des équations de H
+        for (row_idx, row) in h_matrix.iter_rows().enumerate() {
             if row_idx < parity_count {
-                // XOR de tous les bits de données connectés
+                // XOR de tous les bits de données connectés à cette équation
                 let mut parity_bit = 0u8;
-
                 for &col_idx in row {
                     if col_idx < k {
                         parity_bit ^= bits[col_idx];
                     }
                 }
-
-                // Placer le bit de parité à sa position
-                if k + row_idx < n {
-                    codeword[k + row_idx] = parity_bit;
-                }
+                codeword[k + row_idx] = parity_bit;
             }
         }
 
-        // Retourner en bytes
         Ok(self.bits_to_bytes(&codeword))
     }
 
-    /// Décode avec belief propagation
+    /// Décode avec belief propagation (sum-product algorithm).
     ///
-    /// Utilise l'algorithme sum-product pour itérer vers la solution
+    /// Reconstruit la matrice H aux mêmes dimensions que l'encodage pour garantir
+    /// la cohérence. Le nombre de bits de données k est déduit de la taille reçue.
     pub fn decode(&self, received: &[u8]) -> Result<Vec<u8>> {
         if received.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Initialiser les LLR (Log-Likelihood Ratios)
-        // LLR[i] = log(P(bit=0 | reçu) / P(bit=1 | reçu))
-        let mut llr = self.initialize_llr(received);
+        // Convertir en bits
+        let received_bits = self.bytes_to_bits(received);
 
-        // Itération belief propagation
+        // n (taille du codeword en bits) = k + k/4 = k * 5/4 où k = data_bits.
+        // Comme les données sont en bytes, k est un multiple de 8, donc n est un
+        // multiple de 10. La conversion bytes→bits peut ajouter du padding (le
+        // dernier byte partiel), donc on tronque n au multiple de 10 inférieur.
+        let raw_n = received_bits.len();
+        let n = (raw_n / 10) * 10;
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Déduire k de n : k = n * 4/5
+        let k = (n * 4) / 5;
+
+        // Construire la matrice H pour ces dimensions
+        let h_matrix = SparseMatrix::create_regular(n, k);
+
+        // Initialiser les LLR (Log-Likelihood Ratios) à partir des bits reçus
+        // Tronquer au codeword réel (sans padding de bits)
+        let mut llr: Vec<f64> = received_bits[..n]
+            .iter()
+            .map(|&bit| if bit == 0 { 2.0 } else { -2.0 })
+            .collect();
+
+        // Belief propagation
         for _iteration in 0..self.max_iterations {
-            // Variable nodes → Check nodes
-            let check_messages = self.variable_to_check(&llr);
+            // Check nodes → Variable nodes (sum-product sur tanh)
+            let mut extrinsics: Vec<Vec<f64>> = vec![Vec::new(); n];
+            for row in h_matrix.iter_rows() {
+                // Produit des tanh(|LLR|) pour tous les nodes de la ligne
+                let mut products: Vec<f64> = row
+                    .iter()
+                    .filter(|&&c| c < llr.len())
+                    .map(|&c| llr[c].tanh())
+                    .collect();
 
-            // Check nodes → Variable nodes (sum-product)
-            let variable_messages = self.check_to_variable(&check_messages);
+                for (msg_idx, &col_idx) in row.iter().enumerate() {
+                    if col_idx >= n {
+                        continue;
+                    }
+                    // Extrinsic : produit de tous les tanh sauf le courant
+                    let excluded = products[msg_idx];
+                    let mut product = 1.0;
+                    for (i, &p) in products.iter().enumerate() {
+                        if i != msg_idx {
+                            product *= p;
+                        }
+                    }
+                    let _ = excluded; // déjà exclu ci-dessus
 
-            // Mise à jour des beliefs
-            llr = self.update_beliefs(&llr, &variable_messages);
+                    let extrinsic_llr = if product.abs() < 1.0 {
+                        ((1.0 + product) / (1.0 - product)).ln()
+                    } else {
+                        10.0 // Cap pour éviter division par zéro / ln(inf)
+                    };
+                    extrinsics[col_idx].push(extrinsic_llr);
+                }
+                // Réinitialiser pour la prochaine ligne (products est locale)
+                let _ = &mut products;
+            }
 
-            // Vérifier convergence
-            if self.check_codeword(&llr) {
+            // Mise à jour des LLR : LLR = channel_LLR + somme(extrinsics)
+            for i in 0..n {
+                let sum: f64 = extrinsics.get(i).map_or(0.0, |v| v.iter().sum());
+                llr[i] += sum;
+            }
+
+            // Vérifier convergence (H * hard_decision = 0 ?)
+            if Self::check_codeword_with_matrix(&h_matrix, &llr) {
                 break;
             }
         }
 
         // Hard decision
-        let decoded_bits = self.hard_decision(&llr);
+        let decoded_bits: Vec<u8> = llr.iter().map(|&l| if l >= 0.0 { 0 } else { 1 }).collect();
 
-        // Retirer les bits de parité (garder seulement les données)
-        // On garde 80% des bits (les 20% restants sont la parité)
-        let data_bits = &decoded_bits[..decoded_bits.len().saturating_sub(decoded_bits.len() / 5)];
+        // Retirer les bits de parité (garder seulement les k bits de données)
+        let data_bits = &decoded_bits[..k.min(decoded_bits.len())];
 
         Ok(self.bits_to_bytes(data_bits))
     }
 
-    /// Initialise les LLR à partir du reçu
-    fn initialize_llr(&self, received: &[u8]) -> Vec<f64> {
-        received.iter()
-            .flat_map(|&byte| {
-                (0..8).map(move |i| {
-                    let bit = (byte >> (7 - i)) & 1;
-                    // Si bit = 0, LLR positif ; si bit = 1, LLR négatif
-                    if bit == 0 {
-                        2.0 // Log-likelihood ratio positif
-                    } else {
-                        -2.0
-                    }
-                })
-            })
-            .collect()
-    }
-
-    /// Variable nodes vers check nodes
-    fn variable_to_check(&self, llr: &[f64]) -> Vec<Vec<f64>> {
-        let mut messages = Vec::new();
-
-        for row in self.h_matrix.iter_rows() {
-            let mut row_messages = Vec::new();
-
-            for &col_idx in row {
-                if col_idx < llr.len() {
-                    // Envoyer LLR au check node
-                    row_messages.push(llr[col_idx]);
-                }
-            }
-
-            messages.push(row_messages);
-        }
-
-        messages
-    }
-
-    /// Check nodes vers variable nodes (sum-product)
-    fn check_to_variable(&self, check_messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
-        let mut messages = vec![Vec::new(); self.h_matrix.num_cols()];
-
-        // Pour chaque check node (ligne de H)
-        for (row_idx, row) in self.h_matrix.iter_rows().enumerate() {
-            if let Some(check_msg) = check_messages.get(row_idx) {
-                // Pour chaque variable node connectée
-                for (msg_idx, &col_idx) in row.iter().enumerate() {
-                    if col_idx < self.h_matrix.num_cols() {
-                        // Sum-product : XOR des tanh des LLR entrants
-                        let mut product = 1.0;
-
-                        for (i, &llr_val) in check_msg.iter().enumerate() {
-                            if i != msg_idx {
-                                product *= llr_val.tanh();
-                            }
-                        }
-
-                        // Convertir retour de tanh en LLR
-                        let extrinsic_llr = if product.abs() < 1.0 {
-                            ((1.0 + product) / (1.0 - product)).ln()
-                        } else {
-                            10.0 // Cap pour éviter infini
-                        };
-
-                        messages[col_idx].push(extrinsic_llr);
-                    }
-                }
-            }
-        }
-
-        messages
-    }
-
-    /// Met à jour les beliefs (LLR)
-    fn update_beliefs(&self, current_llr: &[f64], extrinsics: &[Vec<f64>]) -> Vec<f64> {
-        current_llr.iter().enumerate()
-            .map(|(i, &llr)| {
-                // Ajouter les messages extrinsèques
-                let sum: f64 = extrinsics.get(i).map_or(0.0, |v| v.iter().sum());
-                llr + sum
-            })
-            .collect()
-    }
-
-    /// Vérifie si le LLR satisfait H*x = 0
-    fn check_codeword(&self, llr: &[f64]) -> bool {
-        // Hard decision
-        let bits: Vec<u8> = llr.iter().map(|&llr| if llr > 0.0 { 0 } else { 1 }).collect();
-
-        // Vérifier H * bits = 0 (mod 2)
-        for row in self.h_matrix.iter_rows() {
+    /// Vérifie si le LLR satisfait H*x = 0 pour une matrice H donnée
+    fn check_codeword_with_matrix(h_matrix: &SparseMatrix, llr: &[f64]) -> bool {
+        let bits: Vec<u8> = llr.iter().map(|&l| if l > 0.0 { 0 } else { 1 }).collect();
+        for row in h_matrix.iter_rows() {
             let mut sum = 0u8;
-
             for &col_idx in row {
                 if col_idx < bits.len() {
                     sum ^= bits[col_idx];
                 }
             }
-
             if sum != 0 {
                 return false;
             }
         }
-
         true
-    }
-
-    /// Hard decision sur LLR
-    fn hard_decision(&self, llr: &[f64]) -> Vec<u8> {
-        llr.iter().map(|&llr| if llr >= 0.0 { 0 } else { 1 }).collect()
     }
 
     /// Convertit bytes en bits
@@ -325,11 +278,6 @@ impl LdpcCodec {
         }
 
         bytes
-    }
-
-    /// Retourne la taille de bloc
-    pub fn block_size(&self) -> usize {
-        self.block_size
     }
 }
 
@@ -371,9 +319,19 @@ mod tests {
         let encoded = codec.encode(&original).unwrap();
         let decoded = codec.decode(&encoded).unwrap();
 
-        // Note: Sans vrais erreurs, le décodage devrait fonctionner
-        // mais peut avoir des différences de padding
-        assert!(!decoded.is_empty());
+        // Le round-trip doit être parfait sans erreur
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_ldpc_roundtrip_larger() {
+        let codec = LdpcCodec::new(255);
+
+        let original: Vec<u8> = (0..100).map(|i| (i * 7 % 256) as u8).collect();
+        let encoded = codec.encode(&original).unwrap();
+        let decoded = codec.decode(&encoded).unwrap();
+
+        assert_eq!(original, decoded);
     }
 
     #[test]
@@ -384,58 +342,6 @@ mod tests {
         let bits = codec.bytes_to_bits(&bytes);
         let recovered = codec.bits_to_bytes(&bits);
 
-        assert_eq!(bytes, recovered);
-    }
-
-    #[test]
-    fn test_llr_initialization() {
-        let codec = LdpcCodec::new(255);
-
-        let received = vec![0x00, 0xFF]; // Tous 0 puis tous 1
-        let llr = codec.initialize_llr(&received);
-
-        // Les 8 premiers devraient être positifs (bit=0)
-        // Les 8 derniers devraient être négatifs (bit=1)
-        for item in llr.iter().take(8) {
-            assert!(*item > 0.0);
-        }
-        for item in llr.iter().take(16).skip(8) {
-            assert!(*item < 0.0);
-        }
-    }
-
-    #[test]
-    fn test_hard_decision() {
-        let codec = LdpcCodec::new(255);
-
-        let llr_pos = vec![1.0, 2.0, 0.5]; // Tous positifs → bits 0
-        let llr_neg = vec![-1.0, -2.0, -0.5]; // Tous négatifs → bits 1
-        let llr_mixed = vec![1.0, -1.0, 0.0];
-
-        let bits_pos = codec.hard_decision(&llr_pos);
-        let bits_neg = codec.hard_decision(&llr_neg);
-        let bits_mixed = codec.hard_decision(&llr_mixed);
-
-        assert_eq!(bits_pos, vec![0, 0, 0]);
-        assert_eq!(bits_neg, vec![1, 1, 1]);
-        assert_eq!(bits_mixed, vec![0, 1, 0]);
-    }
-
-    #[test]
-    fn test_check_codeword() {
-        let codec = LdpcCodec::new(40);
-
-        // Créer un LLR qui satisfait H*x=0
-        let mut llr = vec![0.0f64; 40];
-        for item in llr.iter_mut().take(20) {
-            *item = 1.0; // Bits 0
-        }
-        for item in llr.iter_mut().take(40).skip(20) {
-            *item = -1.0; // Bits 1
-        }
-
-        // Vérifier que c'est un mot de code valide
-        let _result = codec.check_codeword(&llr);
-        // Le résultat dépend de la matrice H, on ne fait pas d'assertion stricte
+    assert_eq!(bytes, recovered);
     }
 }

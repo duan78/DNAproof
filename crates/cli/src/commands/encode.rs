@@ -31,6 +31,7 @@ pub fn run(
         EncodingAlgorithm::Grass2015 => EncoderType::Grass2015,
         EncodingAlgorithm::Adaptive => EncoderType::Adaptive,
         EncodingAlgorithm::Base3 => EncoderType::Base3,
+        EncodingAlgorithm::Ultimate => EncoderType::Ultimate,
     };
 
     let compression_type = match compression.unwrap_or(CompressionAlgorithm::Lz4) {
@@ -65,6 +66,13 @@ pub fn run(
             gc_min: 0.0,   // Très souple - l'encodage direct préserve les données
             gc_max: 1.0,
             max_homopolymer: 150,  // Très souple pour éviter les erreurs de validation
+            max_sequence_length: 200,
+            allowed_bases: vec![adn_core::IupacBase::A, adn_core::IupacBase::C, adn_core::IupacBase::G, adn_core::IupacBase::T],
+        },
+        EncodingAlgorithm::Ultimate => DnaConstraints {
+            gc_min: 0.25,
+            gc_max: 0.75,
+            max_homopolymer: 10,
             max_sequence_length: 200,
             allowed_bases: vec![adn_core::IupacBase::A, adn_core::IupacBase::C, adn_core::IupacBase::G, adn_core::IupacBase::T],
         },
