@@ -1,687 +1,374 @@
-# 🧬 ADN Data Storage - DNA Encoding & Decoding Library
+# 🧬 ADN Data Storage — DNA Encoding & Decoding Library
 
-**Research-grade DNA-based data storage encoding toolkit (Rust)**
+**A Rust toolkit for encoding digital data into synthetic DNA sequences.**
 
-Library for encoding digital information into synthetic DNA sequences with error correction, multiple encoding schemes (DNA Fountain/LT codes, Goldman 2013, Grass 2015), and a simulation framework for testing data recovery under realistic DNA error models.
+This library implements several academic DNA storage encoding schemes (DNA Fountain / LT codes, Goldman 2013, Grass 2015), error correction codecs (Reed-Solomon, LDPC, convolutional/Viterbi), and a simulation framework for testing data recovery under realistic DNA error models (substitution, insertion, deletion).
+
+> ⚠️ **Scope**: This is a **software-only** encoder/decoder library. It does not perform real DNA synthesis or sequencing — it produces FASTA files that *could* be sent to a synthesis provider, and can decode FASTA files obtained from sequencing.
+
+---
+
+## 📋 Table of Contents
+
+- [Why DNA Storage?](#-why-dna-storage)
+- [Core Capabilities](#-core-capabilities)
+- [Architecture](#-architecture)
+- [Installation & Usage](#-installation--usage)
+- [Technical Specifications](#-technical-specifications)
+- [Test Results](#-test-results)
+- [Known Limitations](#-known-limitations)
+- [Roadmap](#-roadmap)
+- [Contributing](#-contributing)
+- [Resources](#-resources)
+- [License](#-license)
 
 ---
 
 ## 🚀 Why DNA Storage?
 
-### The Data Crisis
-- Global data volume: **180 ZB by 2025** (IDC)
-- Traditional storage: 5-10 year lifespan, requires constant replacement
-- Data centers: Consume 2% of global electricity
-- **Solution needed**: Denser, more durable, sustainable storage
+DNA is an attractive medium for long-term archival storage due to its raw density and durability. This section provides general background; the specific numbers below are physical/theoretical properties of DNA as a medium, not claims about this software's performance.
 
-### Our Answer: DNA
-```
-Density:     200,000,000 TB per gram (20 million× denser than SSD)
-Lifespan:    500-2,000 years (vs 5-10 for HDD)
-Durability:  Stable at room temperature, no electricity needed
-Sustainability: Zero energy to store, biodegradable
-```
+### The Problem
+- Global data volume continues to grow exponentially
+- Traditional storage (HDD, tape, SSD) has a 5–10 year lifespan and requires constant migration
+- Data centers consume significant electricity for cooling and operation
 
-**Result**: Archive 1000 TB of data on 6 micrograms of DNA—visible only under a microscope.
+### DNA as a Storage Medium
+- **Density**: DNA can theoretically store ~455 PB/gram (2 bits/base, ~1.4 × 10²¹ bases/gram)
+- **Durability**: DNA is stable for centuries to millennia under cool, dry, dark conditions
+- **No power needed**: Once synthesized, DNA requires no electricity to retain data
+
+> **Note**: The figures above are physical properties of DNA molecules from the scientific literature, not measurements produced by this software. This library handles the **encoding/decoding** step — converting bytes ↔ DNA sequences. Physical density and cost depend on the synthesis/sequencing provider.
 
 ---
 
 ## ✨ Core Capabilities
 
-### Data Management
-- **📤 Universal Encoding**: Support for all file types (text, images, video, binaries, databases)
-- **📥 Perfect Fidelity**: Mathematically guaranteed data integrity with Reed-Solomon ECC
-- **⚡ Error Simulation**: Model DNA storage errors (substitution, insertion, deletion)
-- **📊 Analytics**: Comprehensive statistics and sequence analysis tools
+### Encoding Schemes
+| Scheme | Source Paper | Key Feature | Status |
+|--------|-------------|-------------|--------|
+| **DNA Fountain** (EZ 2017) | Erlich-Zielinski, Science 2017 | LT codes, Robust Soliton distribution, screening | ✅ Round-trip validated |
+| **Goldman 2013** | Goldman et al., Nature 2013 | Rotational encoding, 3-base homopolymer avoidance | ✅ Round-trip validated |
+| **Grass 2015** | Grass et al., Nat Biotech 2015 | Reed-Solomon ECC, 3-segment addressing | ✅ Round-trip validated |
 
-### Enterprise-Grade Error Correction
-- **🛡️ Reed-Solomon (255, 223)**: Industry-standard 32-byte ECC blocks
-- **🚀 LDPC Codes**: Low-Density Parity-Check with belief propagation (+20% efficiency)
-- **🔗 Concatenated Codes**: Reed-Solomon + Convolutional encoding (+50% error correction)
-- **⛲ DNA Fountain**: LT codes with Robust Soliton distribution (30%+ data loss tolerance)
+### Error Correction
+| Codec | Type | Round-trip Tested | Notes |
+|-------|------|:-:|-------|
+| **Reed-Solomon (255, 223)** | Block ECC (delegates to `reed-solomon` crate) | ✅ strict | Corrects 16 errors or 32 erasures per 255-byte block |
+| **LDPC** | Belief propagation (sum-product) | ✅ strict | Regular (3,6) parity-check matrix, 20% overhead |
+| **Concatenated** | RS outer + Convolutional inner | ✅ | Viterbi decoder implemented (K=7, rate 1/2, G1=171₈ G2=133₈) |
+| **Enhanced RS + Spreading** | RS + matrix interleaving | ✅ strict | Disperses burst errors before RS correction |
 
-### Advanced Optimizations
-- **📡 Spreading Code**: Matrix interleaving transforms burst errors into dispersed errors
-- **🎯 Adaptive Encoding**: Automatic data type detection (6 types) + intelligent compression
-- **🧮 GC Optimizer**: Dynamic programming finds optimal minimal-length padding
-- **📚 Dictionary Compression**: Inter-sequence compression using common 4-8 base motifs
-- **💎 Ultimate Pipeline**: Unified codec combining all optimizations for maximum performance
+### Data Processing Pipeline
+- **LZ4 / Huffman compression**: Optional pre-encoding compression with size-prefixed LZ4 (ensures correct padding truncation during Fountain decode)
+- **Adaptive analysis**: Entropy-based data type detection → automatic compression method selection
+- **Spreading code**: Matrix interleaving (block_size configurable) transforms burst errors into dispersed errors
+- **GC-balancing** (EZ 2017): Deterministic rotational 2-bit→base encoding + screening guarantees GC 40–60% and homopolymer <4
 
-### DNA Standards Compliance
-- **🧬 Illumina-Compatible**: Full support for barcodes, P5/P7 adapters, multiplexing
-- **🎯 GC-Aware**: Intelligent constraint satisfaction (40-60% GC content, <4 homopolymers)
-- **📊 Production-Ready**: Rate-limited progress tracking for multi-gigabyte files
-- **🔔 Modern UX**: Real-time notifications, dark mode, responsive web interface
+### DNA Format & Compliance
+- **FASTA I/O**: Read/write standard FASTA files with metadata in headers
+- **Illumina structure**: P5/P7 adapters, barcodes, and multiplexing format support (simplified placeholder sequences — not production-accurate)
+- **GC constraints**: Configurable GC content bounds and homopolymer limits per encoding scheme
 
----
+### Simulation Framework
+- **Error channel**: Models substitution, insertion, and deletion with configurable per-base rates
+- **Reproducible**: Uses `ChaCha8Rng` with explicit seeds for deterministic results
+- **Metrics**: Min/max/average error rates across iterations, ASCII table reporting
 
-## 🎯 Performance Metrics
-
-### Storage Density
-| Metric | Value | Comparison |
-|--------|-------|------------|
-| **Our Platform** | 200,000,000 TB/gram | **44% of theoretical maximum** |
-| **State of Art (2025)** | 10-20,000 TB/gram | 2-4% of theoretical max |
-| **Theoretical Limit** | 455,000,000 TB/gram | Physical maximum |
-| **SSD NVMe** | 10 TB/kilogram | **20 million× less dense** |
-| **LTO-9 Tape** | 0.45 TB/kilogram | **444 million× less dense** |
-
-### Physical Requirements
-| Data Size | DNA Required | Physical Form |
-|-----------|--------------|---------------|
-| **1 TB** | 5 µg | Spec of dust |
-| **1000 TB (1 PB)** | 6 mg | Sugar crystal |
-| **1 EB** | 6 g | One coin |
-| **All internet (2025)** | ~30 kg | Small suitcase |
-
-**Visual**: 1000 TB stored in 6 mg = smaller than a grain of rice (30 mg)
-
-### Throughput Performance
-| Operation | Speed | Time for Common Tasks |
-|-----------|-------|----------------------|
-| **Encoding** | 5-15 MB/s | 1 TB in 18-36 hours |
-| **Decoding** | 12-30 MB/s | 1 TB in 9-14 hours |
-| **Web UI** | Real-time | Drag-drop 1GB files in ~90s |
-
-**Note**: Throughput scales linearly with parallelization. 100-core system = 1 TB in ~12 minutes.
-
----
-
-## 💰 Economics
-
-### Current Costs (2025)
-
-#### DNA Storage (Our Platform)
-| Scale | Synthesis Cost | Sequencing Cost | Total |
-|-------|----------------|-----------------|-------|
-| **1 GB** | $70 | $1.26 | **~$71** |
-| **1 TB** | $70K | $1.26K | **~$71K** |
-| **1000 TB** | $70M | $1.26M | **~$71M** |
-
-**Cost per GB**: ~$71 (DNA Movable Type technology, 2025)
-
-#### Traditional Storage Comparison
-| Technology | Cost/GB | 100-Year Cost (1000 TB) |
-|------------|---------|------------------------|
-| **DNA Storage** | $71 | **$71M** (one-time) |
-| **Enterprise HDD** | $0.02 | **$700M** (20 replacements) |
-| **LTO-9 Tape** | $0.01 | **$500M** (15 replacements) |
-| **Cloud Storage** | $0.02 | **$1B+** (ongoing fees) |
-
-### Break-Even Analysis
-
-```
-Year 0:   DNA Storage      $71M
-          HDD/Tape         $100K
-          ────────────────────────────────
-          DNA is 700× more expensive
-
-Year 7:   DNA Storage      $71M (no maintenance)
-          HDD/Tape         $71M (2nd replacement)
-          ────────────────────────────────
-          ✓ BREAK-EVEN POINT
-
-Year 20:  DNA Storage      $71M
-          HDD/Tape         $200M (4th replacement)
-          ────────────────────────────────
-          DNA saves $129M (64% savings)
-
-Year 50:  DNA Storage      $71M
-          HDD/Tape         $500M (10+ replacements)
-          ────────────────────────────────
-          DNA saves $429M (86% savings)
-
-Year 100: DNA Storage      $71M
-          HDD/Tape         $1B+ (20+ replacements)
-          ────────────────────────────────
-          DNA saves $929M (93% savings)
-```
-
-### Future Cost Trajectory
-| Year | Cost/GB | Technology | Comment |
-|------|---------|------------|---------|
-| **2025** | $71 | DNA Movable Type | Current production |
-| **2027** | $20 | Enzymatic synthesis | Projected |
-| **2030** | $1 | Mass production | Target milestone |
-| **2035** | $0.10 | Mature technology | Competes with HDD |
-
-**Source**: Industry roadmaps, [Twist Bioscience](https://www.twistbioscience.com/), [Catalog DNA](https://www.catalogna.com/)
+### CLI & Web Interface
+- **CLI** (`adn`): Four subcommands — `encode`, `decode`, `simulate`, `visualize` (table/JSON/HTML output)
+- **Web UI** (Actix-web): Drag-and-drop file upload, encode/decode jobs, FASTA download. **No authentication** — intended for local use only. Progress reporting is polling-based (not WebSocket).
 
 ---
 
 ## 🏗️ Architecture
 
-### Technology Stack
+### Workspace Structure
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Web Interface                        │
-│  (Actix-web + Tera + Real-time WebSocket updates)      │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│                  CLI & API Layer                        │
-│  (RESTful API, Drag-drop upload, Batch processing)     │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│              Encoding/Decoding Engine                   │
-│  ┌────────────┬────────────┬────────────┬────────────┐ │
-│  │  Adaptive  │Compression│   Reed-    │  Spreading │ │
-│  │  Analysis  │  (LZ4/     │  Solomon   │   Code     │ │
-│  │            │   Huffman) │  (255,223) │            │ │
-│  └────────────┴────────────┴────────────┴────────────┘ │
-│  ┌────────────┬────────────┬────────────┬────────────┐ │
-│  │  GC        │   LDPC     │Concatenated│ Dictionary │ │
-│  │ Optimizer  │  Codes     │   Codes    │Compression │ │
-│  └────────────┴────────────┴────────────┴────────────┘ │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│              DNA Format Layer                           │
-│  (Goldman 2013 | Grass 2015 | DNA Fountain | Ultimate) │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│          Storage & Simulation Layer                     │
-│  (Virtual DNA pool, Error injection, FASTA I/O)        │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Module Organization
-```
-adn/
+DNAproof/
 ├── crates/
-│   ├── core/         # All codecs, optimizations, algorithms
-│   ├── web/          # Production web server (Actix-web)
-│   ├── storage/      # Virtual DNA storage management
-│   ├── simulation/   # Error modeling and testing framework
-│   ├── cli/          # Command-line interface (Rust CLI tools)
-│   └── utils/        # Shared utilities (logging, metrics)
-└── docs/             # Technical documentation, performance analysis
+│   ├── core/         # All codecs, ECC, encoding schemes, GC optimizer, constraints
+│   ├── cli/          # Command-line interface (clap)
+│   ├── web/          # Local web server (Actix-web + Tera templates)
+│   ├── storage/      # Virtual DNA pool + SQLite/Postgres repository (SQLite working)
+│   ├── simulation/   # Error channel model + metrics collection
+│   └── utils/        # Shared utilities (math, conversion)
+├── docs/             # Technical documentation
+├── Cargo.toml        # Workspace manifest
+└── config.toml       # Runtime configuration
 ```
 
----
-
-## 💡 Use Cases
-
-### Perfect Applications ✅
-
-#### 1. **Long-Term Archival** (100+ years)
-- **Scientific data**: Genomic datasets, particle physics results, climate records
-- **Cultural heritage**: Museum digitization, historical documents, artwork archives
-- **Government archives**: Legal records, patents, treaties, census data
-- **Advantage**: One-time encoding, zero maintenance, multi-century durability
-
-#### 2. **High-Value Data**
-- **Medical records**: Genome sequences, clinical trials, pharmaceutical research
-- **Financial archives**: Transaction records, audit trails, compliance data
-- **Legal documents**: Contracts, court records, depositions, evidence
-- **Advantage**: Immutable storage, regulatory compliance, tamper-proof
-
-#### 3. **Hostile Environments**
-- **Space missions**: Radiation-hard storage, mass constraints, multi-mission duration
-- **Polar regions**: Temperature extremes, limited infrastructure
-- **Disaster recovery**: Nuclear-proof, flood-proof, EMP-resistant archives
-- **Advantage**: No electricity, temperature tolerance, physical resilience
-
-#### 4. **Maximum Density Requirements**
-- **Embedded systems**: Micro-scale data logging sensors
-- **Covert storage**: Invisible data hiding, steganography
-- **Time capsules**: Civilizational archives, message to the future
-- **Advantage**: 6 mg = 1000 TB in microscopic volume
-
-#### 5. **Regulatory Compliance**
-- **FINRA/SEC**: 50+ year retention for financial records
-- **HIPAA**: Permanent medical record storage
-- **ISO 15489**: Public records archiving standards
-- **Advantage**: One-time cost, guaranteed retention, audit-ready
-
-### Less Suitable Applications ❌
-
-- **Frequently accessed data** (daily/hourly): Use databases/SSD
-- **Short-term storage** (<5 years): HDD/tape more cost-effective
-- **Budget-constrained projects**: Current $71/GB vs $0.02/GB for HDD
-- **Low-latency applications**: DNA synthesis/sequencing takes days, not ms
-
-### Decision Framework
+### Encoding Pipeline (DNA Fountain / EZ 2017)
 ```
-Should you use DNA storage?
+Input bytes
+    │
+    ▼
+┌──────────────┐
+│ Compression  │  LZ4 (size-prefixed) or adaptive (Huffman/LZ4/None)
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│ Chunk split  │  Fixed-size chunks, padded to uniform length for XOR
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│ LT encoding  │  Robust Soliton degree sampling → XOR droplets
+│ + Screening  │  (EZ 2017: reject droplets violating GC/homopolymer)
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│ 2-bit→base   │  Rotational mapping (4 tables cycling by position)
+│ conversion   │  Inverted at decode by position-based lookup
+└──────┬───────┘
+       │
+       ▼
+  DNA sequences (FASTA)
+```
 
-YES if:
-  ✓ Retention period > 7 years
-  ✓ Data has high value (replacement cost > $100/GB)
-  ✓ Long-term compliance required
-  ✓ Physical space constrained
-  ✓ Environment hostile to electronics
-  ✓ One-write, rare-read access pattern
-
-NO if:
-  ✗ Frequent access needed (daily/weekly)
-  ✗ Short retention (<5 years)
-  ✗ Budget limited (<$10/GB)
-  ✗ Fast access required (ms/seconds)
-  ✗ Data easily reproducible
+### Decoding Pipeline (reverse)
+```
+DNA sequences → base→2-bit (inverse rotation) → LT peeling decoder
+→ padding truncation (via LZ4 size prefix) → decompression → original bytes
 ```
 
 ---
 
 ## 🧪 Installation & Usage
 
-### Quick Start
+### Prerequisites
+- Rust 1.70+ (2021 edition)
+- Optional: SQLite (for storage layer)
 
+### Build
 ```bash
-# Clone repository
 git clone https://github.com/duan78/DNAproof.git
 cd DNAproof
 
-# Build release binary
+# Debug build
+cargo build
+
+# Release build (optimized)
 cargo build --release
-
-# Encode a file
-./target/release/adn.exe encode \
-  --input important_data.pdf \
-  --output dna_archive/ \
-  --algorithm fountain
-
-# Decode DNA sequences
-./target/release/adn.exe decode \
-  --input dna_archive/sequences.fasta \
-  --output recovered_data.pdf
-
-# Run error simulation
-./target/release/adn.exe simulate \
-  --input dna_archive/sequences.fasta \
-  --substitution-rate 0.01 \
-  --deletion-rate 0.001 \
-  --iterations 100
 ```
+
+The CLI binary is `target/debug/adn` (or `target/release/adn` for release).
+On Windows the binary has a `.exe` extension automatically.
+
+### CLI Usage
+
+```bash
+# Encode a file into DNA sequences
+./target/release/adn encode \
+  --input data.pdf \
+  --output archive.fasta \
+  --algorithm fountain \
+  --redundancy 2.0
+
+# Decode DNA sequences back to the original file
+./target/release/adn decode \
+  --input archive.fasta \
+  --output recovered.pdf
+
+# Simulate DNA storage errors on encoded sequences
+./target/release/adn simulate \
+  --input archive.fasta \
+  --substitution-rate 0.01 \
+  --insertion-rate 0.005 \
+  --deletion-rate 0.005 \
+  --iterations 100
+
+# Visualize sequence statistics
+./target/release/adn visualize \
+  --input archive.fasta \
+  --format table
+```
+
+**Available algorithms**: `fountain`, `goldman`, `goldman2013`, `grass2015`, `adaptive`, `base3`, `ultimate`
 
 ### Web Interface
-
 ```bash
-# Start web server
 cargo run -p adn-web
-
-# Access at http://127.0.0.1:8080
+# Open http://127.0.0.1:8080
 ```
 
-Features:
-- Drag-and-drop file upload (1GB+ files supported)
-- Real-time encoding/decoding progress
-- Live statistics visualization
-- Dark mode, responsive design
-- Download FASTA files ready for DNA synthesis
+Features: drag-and-drop upload, encode/decode jobs, FASTA download, dark mode UI.
+**No authentication** — bind to localhost only.
 
-### Supported Algorithms
-
-| Algorithm | Density | Best For | Overhead |
-|-----------|---------|----------|----------|
-| **DNA Fountain** ⭐ | 1.92 bits/base | Large files, archival | 1.03-1.07× |
-| **Goldman 2013** | 1.60 bits/base | Text, JSON, repetitive | 2.5× |
-| **Grass 2015** | 1.50 bits/base | Critical data, long-term | 2.0× |
-
-**Recommendation**: Use DNA Fountain for most use cases (highest density, lowest overhead).
-
-### Docker Deployment
-
+### Run Tests
 ```bash
-# Build Docker image
-docker build -t dna-storage .
+# Full test suite
+cargo test --workspace
 
-# Run web server
-docker run -p 8080:8080 -v $(pwd)/data:/app/data dna-storage
+# Run benchmarks
+cargo bench -p adn-core
 
-# Encode file via Docker
-docker run -v $(pwd):/data dna-storage \
-  encode --input /data/file.pdf --output /data/dna/
+# Lint
+cargo clippy --workspace
 ```
 
 ---
 
 ## 🧬 Technical Specifications
 
-### DNA Constraints
-- **GC Content**: 40-60% (configurable per algorithm)
-- **Homopolymer**: < 4 consecutive bases
-- **Sequence Length**: 150 nucleotides (Illumina standard)
-- **Addressing**: Up to 65,535 sequences (Goldman), unlimited (Fountain)
+### DNA Constraints (configurable per scheme)
+- **GC content**: Default 40–60% (relaxed to 0–100% for schemes that don't enforce it)
+- **Homopolymer**: Default max 3 consecutive identical bases (configurable)
+- **Sequence length**: Default 150 nt (Illumina standard), up to 200 nt configurable
 
-### Encoding Schemes
+### Encoding Scheme Details
 
-#### DNA Fountain (Erlich-Zielinski 2017) ⭐
-- **Paper**: Science 2017, "DNA Fountain enables a robust and efficient storage architecture"
-- **Density**: 1.92 bits/base (highest)
-- **Overhead**: 1.03-1.07× (lowest)
-- **Error tolerance**: >30% data loss recoverable
-- **Best for**: Large files, images, PDFs, archival
+#### DNA Fountain (Erlich-Zielinski 2017)
+- **Algorithm**: LT codes with Robust Soliton degree distribution (c=0.1)
+- **GC-balancing**: Rotational encoding + screening guarantees GC 40–60% and homopolymer <4
+- **Redundancy**: Configurable (recommended ≥2.0× for small files; the paper's 1.05× applies to thousands of chunks)
+- **Decode**: Peeling decoder with belief propagation; tolerates droplet loss up to the redundancy margin
 
 #### Goldman et al. 2013
-- **Paper**: Nature 2013, "Towards practical, high-capacity, low-maintenance information storage in DNA"
-- **Density**: 1.6 bits/base
-- **Overhead**: ~2.5×
-- **Addressing**: 16-bit (65,535 sequences)
-- **Best for**: Text files, JSON, structured data
+- **Algorithm**: Huffman/LZ4 compression + 3-base rotational encoding (homopolymer ≤3)
+- **Addressing**: Chunk-indexed sequences
+- **Note**: Current implementation uses LZ4 compression (not Huffman) as a practical proxy
 
 #### Grass et al. 2015
-- **Paper**: Nature Biotechnology 2015, "Robust chemical preservation of digital information in DNA"
-- **Density**: 1.5 bits/base
-- **Overhead**: ~4% logical + RS redundancy
-- **Features**: 3-segment addressing, balanced GC padding
-- **Best for**: Ultra-long-term archival, maximum reliability
+- **Algorithm**: Reed-Solomon (255, 223) ECC + 3-segment addressing
+- **Block index**: 16-bit (supports up to 65,535 sequences)
+- **Features**: Balanced GC padding, RS error correction per block
 
-### Error Correction Capabilities
+### Error Correction Details
+| Codec | Configuration | Corrects | Tested With Errors? |
+|-------|--------------|----------|:---:|
+| Reed-Solomon | (255, 223), 32-byte ECC | 16 errors / 32 erasures per block | ✅ |
+| LDPC | Rate 4/5, 20% parity, sum-product BP | *Not benchmarked with error injection* | ❌ |
+| Concatenated (Viterbi) | K=7, rate 1/2, RS outer | *Not benchmarked with error injection* | ❌ |
+| Enhanced RS + Spreading | RS + matrix interleave | RS capacity, burst-dispersed | ✅ |
 
-| Codec | Errors Corrected | Erasures Corrected | Use Case |
-|-------|------------------|-------------------|----------|
-| **Reed-Solomon (255,223)** | 16 per block | 32 per block | Standard ECC |
-| **LDPC** | 20+ per block | 40+ per block | High-noise environments |
-| **Concatenated** | 30+ per block | 60+ per block | Mission-critical data |
-| **DNA Fountain** | 30% data loss | 50% data loss | High-redundancy archival |
+> **Transparency note**: LDPC and Viterbi decoders are implemented and pass **noiseless round-trip** tests (`assert_eq!(original, decoded)`), but no test currently injects errors and verifies correction capacity. The RS and Enhanced RS codecs are tested with injected errors. Future work: add error-injection tests for LDPC and concatenated codes.
 
 ---
 
-## 📊 Performance Benchmarks
-
-### Density Comparison
-
-| Platform | Bits/Base | % of Max | Efficiency |
-|----------|-----------|----------|------------|
-| **Our Ultimate Codec** | 1.75 | 44% | ⭐⭐⭐⭐⭐ |
-| **Our DNA Fountain** | 1.92 | 48% | ⭐⭐⭐⭐⭐ |
-| **State of Art 2025** | 0.08-0.16 | 2-4% | ⭐⭐ |
-| **Theoretical Maximum** | 2.00 | 100% | — |
-
-### Optimization Impact
-
-| Optimization | Density Gain | ECC Improvement | Padding Reduction |
-|--------------|--------------|-----------------|-------------------|
-| **Adaptive Encoding** | +10-40% | — | — |
-| **Dictionary Compression** | +15% | — | — |
-| **GC Optimizer** | — | — | -50% |
-| **Enhanced RS** | — | +30% | — |
-| **Concatenated Codes** | — | +50% | — |
-| **LDPC Codes** | — | +20% | — |
-
-### Test Results
+## 📊 Test Results
 
 ```bash
-# Run full test suite
 cargo test --workspace
-
-Results:
-✅ Core codec tests (LDPC, Reed-Solomon, Fountain, Concatenated, etc.)
-✅ Erlich-Zielinski 2017 paper validation tests (8 tests)
-✅ End-to-end error recovery tests (encode → error injection → decode)
-✅ Goldman 2013 / Grass 2015 roundtrip tests
-
-Total: 178 tests, 0 ignored
 ```
 
-**Note on test honesty**: All tests run with assertions that verify data integrity.
-The LDPC codec round-trip is now strictly verified (`assert_eq!(original, decoded)`),
-the Viterbi decoder is implemented and tested, and end-to-end tests connect the
-error simulation channel to the decoder to verify actual data recovery.
+| Test Category | Count | What They Verify |
+|--------------|:-----:|-----------------|
+| Core codec round-trips | 124 | `encode → decode == original` (strict) |
+| EZ 2017 paper validation | 8 | GC 40–60%, homopolymer <4, density, overhead, droplet loss tolerance |
+| End-to-end error recovery | 4 | `encode → error injection → decode == original` |
+| Goldman 2013 / Grass 2015 | 13 | Round-trip fidelity across data types |
+| Storage / Utils / Simulation | 29 | Database, math, conversion, channel model |
+| **Total** | **178** | **0 failed, 0 ignored** |
+
+### Key Test Properties
+- **All round-trips are strict**: `assert_eq!(original, decoded)` — no "check non-empty" shortcuts
+- **EZ 2017 constraints enforced**: GC content and homopolymer limits are asserted per-sequence (via rotational encoding + screening)
+- **End-to-end error recovery**: The simulation channel (substitution/insertion/deletion) is connected to the decoder, verifying actual data recovery — including a test proving 30% droplet loss tolerance
+
+---
+
+## ⚠️ Known Limitations
+
+- **No real DNA synthesis**: This is a software library only. It produces FASTA files but does not interface with synthesis/sequencing hardware or providers.
+- **No authentication in web layer**: The web UI is intended for local use (localhost binding). Do not expose it to a network without adding auth.
+- **EZ 2017 screening fallback**: For degenerate data (highly repetitive payloads producing identical droplets), the screening may accept non-conforming droplets to avoid blocking. This is logged with a warning.
+- **No CI/CD**: There is no automated continuous integration pipeline.
+- **No Dockerfile**: Docker deployment described in previous versions of this README was aspirational — no Dockerfile exists.
+- **Storage layer**: SQLite is working; Postgres support is stubbed (fetch operations return an error).
+- **Benchmark coverage**: Encoding/decoding speed benchmarks exist but LDPC/Viterbi error-correction capacity has not been measured with injected errors.
+- **Illumina sequences**: The P5/P7 adapter and barcode sequences are simplified placeholders, not production-accurate.
 
 ---
 
 ## 🚀 Roadmap
 
-### Current Release: v0.1.0 ✅
-- ✅ All core encoding schemes implemented (Goldman 2013, Grass 2015, DNA Fountain)
-- ✅ Phase 1 & 2 optimizations complete
-- ✅ Web interface with drag-drop
-- ✅ REST API for integration
-- ✅ Comprehensive error correction
-- ✅ Production-ready CLI
-- ✅ Working Fountain decode with LT code belief propagation
-- ✅ Increased Grass2015 block_index to 16 bits for larger file support
-- ✅ All clippy warnings resolved
-- ✅ Encoding error handling gracefully managed
-- ✅ Full code audit completed
+### Current State: v0.1.0 (alpha)
+- ✅ Three encoding schemes with strict round-trip validation
+- ✅ Reed-Solomon, LDPC, and concatenated (Viterbi) codecs
+- ✅ GC-balancing for EZ 2017 (rotational encoding + screening)
+- ✅ End-to-end error recovery tests
+- ✅ CLI with 4 subcommands + local web UI
+- ✅ Simulation framework with reproducible error model
 
-### Next Milestones
-
-#### v0.2.0 (Q2 2025)
-- [ ] Cloud deployment platform (AWS/GCP)
-- [ ] API integration with DNA synthesis providers
-- [ ] Automated pipeline: File → DNA synthesis → Sequencing → Recovery
-- [ ] Multi-tenant architecture
-- [ ] Usage analytics dashboard
-
-#### v0.3.0 (Q3 2025)
-- [ ] Real DNA synthesis workflow integration
-- [ ] Cost optimization engine (minimize synthesis costs)
-- [ ] Automated quality control
-- [ ] Batch processing for petabyte-scale archives
-- [ ] GPU acceleration for encoding
-
-#### v1.0.0 (Q4 2025)
-- [ ] Enterprise-grade SLAs
-- [ ] Regulatory compliance certifications (ISO 15489, HIPAA)
-- [ ] Multi-region redundancy
-- [ ] Advanced error correction (turbo codes, polar codes)
-- [ ] Production deployments at pilot customers
-
-### Vision 2030
-- **$1/GB** DNA storage cost competitiveness
-- **Automated DNA synthesis/sequencing** pipeline integration
-- **Petabyte-scale** production archives
-- **Global network** of DNA data centers
-- **Standard adoption** in archival industries
+### Planned
+- [ ] Error-injection tests for LDPC and concatenated codecs
+- [ ] Actual encoding/decoding throughput benchmarks (MB/s)
+- [ ] Real DNA synthesis provider API integration
+- [ ] CI/CD pipeline (GitHub Actions)
+- [ ] Dockerfile for containerized deployment
+- [ ] Postgres support for storage layer
+- [ ] Turbocodes / polar codes for advanced ECC
+- [ ] GPU-accelerated encoding
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions from developers, researchers, and DNA storage enthusiasts!
+Contributions are welcome. This is a research/educational project.
 
-### Areas of Contribution
-
-#### 🔬 Research & Algorithms
-- Novel error correction codes (Turbo codes, Polar codes)
-- Improved compression algorithms for DNA
-- Secondary structure optimization
-- Ternary encoding schemes
-- Machine learning for GC optimization
-
-#### 💻 Software Development
-- Web UI improvements (React/Vue frontend)
-- Mobile applications (iOS/Android)
-- Database integration layers
-- Cloud infrastructure (AWS/GCP/Azure)
-- Performance optimization (GPU, SIMD)
-
-#### 📚 Documentation & Education
-- API documentation improvements
-- Tutorial development
-- Video demonstrations
-- Academic paper writing
-- Conference presentations
-
-#### 🧪 Testing & Quality
-- Comprehensive test suites
-- Real-world file validation
-- Performance benchmarking
-- Bug hunting and fixing
-- Security audits
-
-### Contribution Guidelines
-
+### How to Contribute
 ```bash
-# 1. Fork the repository
-# 2. Create feature branch
-git checkout -b feature/amazing-feature
+# 1. Fork & clone
+git clone https://github.com/<your-username>/DNAproof.git
 
-# 3. Make changes and test
+# 2. Create a branch
+git checkout -b feature/your-feature
+
+# 3. Test your changes
 cargo test --workspace
+cargo clippy --workspace
 
-# 4. Commit with clear message
-git commit -m "Add: Amazing feature for X"
+# 4. Commit and push
+git commit -m "Add: description of your feature"
+git push origin feature/your-feature
 
-# 5. Push and create PR
-git push origin feature/amazing-feature
+# 5. Open a Pull Request
 ```
 
-**Guidelines**:
-- Follow Rust best practices (`cargo clippy`)
-- Add tests for new features
-- Update documentation
-- Keep PRs focused and well-described
-
-### Recognition
-- Contributors listed in `CONTRIBUTORS.md`
-- Feature highlights in release notes
-- Speaking opportunities at conferences
-- Co-authorship on papers (for research contributions)
-
----
-
-## 📈 Market Opportunity
-
-### Total Addressable Market (TAM)
-- **Digital archiving market**: $8.2B by 2027 (CAGR 14%)
-- **Cold storage market**: $25B by 2025
-- **Long-term preservation**: $2-5B (growing 20% annually)
-
-### Early Adopter Segments
-1. **Scientific research**: CERN, genomics companies, space agencies
-2. **Cultural institutions**: Libraries, museums, archives
-3. **Regulated industries**: Finance, healthcare, legal
-4. **Government**: National archives, defense, intelligence
-
-### Competitive Advantages
-- ✅ **Technical leadership**: 44% efficiency vs 2-4% industry average
-- ✅ **Open source**: Community innovation, rapid iteration
-- ✅ **Comprehensive**: Full pipeline from file to DNA synthesis
-- ✅ **Production-ready**: Tested, documented, deployable
-- ✅ **Cost-effective**: Targeting $1/GB by 2030
-
-### Business Models
-1. **Enterprise software licenses** (on-premise deployment)
-2. **SaaS platform** (cloud-based DNA storage service)
-3. **DNA synthesis partnerships** (revenue sharing with providers)
-4. **Consulting** (custom DNA storage solutions)
-5. **Research grants** (government, academic funding)
-
----
-
-## 🏆 Achievements
-
-### Technical Milestones
-- ✅ **178 tests**, 0 ignored — assertions verify real data integrity
-- ✅ **LDPC codec** with working belief propagation round-trip
-- ✅ **Viterbi decoder** implemented (K=7, rate 1/2) for concatenated codes
-- ✅ **3 encoding schemes** (Goldman, Grass, DNA Fountain/LT) with round-trip validation
-- ✅ **End-to-end error recovery** tests (encode → error injection → decode)
-- ✅ **Erlich-Zielinski 2017** paper validation tests (8 tests, including droplet loss tolerance)
-- ✅ **GC-balancing** enforced for EZ 2017 via rotational encoding + screening (GC 40-60%, homopolymer <4)
-- ✅ **Ultimate pipeline** with strict round-trip (RS + spreading + GC-aware + compression)
-
-### Known Limitations
-- ⚠️ **Web layer** lacks authentication (intended for local use only)
-- ⚠️ **No real DNA synthesis** — this is a software encoder/decoder library only
-- ⚠️ **EZ 2017 screening** may accept non-conforming droplets as fallback for degenerate data (highly repetitive payloads)
+### Guidelines
+- Add tests for new features (strict round-trip assertions preferred)
+- Run `cargo clippy` before submitting
+- Keep PRs focused
+- Document any new encoding schemes or codecs
 
 ---
 
 ## 📚 Resources
 
-### Documentation
-- [Performance Analysis](docs/PERFORMANCE_ANALYSIS.md) - Detailed cost/benefit analysis
-- [GC-Aware Encoding](docs/GC_AWARE_ENCODING.md) - Constraint optimization techniques
-- [Encoding Schemes](docs/encoding_schemes.md) - Algorithm comparisons
-- [API Reference](docs/api_reference.md) - REST API documentation
+### Documentation (in `docs/`)
+- [Performance Analysis](docs/PERFORMANCE_ANALYSIS.md) — Cost/density derivations (theoretical)
+- [GC-Aware Encoding](docs/GC_AWARE_ENCODING.md) — Constraint optimization techniques
+- [Encoding Schemes](docs/encoding_schemes.md) — Algorithm comparisons
+- [API Reference](docs/api_reference.md) — Web API endpoints (note: some documented endpoints may not yet be implemented)
 
 ### Research Papers
-- [DNA Fountain - Science 2017](https://science.sciencemag.org/content/357/6358/1372)
-- [Goldman 2013 - Nature](https://www.nature.com/articles/nature11875)
-- [Grass 2015 - Nature Biotechnology](https://www.nature.com/articles/nbt.3147)
+- [DNA Fountain — Erlich-Zielinski, Science 2017](https://science.sciencemag.org/content/357/6358/1372)
+- [Goldman et al., Nature 2013](https://www.nature.com/articles/nature11875)
+- [Grass et al., Nature Biotechnology 2015](https://www.nature.com/articles/nbt.3147)
 
-### Industry Links
-- [Twist Bioscience](https://www.twistbioscience.com/) - DNA synthesis provider
-- [Illumina](https://www.illumina.com/) - Sequencing technology
-- [Catalog DNA](https://www.catalogna.com/) - Commercial DNA storage
-- [DNA Data Storage Alliance](https://www.dnastoragealliance.org/) - Industry consortium
-
-### Community
-- **GitHub**: https://github.com/duan78/DNAproof
-- **Issues**: Bug reports, feature requests
-- **Discussions**: Q&A, ideas, collaboration
-- **Wiki**: Contributing guidelines, architecture docs
+### Industry Resources
+- [DNA Data Storage Alliance](https://www.dnastoragealliance.org/)
+- [Twist Bioscience](https://www.twistbioscience.com/) — DNA synthesis
+- [Illumina](https://www.illumina.com/) — Sequencing technology
+- [Catalog DNA](https://www.catalogna.com/) — Commercial DNA storage
 
 ---
 
 ## 📄 License
 
-Dual-licensed: MIT OR Apache-2.0
+Licensed under **MIT OR Apache-2.0** (per `Cargo.toml`).
 
-**Why dual license?**
-- **MIT**: Maximum permissivity for open-source contributors
-- **Apache-2.0**: Patent protection for enterprise users
-
-Choose whichever suits your use case.
-
----
-
-## 🔗 Quick Links
-
-| Resource | Link |
-|----------|------|
-| **GitHub Repository** | https://github.com/duan78/DNAproof |
-| **Performance Analysis** | [docs/PERFORMANCE_ANALYSIS.md](docs/PERFORMANCE_ANALYSIS.md) |
-| **Issue Tracker** | https://github.com/duan78/DNAproof/issues |
-| **Discussion Forum** | https://github.com/duan78/DNAproof/discussions |
-| **Release Notes** | https://github.com/duan78/DNAproof/releases |
-
----
-
-## 📞 Contact & Collaboration
-
-### For Developers
-- **Contribution**: See [Contributing](#-contributing) section
-- **Questions**: Open a [GitHub Discussion](https://github.com/duan78/DNAproof/discussions)
-- **Bugs**: Report via [GitHub Issues](https://github.com/duan78/DNAproof/issues)
-
-### For Researchers
-- **Collaboration**: Research partnerships, joint publications
-- **Data access**: Benchmark datasets, testing frameworks
-- **Funding**: Grant applications, academic partnerships
-
-### For Investors & Partners
-- **Business inquiries**: Technology licensing, joint ventures
-- **Pilot programs**: Enterprise deployments, case studies
-- **Strategic partnerships**: DNA synthesis providers, cloud platforms
-
-### For Media
-- **Press kit**: Technical summaries, benchmark data
-- **Interviews**: Technical deep-dives, vision talks
-- **Demos**: Live encoding/decoding demonstrations
+> **Note**: The license is declared in the workspace `Cargo.toml` (`license = "MIT OR Apache-2.0"`). A standalone `LICENSE` file should be added for completeness.
 
 ---
 
 <div align="center">
 
-### 🧬 The Future of Data Storage is Here
+**[GitHub](https://github.com/duan78/DNAproof)** · **[Issues](https://github.com/duan78/DNAproof/issues)** · **[Discussions](https://github.com/duan78/DNAproof/discussions)**
 
-**Store the knowledge of civilization in a molecule.**
-
-**Preserve data for 500 years without electricity.**
-
-**Archive 1000 TB on 6 milligrams of DNA.**
-
----
-
-**[⭐ Star us on GitHub](https://github.com/duan78/DNAproof)** |
-**[🐛 Report Issues](https://github.com/duan78/DNAproof/issues)** |
-**[💬 Join Discussions](https://github.com/duan78/DNAproof/discussions)** |
-**[📧 Contact Us](mailto:contact@dna-storage.example.com)**
-
----
-
-**Powered by Rust + Science + Community**
-
-*Professional DNA Data Storage Platform v0.1.0*
-
-*Revolutionizing digital preservation, one base pair at a time*
+*Built with Rust · DNA Data Storage Library v0.1.0*
 
 </div>
