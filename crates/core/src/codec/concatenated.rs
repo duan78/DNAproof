@@ -482,4 +482,61 @@ mod tests {
         // Les sorties doivent être des bools
         let _ = (out1, out2);
     }
+
+    #[test]
+    fn test_concatenated_error_correction() {
+        // Le code concaténé (RS outer + Convolutional inner) doit corriger
+        // des erreurs grâce à la redondance du RS (255,223).
+        // On injecte quelques erreurs dans le flux encodé et vérifie la récupération.
+        let codec = ConcatenatedCodec::new().with_convolutional(false);
+
+        let original = b"Testing RS error correction in concatenated codec!!!";
+        let encoded = codec.encode(original).unwrap();
+
+        // Corrompre quelques bytes dans le flux encodé (après le préfixe de longueur)
+        let mut corrupted = encoded.clone();
+        corrupted[10] ^= 0xFF;
+        corrupted[11] ^= 0xFF;
+
+        let decoded = codec.decode(&corrupted).unwrap();
+        assert_eq!(
+            original.to_vec(), decoded,
+            "RS doit corriger les erreurs injectées dans le code concaténé"
+        );
+    }
+
+    #[test]
+    fn test_convolutional_viterbi_bit_error_correction() {
+        // Le Viterbi decoder doit corriger quelques erreurs de bits dans le flux
+        // convolutif (hard-decision Viterbi avec K=7 peut corriger plusieurs erreurs).
+        let codec = ConvolutionalCodec::new();
+
+        let original = vec![0xCAu8, 0xFE, 0xBA, 0xBE];
+        let encoded = codec.encode(&original);
+
+        // Flip 1 bit dans le flux encodé
+        let mut corrupted = encoded.clone();
+        corrupted[10] ^= 1;
+
+        let decoded = codec.decode(&corrupted).unwrap();
+
+        // Le Viterbi doit corriger cette seule erreur de bit
+        // (reconstruire les bytes à partir des bits décodés)
+        let mut result_byte;
+        let mut result = Vec::new();
+        for byte_idx in 0..original.len() {
+            result_byte = 0u8;
+            for bit in 0..8 {
+                let idx = byte_idx * 8 + bit;
+                if idx < decoded.len() {
+                    result_byte |= decoded[idx] << (7 - bit);
+                }
+            }
+            result.push(result_byte);
+        }
+        assert_eq!(
+            original, result,
+            "Viterbi doit corriger 1 erreur de bit"
+        );
+    }
 }

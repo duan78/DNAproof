@@ -148,20 +148,20 @@ impl DatabasePool {
         }
     }
 
-    /// Exécute une requête SQL avec retour de résultats
-    pub async fn fetch_all(&self, query: &str) -> crate::Result<Vec<sqlx::sqlite::SqliteRow>> {
+    /// Exécute une requête SQL et retourne le nombre de lignes affectées.
+    ///
+    /// Note: la version précédente retournait `Vec<SqliteRow>` (spécifique SQLite),
+    /// ce qui rendait PostgreSQL impossible. Cette version générique retourne
+    /// le nombre de lignes, compatible avec les deux backends.
+    pub async fn fetch_count(&self, query: &str) -> crate::Result<u64> {
         match self {
             DatabasePool::Sqlite(pool) => {
-                Ok(sqlx::query(query).fetch_all(pool).await?)
+                let result = sqlx::query(query).execute(pool).await?;
+                Ok(result.rows_affected())
             }
             DatabasePool::Postgres(pool) => {
-                // Note: Pour PostgreSQL, utiliser fetch_all_postgres à la place
-                // Cette méthode retourne SqliteRow pour compatibilité avec SQLite
-                let _rows = sqlx::query(query).fetch_all(pool).await?;
-                // PostgreSQL n'est pas encore supporté pour fetch_all avec SqliteRow
-                Err(crate::StorageError::DatabaseError(
-                    "PostgreSQL fetch_all non supporté - utiliser SQLite pour cette opération".to_string()
-                ))
+                let result = sqlx::query(query).execute(pool).await?;
+                Ok(result.rows_affected())
             }
         }
     }

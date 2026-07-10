@@ -36,3 +36,11 @@ harness = false
 [[bench]]
 name = "density_benchmark"
 harness = false
+
+[[bench]]
+name = "decoding_benchmark"
+harness = false
+
+[[bench]]
+name = "throughput_benchmark"
+harness = false

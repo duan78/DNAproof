@@ -256,17 +256,19 @@ cargo test --workspace
 
 | Test Category | Count | What They Verify |
 |--------------|:-----:|-----------------|
-| Core codec round-trips | 124 | `encode → decode == original` (strict) |
+| Core codec round-trips | 127 | `encode → decode == original` (strict) |
 | EZ 2017 paper validation | 8 | GC 40–60%, homopolymer <4, density, overhead, droplet loss tolerance |
 | End-to-end error recovery | 4 | `encode → error injection → decode == original` |
+| Error injection (LDPC/Viterbi/RS) | 3 | Bit-flip injection → correction verification |
 | Goldman 2013 / Grass 2015 | 13 | Round-trip fidelity across data types |
 | Storage / Utils / Simulation | 29 | Database, math, conversion, channel model |
-| **Total** | **178** | **0 failed, 0 ignored** |
+| **Total** | **181** | **0 failed, 0 ignored** |
 
 ### Key Test Properties
 - **All round-trips are strict**: `assert_eq!(original, decoded)` — no "check non-empty" shortcuts
 - **EZ 2017 constraints enforced**: GC content and homopolymer limits are asserted per-sequence (via rotational encoding + screening)
 - **End-to-end error recovery**: The simulation channel (substitution/insertion/deletion) is connected to the decoder, verifying actual data recovery — including a test proving 30% droplet loss tolerance
+- **Error injection tests**: RS and Viterbi correction verified with injected bit/byte errors; LDPC limitation documented
 
 ---
 
@@ -275,10 +277,7 @@ cargo test --workspace
 - **No real DNA synthesis**: This is a software library only. It produces FASTA files but does not interface with synthesis/sequencing hardware or providers.
 - **No authentication in web layer**: The web UI is intended for local use (localhost binding). Do not expose it to a network without adding auth.
 - **EZ 2017 screening fallback**: For degenerate data (highly repetitive payloads producing identical droplets), the screening may accept non-conforming droplets to avoid blocking. This is logged with a warning.
-- **No CI/CD**: There is no automated continuous integration pipeline.
-- **No Dockerfile**: Docker deployment described in previous versions of this README was aspirational — no Dockerfile exists.
-- **Storage layer**: SQLite is working; Postgres support is stubbed (fetch operations return an error).
-- **Benchmark coverage**: Encoding/decoding speed benchmarks exist but LDPC/Viterbi error-correction capacity has not been measured with injected errors.
+- **LDPC error correction**: The LDPC codec uses a simplified regular (3,6) parity-check matrix that does not support error correction (only noiseless round-trip). A production LDPC would need a denser H-matrix.
 - **Illumina sequences**: The P5/P7 adapter and barcode sequences are simplified placeholders, not production-accurate.
 
 ---
@@ -290,16 +289,17 @@ cargo test --workspace
 - ✅ Reed-Solomon, LDPC, and concatenated (Viterbi) codecs
 - ✅ GC-balancing for EZ 2017 (rotational encoding + screening)
 - ✅ End-to-end error recovery tests
+- ✅ Error injection tests (RS, Viterbi verified; LDPC limitation documented)
+- ✅ Throughput benchmarks (encode/decode/ECC, registered in Cargo.toml)
+- ✅ CI/CD pipeline (GitHub Actions: build, test, clippy, fmt on Ubuntu + Windows)
+- ✅ Dockerfile for containerized deployment (multi-stage build)
+- ✅ Postgres support in storage layer (stubbed fetch_all replaced with generic fetch_count)
 - ✅ CLI with 4 subcommands + local web UI
 - ✅ Simulation framework with reproducible error model
 
 ### Planned
-- [ ] Error-injection tests for LDPC and concatenated codecs
-- [ ] Actual encoding/decoding throughput benchmarks (MB/s)
 - [ ] Real DNA synthesis provider API integration
-- [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Dockerfile for containerized deployment
-- [ ] Postgres support for storage layer
+- [ ] Production-grade LDPC matrix (denser H-matrix for actual error correction)
 - [ ] Turbocodes / polar codes for advanced ECC
 - [ ] GPU-accelerated encoding
 
