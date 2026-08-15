@@ -1,15 +1,14 @@
 //! Encodeur ADN - Implémente DNA Fountain et autres algorithmes
 
+use crate::codec::fountain;
 use crate::error::{DnaError, Result};
 use crate::sequence::{DnaConstraints, DnaSequence, IupacBase};
-use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // Importer les macros depuis la racine du crate
-pub use crate::{log_operation, log_error};
+pub use crate::{log_error, log_operation};
 
 /// Type d'algorithme d'encodage
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -20,15 +19,16 @@ pub enum EncoderType {
     /// Erlich-Zielinski 2017 - DNA Fountain avec paramètres validés (Science 2017)
     /// Paramètres: c=0.1, δ=0.5, GC 40-60%, homopolymer <4, 152nt
     ErlichZielinski2017,
-    /// Goldman et al. 2013 - Nature 2013 (Huffman + 3-base rotation + 4-byte addressing)
+    /// Goldman et al. 2013 - Nature 2013 (LZ4 comme proxy de compression,
+    /// encodage 2-bits rotatif par position, index 16 bits sur 8 bases)
     Goldman2013,
-    /// Goldman code - Codage de Huffman simple (legacy)
+    /// Goldman code - Codage 2-bits simple sans fountain codes (legacy)
     Goldman,
     /// Grass et al. 2015 - Nature Biotechnology 2015 (Reed-Solomon + 3-segment addressing)
     Grass2015,
-    /// Encodage adaptatif
+    /// Encodage adaptatif — pipeline Fountain avec routage dédié au décodage
     Adaptive,
-    /// Encodage base-3 optimisé
+    /// Encodage base-3 (actuellement: fallback sur l'encodage Goldman 2-bits)
     Base3,
     /// Ultimate - toutes les optimisations combinées (adaptatif + RS + spreading + GC-aware)
     Ultimate,
@@ -84,8 +84,32 @@ pub struct Encoder {
 
 impl Encoder {
     /// Crée un nouvel encodeur
+    ///
+    /// Retourne une erreur si la configuration est incohérente
+    /// (chunk_size nul, redondance < 1.0 ou non finie).
     pub fn new(config: EncoderConfig) -> Result<Self> {
+        Self::validate_config(&config)?;
         Ok(Self { config })
+    }
+
+    /// Valide la cohérence de la configuration.
+    ///
+    /// - `chunk_size == 0` ferait paniquer `chunks()` à l'encodage ;
+    /// - `redundancy < 1.0` produirait silencieusement zéro goutte (données
+    ///   non récupérables), et une valeur non finie sature le cast en usize.
+    fn validate_config(config: &EncoderConfig) -> Result<()> {
+        if config.chunk_size == 0 {
+            return Err(DnaError::InvalidConfig(
+                "chunk_size doit être >= 1 octet".to_string(),
+            ));
+        }
+        if !config.redundancy.is_finite() || config.redundancy < 1.0 {
+            return Err(DnaError::InvalidConfig(format!(
+                "redundancy doit être un nombre fini >= 1.0 (reçu {})",
+                config.redundancy
+            )));
+        }
+        Ok(())
     }
 
     /// Retourne le nom du schéma d'encodage actuel
@@ -102,6 +126,19 @@ impl Encoder {
         }
     }
 
+    /// Marqueur de compression embarqué dans le schéma pour le décodeur :
+    /// "l4" (LZ4), "zst" (Zstd) ou "raw" (aucune compression).
+    fn compression_marker(&self) -> &'static str {
+        if !self.config.compression_enabled {
+            return "raw";
+        }
+        match self.config.compression_type {
+            CompressionType::Lz4 => "l4",
+            CompressionType::Zstd => "zst",
+            CompressionType::None => "raw",
+        }
+    }
+
     /// Encode des données en séquences ADN avec optimisation de performance
     pub fn encode(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
         log_operation!("encode_data", {
@@ -114,17 +151,24 @@ impl Encoder {
 
             // 2. Division en chunks
             let chunks = self.split_into_chunks(&processed_data);
+            let original_len = processed_data.len();
 
             // 3. Encodage selon le type avec parallélisme
             let sequences = match self.config.encoder_type {
-                EncoderType::Fountain => self.encode_fountain_optimized(&chunks)?,
-                EncoderType::ErlichZielinski2017 => self.encode_erlich_zielinski_2017(&chunks)?,
+                EncoderType::Fountain => self.encode_fountain_optimized(&chunks, original_len)?,
+                EncoderType::ErlichZielinski2017 => {
+                    self.encode_erlich_zielinski_2017(&chunks, original_len)?
+                }
                 EncoderType::Goldman2013 => self.encode_goldman_2013(data)?,
                 EncoderType::Goldman => self.encode_goldman(&chunks)?,
                 EncoderType::Grass2015 => self.encode_grass_2015(data)?,
-                EncoderType::Adaptive => self.encode_adaptive(&chunks)?,
+                EncoderType::Adaptive => self.encode_adaptive(&chunks, original_len)?,
                 EncoderType::Base3 => self.encode_base3(&chunks)?,
-                EncoderType::Ultimate => self.encode_ultimate(&chunks)?,
+                // Ultimate applique sa propre compression adaptative : on lui
+                // passe les données brutes (pas le buffer déjà compressé par
+                // `self.compress`), sinon les données seraient compressées deux
+                // fois et le décodeur ne pourrait pas tout décompresser.
+                EncoderType::Ultimate => self.encode_ultimate(data)?,
             };
 
             Ok(sequences)
@@ -179,7 +223,11 @@ impl Encoder {
     }
 
     /// Encodage DNA Fountain optimisé avec parallélisme
-    fn encode_fountain_optimized(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+    fn encode_fountain_optimized(
+        &self,
+        chunks: &[Vec<u8>],
+        original_len: usize,
+    ) -> Result<Vec<DnaSequence>> {
         // Pader les chunks à taille uniforme (requis pour le XOR du LT code)
         let mut chunks = chunks.to_vec();
         self.pad_chunks_for_fountain(&mut chunks);
@@ -193,7 +241,7 @@ impl Encoder {
             .into_par_iter()
             .map(|seed| {
                 // Échantillonner le degré depuis la distribution robust soliton
-                let degree = Self::sample_robust_soliton_degree(num_chunks, seed as u64);
+                let degree = fountain::sample_robust_soliton_degree(num_chunks, seed as u64);
 
                 // Sélectionner les chunks (seed-based pour reproductibilité)
                 let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed as u64);
@@ -202,11 +250,92 @@ impl Encoder {
                 let payload = Self::xor_chunks(&selected_chunks)?;
 
                 // Convertir en ADN avec contraintes (encode num_chunks pour le décodeur)
-                self.payload_to_dna_with_chunks(payload, seed as u64, Some(num_chunks))
+                self.payload_to_dna_with_chunks(
+                    payload,
+                    seed as u64,
+                    Some(num_chunks),
+                    original_len,
+                )
             })
             .collect();
 
-        sequences
+        // Garantir la décodabilité : avec peu de chunks, un tirage aléatoire
+        // peut laisser un chunk absent de tout droplet exploitable par le
+        // peeling. On ajoute des droplets jusqu'à couverture complète.
+        let mut sequences = sequences?;
+        self.ensure_peelable(&mut sequences, chunks, num_chunks, original_len)?;
+
+        Ok(sequences)
+    }
+
+    /// Vérifie par simulation que le peeling decoder peut reconstruire tous
+    /// les chunks depuis les séquences générées (coverage structurelle).
+    ///
+    /// La simulation utilise des payloads factices : la structure du graphe
+    /// (degrés et indices par seed) suffit à déterminer si le peeling aboutit.
+    fn droplets_peelable(sequences: &[DnaSequence], num_chunks: usize, chunk_size: usize) -> bool {
+        use crate::codec::decoder::{DecoderConfig, Droplet, FountainDecoder, Progress};
+
+        if num_chunks == 0 {
+            return true;
+        }
+
+        let mut decoder = FountainDecoder::new(DecoderConfig::default(), num_chunks, chunk_size);
+        let dummy_payload = vec![0u8; chunk_size];
+
+        for seq in sequences {
+            let seed = seq.metadata.seed;
+            let degree = fountain::sample_robust_soliton_degree(num_chunks, seed);
+            let indices = fountain::select_chunk_indices(num_chunks, degree, seed);
+            match decoder.add_droplet(Droplet::new(indices, dummy_payload.clone(), seed)) {
+                Ok(Progress::Complete(_)) => return true,
+                Ok(Progress::Incomplete) => {}
+                Err(_) => return false,
+            }
+        }
+        decoder.is_complete()
+    }
+
+    /// Ajoute des droplets supplémentaires tant que l'ensemble n'est pas
+    /// décodable par peeling (garantie de round-trip).
+    fn ensure_peelable(
+        &self,
+        sequences: &mut Vec<DnaSequence>,
+        chunks: &[Vec<u8>],
+        num_chunks: usize,
+        original_len: usize,
+    ) -> Result<()> {
+        if num_chunks == 0 {
+            return Ok(());
+        }
+
+        let chunk_size = chunks.first().map(|c| c.len()).unwrap_or(0);
+        let mut seed = sequences.last().map(|s| s.metadata.seed + 1).unwrap_or(0);
+        let max_extra = num_chunks * 200;
+
+        for _ in 0..max_extra {
+            if Self::droplets_peelable(sequences, num_chunks, chunk_size) {
+                return Ok(());
+            }
+
+            let degree = fountain::sample_robust_soliton_degree(num_chunks, seed);
+            let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed);
+            let payload = Self::xor_chunks(&selected_chunks)?;
+            let dna =
+                self.payload_to_dna_with_chunks(payload, seed, Some(num_chunks), original_len)?;
+            sequences.push(dna);
+            seed += 1;
+        }
+
+        // Best effort : improbable (le tirage aléatoire couvre rapidement),
+        // mais on ne bloque pas l'encodage pour autant.
+        if !Self::droplets_peelable(sequences, num_chunks, chunk_size) {
+            eprintln!(
+                "[warn] Fountain: {} droplets générés mais couverture peeling incomplète",
+                sequences.len()
+            );
+        }
+        Ok(())
     }
 
     /// Encodage Erlich-Zielinski 2017 - DNA Fountain validé (Science 2017)
@@ -224,7 +353,11 @@ impl Encoder {
     /// GARANTIE DES CONTRAINTES : l'encodage rotatif réduit statistiquement les
     /// violations GC/homopolymer. Un screening (rejet des séquences non conformes)
     /// garantit strictement le respect des contraintes EZ 2017 (GC 40-60%, homopolymer <4).
-    fn encode_erlich_zielinski_2017(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+    fn encode_erlich_zielinski_2017(
+        &self,
+        chunks: &[Vec<u8>],
+        original_len: usize,
+    ) -> Result<Vec<DnaSequence>> {
         // Pader les chunks à taille uniforme (requis pour le XOR du LT code)
         let mut chunks = chunks.to_vec();
         self.pad_chunks_for_fountain(&mut chunks);
@@ -248,10 +381,11 @@ impl Encoder {
             attempts += 1;
 
             // Distribution de degré identique au décodeur
-            let degree = Self::sample_robust_soliton_degree(num_chunks, seed);
+            let degree = fountain::sample_robust_soliton_degree(num_chunks, seed);
             let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed);
             let payload = Self::xor_chunks(&selected_chunks)?;
-            let dna = self.payload_to_dna_with_chunks(payload, seed, Some(num_chunks))?;
+            let dna =
+                self.payload_to_dna_with_chunks(payload, seed, Some(num_chunks), original_len)?;
 
             // Screening : vérifier strictement les contraintes EZ 2017
             if Self::check_ez2017_constraints(&dna) {
@@ -273,12 +407,29 @@ impl Encoder {
                  Acceptation de droplets non conformes pour garantir le round-trip.",
                 sequences.len(), num_droplets, rejected_count
             );
-            let degree = Self::sample_robust_soliton_degree(num_chunks, seed);
+            let degree = fountain::sample_robust_soliton_degree(num_chunks, seed);
             let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed);
             let payload = Self::xor_chunks(&selected_chunks)?;
-            let dna = self.payload_to_dna_with_chunks(payload, seed, Some(num_chunks))?;
+            let dna =
+                self.payload_to_dna_with_chunks(payload, seed, Some(num_chunks), original_len)?;
             sequences.push(dna);
             seed += 1;
+        }
+
+        // Garantie de décodabilité : le screening GC rejette déterministement
+        // tout droplet de degré 1 dont le chunk seul viole GC 40-60% — de tels
+        // chunks ne peuvent alors être récupérés que par peeling depuis des
+        // XOR, ce qui peut échouer (observé avec K=5 : chunks sans aucune
+        // couverture exploitable). On ajoute des droplets non conformes
+        // jusqu'à ce que le peeling aboutisse : le round-trip prime sur les
+        // contraintes biochimiques dans ce cas dégénéré.
+        let chunk_size = chunks.first().map(|c| c.len()).unwrap_or(0);
+        if !Self::droplets_peelable(&sequences, num_chunks, chunk_size) {
+            eprintln!(
+                "[warn] EZ 2017: le screening a laissé des chunks non couvrables, \
+                 ajout de droplets non conformes pour garantir le round-trip"
+            );
+            self.ensure_peelable(&mut sequences, chunks, num_chunks, original_len)?;
         }
 
         Ok(sequences)
@@ -313,103 +464,15 @@ impl Encoder {
         true
     }
 
-    /// Encodage DNA Fountain (version originale pour compatibilité)
-    fn encode_fountain(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
-        let num_chunks = chunks.len();
-        let num_droplets = (num_chunks as f64 * self.config.redundancy).ceil() as usize;
-
-        let mut sequences = Vec::with_capacity(num_droplets);
-
-        for seed in 0..num_droplets {
-            // Échantillonner le degré depuis la distribution robust soliton
-            let degree = Self::sample_robust_soliton_degree(num_chunks, seed as u64);
-
-            // Sélectionner les chunks (seed-based pour reproductibilité)
-            let selected_chunks = Self::select_chunks_seeded(chunks, degree, seed as u64);
-
-            // XOR des chunks sélectionnés
-            let payload = Self::xor_chunks(&selected_chunks)?;
-
-            // Convertir en ADN avec contraintes
-            let dna = self.payload_to_dna(payload, seed as u64)?;
-
-            sequences.push(dna);
-        }
-
-        Ok(sequences)
-    }
-
-    /// Échantillonne un degré depuis la distribution Robust Soliton
-    fn sample_robust_soliton_degree(num_chunks: usize, seed: u64) -> usize {
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-
-        // Distribution Robust Soliton simplifiée
-        // K = num_chunks, c = 0.1, delta = 0.5
-
-        let k = num_chunks as f64;
-        let c = 0.1;
-        let _delta = 0.5; // Paramètre Robust Soliton (non utilisé dans cette implémentation simplifiée)
-
-        // Tau function
-        let tau = |d: f64| -> f64 {
-            if d <= (k / c - 1.0).ceil() {
-                1.0 / (d * c)
-            } else {
-                0.0
-            }
-        };
-
-        // Calculer les poids pour chaque degré possible
-        let mut weights = Vec::with_capacity(num_chunks);
-
-        for d in 1..=num_chunks {
-            let d_float = d as f64;
-            let rho = if d == 1 {
-                1.0 / k
-            } else {
-                1.0 / (d_float * (d_float - 1.0))
-            };
-
-            let weight = rho + tau(d as f64);
-            weights.push(weight);
-        }
-
-        // Normaliser
-        let sum: f64 = weights.iter().sum();
-        for w in weights.iter_mut() {
-            *w /= sum;
-        }
-
-        // Échantillonner
-        let mut cumulative = 0.0;
-        let sample = rng.gen::<f64>();
-
-        for (d, &w) in weights.iter().enumerate() {
-            cumulative += w;
-            if sample <= cumulative {
-                return d + 1; // +1 car les degrés commencent à 1
-            }
-        }
-
-        num_chunks // Fallback
-    }
-
-    /// Sélectionne des chunks de façon déterministe (seed-based)
+    /// Sélectionne des chunks de façon déterministe (seed-based).
+    ///
+    /// Délègue le tirage des indices au module `fountain` (flux RNG indépendant
+    /// du tirage du degré) puis récupère les chunks correspondants.
     fn select_chunks_seeded(chunks: &[Vec<u8>], degree: usize, seed: u64) -> Vec<Vec<u8>> {
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let mut indices = HashMap::new();
-
-        while indices.len() < degree {
-            let idx = rng.gen_range(0..chunks.len());
-            indices.insert(idx, ());
-        }
-
-        // Trier les indices pour garantir un ordre déterministe
-        let mut sorted_indices: Vec<usize> = indices.keys().copied().collect();
-        sorted_indices.sort();
+        let indices = fountain::select_chunk_indices(chunks.len(), degree, seed);
 
         let mut selected = Vec::with_capacity(degree);
-        for idx in sorted_indices {
+        for idx in indices {
             selected.push(chunks[idx].clone());
         }
 
@@ -436,27 +499,25 @@ impl Encoder {
         Ok(result)
     }
 
-    /// Convertit un payload en séquence ADN avec optimisation.
-    ///
-    /// Le nombre de chunks (`num_chunks`) est encodé dans le champ `original_file`
-    /// sous la forme `<scheme>#<num_chunks>`, ce qui permet au décodeur Fountain
-    /// de connaître le nombre exact de chunks sans avoir à le deviner.
-    fn payload_to_dna(&self, payload: Vec<u8>, seed: u64) -> Result<DnaSequence> {
-        self.payload_to_dna_with_chunks(payload, seed, None)
-    }
-
-    /// Variante de payload_to_dna qui encode le nombre de chunks dans le schéma.
+    /// Convertit un payload en séquence ADN, en encodant le nombre de chunks
+    /// et la longueur originale des données dans le schéma
+    /// (`<scheme>#<num_chunks>#<original_len>`).
     ///
     /// Utilise un encodage rotatif déterministe : pour chaque 2 bits à la position
     /// globale `i`, la table de mapping est cycliquement décalée de `i % 4` positions.
     /// Cela distribue uniformément les bases et réduit statistiquement les homopolymères
     /// et le déséquilibre GC. Le décodeur peut inverser exactement car la rotation ne
     /// dépend que de la position (connue au décodage).
+    ///
+    /// `original_len` permet au décodeur de retirer le padding du dernier chunk
+    /// quand la compression est désactivée (la compression, elle, connaît sa
+    /// propre taille de sortie).
     fn payload_to_dna_with_chunks(
         &self,
         payload: Vec<u8>,
         seed: u64,
         num_chunks: Option<usize>,
+        original_len: usize,
     ) -> Result<DnaSequence> {
         let mut bases = Vec::with_capacity(payload.len() * 4);
         let payload_len = payload.len();
@@ -491,9 +552,16 @@ impl Encoder {
             }
         }
 
-        // Créer la séquence — encoder num_chunks dans le schéma pour le décodeur
+        // Créer la séquence — encoder num_chunks, longueur originale et méthode
+        // de compression dans le schéma pour le décodeur
         let scheme = match num_chunks {
-            Some(n) => format!("{}#{}", self.encoding_scheme_name(), n),
+            Some(n) => format!(
+                "{}#{}#{}#{}",
+                self.encoding_scheme_name(),
+                n,
+                original_len,
+                self.compression_marker()
+            ),
             None => self.encoding_scheme_name().to_string(),
         };
         let sequence = DnaSequence::with_encoding_scheme(
@@ -580,6 +648,13 @@ impl Encoder {
     fn encode_goldman(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
         let mut sequences = Vec::with_capacity(chunks.len());
 
+        // Schéma suffixé du marqueur de compression pour le décodeur générique
+        let scheme = format!(
+            "{}#{}",
+            self.encoding_scheme_name(),
+            self.compression_marker()
+        );
+
         for (i, chunk) in chunks.iter().enumerate() {
             let bases = self.chunk_to_bases(chunk)?;
 
@@ -589,7 +664,7 @@ impl Encoder {
                 i,
                 chunk.len(),
                 i as u64,
-                self.encoding_scheme_name().to_string(),
+                scheme.clone(),
             );
 
             // Note: Old Goldman encoder doesn't handle GC/homopolymer constraints
@@ -629,51 +704,52 @@ impl Encoder {
         Ok(bases)
     }
 
-    /// Encodage adaptatif
-    fn encode_adaptive(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
-        // Pour l'instant, fallback sur fountain
-        self.encode_fountain(chunks)
+    /// Encodage adaptatif.
+    ///
+    /// Choisit le pipeline Fountain (chunks padés à taille uniforme, LT code,
+    /// encodage rotatif) avec le schéma `adaptive#N` : le décodeur route ce
+    /// schéma vers le même peeling decoder que Fountain/EZ2017, ce qui garantit
+    /// le round-trip. La sélection adaptative de la compression reste gérée en
+    /// amont via `EncoderConfig::compression_type`.
+    fn encode_adaptive(&self, chunks: &[Vec<u8>], original_len: usize) -> Result<Vec<DnaSequence>> {
+        self.encode_fountain_optimized(chunks, original_len)
     }
 
-    /// Encodage base-3 optimisé
+    /// Encodage base-3 (actuellement: fallback sur l'encodage Goldman 2-bits)
     fn encode_base3(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
-        // Pour l'instant, fallback sur goldman
         self.encode_goldman(chunks)
     }
 
     /// Encodage Ultimate - combine adaptatif + RS + spreading + GC-aware.
     ///
     /// Utilise le codec UltimateEncoder qui orchestre toutes les optimisations.
-    /// Le décodage se fait via le routing du Decoder qui détecte le schéma
-    /// "ultimate" dans les métadonnées.
-    fn encode_ultimate(&self, chunks: &[Vec<u8>]) -> Result<Vec<DnaSequence>> {
+    /// Les séquences sont taggées `ultimate#<méthode_de_compression>` par le
+    /// codec lui-même, ce qui permet au décodeur de choisir la bonne
+    /// décompression.
+    fn encode_ultimate(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
         use crate::codec::ultimate::{UltimateCodec, UltimateEncoderConfig};
 
-        // Les chunks contiennent déjà les données (compressées ou non selon config).
-        // UltimateCodec applique sa propre compression adaptative + RS + spreading + GC-aware.
-        // On reconstruit le buffer depuis les chunks.
-        let data: Vec<u8> = chunks.iter().flatten().copied().collect();
+        // Le format GC-aware produit des oligos de 152nt par construction :
+        // relever la contrainte de longueur si elle est plus basse, sinon
+        // l'encodage échouerait systématiquement.
+        let mut constraints = self.config.constraints.clone();
+        constraints.max_sequence_length = constraints.max_sequence_length.max(152);
 
         let config = UltimateEncoderConfig::default();
-        let mut codec = UltimateCodec::new(self.config.constraints.clone(), config);
+        let mut codec = UltimateCodec::new(constraints, config);
 
-        let mut sequences = codec.encode(&data)?;
-
-        // Tagger les séquences avec le schéma "ultimate" pour le routing du décodeur
-        for seq in &mut sequences {
-            seq.metadata.encoding_scheme = "ultimate".to_string();
-        }
-
-        Ok(sequences)
+        codec.encode(data)
     }
 
     /// Encodage Goldman et al. 2013 - Nature 2013
     ///
-    /// Spécifications du papier:
-    /// - Compression Huffman (utilisant LZ4 comme proxy pour MVP)
-    /// - Encodage 3-base rotation (pas 2-bit fixe)
-    /// - Addressing 4-byte par oligo
-    /// - Segments alternés addressing/data
+    /// Implémentation simplifiée (voir codec/goldman_2013.rs pour le détail) :
+    /// - Compression LZ4 (proxy pour le Huffman du papier)
+    /// - Encodage 2-bits avec rotation par position
+    /// - Index de segment 16 bits encodé sur 8 bases
+    ///
+    /// La paire encodeur/décodeur est mutuellement cohérente (round-trip validé)
+    /// mais ne suit pas fidèlement le schéma à segments alternés du papier.
     fn encode_goldman_2013(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
         use crate::codec::goldman_2013::Goldman2013Encoder;
 
@@ -735,23 +811,19 @@ mod tests {
 
     #[test]
     fn test_fountain_degree_sampling() {
-        let degree1 = Encoder::sample_robust_soliton_degree(100, 42);
-        let degree2 = Encoder::sample_robust_soliton_degree(100, 42);
+        let degree1 = fountain::sample_robust_soliton_degree(100, 42);
+        let degree2 = fountain::sample_robust_soliton_degree(100, 42);
 
         // Même seed = même degré
         assert_eq!(degree1, degree2);
 
-        let _degree3 = Encoder::sample_robust_soliton_degree(100, 43);
+        let _degree3 = fountain::sample_robust_soliton_degree(100, 43);
         // Seed différent = potentiellement différent (mais pas garanti)
     }
 
     #[test]
     fn test_seed_based_selection() {
-        let chunks = vec![
-            vec![1, 2, 3],
-            vec![4, 5, 6],
-            vec![7, 8, 9],
-        ];
+        let chunks = vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]];
 
         let selected1 = Encoder::select_chunks_seeded(&chunks, 2, 42);
         let selected2 = Encoder::select_chunks_seeded(&chunks, 2, 42);

@@ -1,13 +1,13 @@
 //! Benchmarks pour le décodage ADN
 
+use adn_core::{Decoder, DecoderConfig, Encoder, EncoderConfig, EncoderType};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use adn_core::{Encoder, Decoder, EncoderConfig, DecoderConfig, EncoderType};
 use std::time::Duration;
 
 fn benchmark_decoding(c: &mut Criterion) {
     // Préparer les données d'encodage
     let original_data = vec![0u8; 1024 * 100]; // 100KB
-    
+
     let encoder_config = EncoderConfig {
         encoder_type: EncoderType::Fountain,
         chunk_size: 32,
@@ -25,7 +25,7 @@ fn benchmark_decoding(c: &mut Criterion) {
 
     group.bench_function("decode_100kb", |b| {
         let decoder = Decoder::new(DecoderConfig::default());
-        
+
         b.iter(|| {
             let _ = decoder.decode(black_box(&sequences));
         });
@@ -55,7 +55,7 @@ fn benchmark_roundtrip(c: &mut Criterion) {
 
             let encoder = Encoder::new(encoder_config).unwrap();
             let decoder = Decoder::new(DecoderConfig::default());
-            
+
             b.iter(|| {
                 let sequences = encoder.encode(black_box(&data)).unwrap();
                 let _ = decoder.decode(black_box(&sequences)).unwrap();
@@ -69,7 +69,7 @@ fn benchmark_roundtrip(c: &mut Criterion) {
 fn benchmark_fountain_decoding(c: &mut Criterion) {
     // Tester le décodage Fountain avec différents niveaux de redondance
     let original_data = vec![0u8; 1024 * 50]; // 50KB
-    
+
     let redundancies = vec![1.0, 1.2, 1.5, 2.0];
 
     let mut group = c.benchmark_group("Fountain Decoding");
@@ -88,7 +88,7 @@ fn benchmark_fountain_decoding(c: &mut Criterion) {
             let encoder = Encoder::new(encoder_config).unwrap();
             let sequences = encoder.encode(&original_data).unwrap();
             let decoder = Decoder::new(DecoderConfig::default());
-            
+
             b.iter(|| {
                 let _ = decoder.decode(black_box(&sequences)).unwrap();
             });
@@ -98,7 +98,7 @@ fn benchmark_fountain_decoding(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!{
+criterion_group! {
     name = decoding_benches;
     config = Criterion::default().warm_up_time(Duration::from_secs(5));
     targets = benchmark_decoding, benchmark_roundtrip, benchmark_fountain_decoding

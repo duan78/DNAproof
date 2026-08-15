@@ -86,9 +86,7 @@ impl DictionaryCompressor {
 
     /// Construit le dictionnaire à partir de DnaSequence
     pub fn build_dictionary_from_sequences(&mut self, sequences: &[DnaSequence]) {
-        let bases_list: Vec<_> = sequences.iter()
-            .map(|s| s.bases.clone())
-            .collect();
+        let bases_list: Vec<_> = sequences.iter().map(|s| s.bases.clone()).collect();
 
         self.build_dictionary(&bases_list);
     }
@@ -145,15 +143,16 @@ impl DictionaryCompressor {
                 // Motif du dictionnaire
                 if i + 1 >= compressed.len() {
                     return Err(DnaError::Decoding(
-                        "Dictionnaire incomplet (marqueur sans index)".to_string()
+                        "Dictionnaire incomplet (marqueur sans index)".to_string(),
                     ));
                 }
 
                 let dict_idx = compressed[i + 1] as usize;
                 if dict_idx >= self.reverse_dictionary.len() {
-                    return Err(DnaError::Decoding(
-                        format!("Index dictionnaire invalide : {}", dict_idx)
-                    ));
+                    return Err(DnaError::Decoding(format!(
+                        "Index dictionnaire invalide : {}",
+                        dict_idx
+                    )));
                 }
 
                 let motif = &self.reverse_dictionary[dict_idx];
@@ -220,7 +219,8 @@ impl DictionaryCompressor {
         if self.reverse_dictionary.is_empty() {
             return 1.0;
         }
-        let total_ratio: f64 = self.reverse_dictionary
+        let total_ratio: f64 = self
+            .reverse_dictionary
             .iter()
             .map(|motif| 2.0 / motif.len() as f64)
             .sum();
@@ -270,9 +270,7 @@ impl SequenceDictionaryCompressor {
 
     /// Compresse plusieurs séquences
     pub fn compress_batch(&self, sequences: &[DnaSequence]) -> Vec<Vec<u8>> {
-        sequences.iter()
-            .map(|seq| self.compress(seq))
-            .collect()
+        sequences.iter().map(|seq| self.compress(seq)).collect()
     }
 
     /// Retourne les stats du dictionnaire
@@ -314,15 +312,33 @@ mod tests {
         let mut compressor = DictionaryCompressor::new();
 
         let seq1 = vec![
-            IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T,
-            IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T,
-            IupacBase::G, IupacBase::C, IupacBase::A, IupacBase::T,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
+            IupacBase::G,
+            IupacBase::C,
+            IupacBase::A,
+            IupacBase::T,
         ];
 
         let seq2 = vec![
-            IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T,
-            IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T,
-            IupacBase::T, IupacBase::T, IupacBase::A, IupacBase::A,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
+            IupacBase::T,
+            IupacBase::T,
+            IupacBase::A,
+            IupacBase::A,
         ];
 
         compressor.build_dictionary(&[seq1, seq2]);
@@ -336,13 +352,26 @@ mod tests {
         let mut compressor = DictionaryCompressor::new();
 
         let sequences = vec![
-            (0..10).flat_map(|_| [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T]).collect(),
-            (0..10).flat_map(|_| [IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A]).collect(),
+            (0..10)
+                .flat_map(|_| [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T])
+                .collect(),
+            (0..10)
+                .flat_map(|_| [IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A])
+                .collect(),
         ];
 
         compressor.build_dictionary(&sequences);
 
-        let test_seq = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T, IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
+        let test_seq = vec![
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
+        ];
         let compressed = compressor.compress_sequence(&test_seq);
         let decompressed = compressor.decompress_sequence(&compressed).unwrap();
 
@@ -356,9 +385,9 @@ mod tests {
         assert_eq!(compressor.estimated_compression_ratio(), 1.0);
 
         let mut compressor = DictionaryCompressor::new();
-        compressor.build_dictionary(&[
-            (0..20).flat_map(|_| [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T]).collect(),
-        ]);
+        compressor.build_dictionary(&[(0..20)
+            .flat_map(|_| [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T])
+            .collect()]);
 
         // Avec un dictionnaire, le ratio estimé moyen doit être < 1.0
         // (les motifs de longueur L coûtent 2 bytes au lieu de L)
@@ -388,9 +417,9 @@ mod tests {
     fn test_clear_dictionary() {
         let mut compressor = DictionaryCompressor::new();
 
-        compressor.build_dictionary(&[
-            (0..10).flat_map(|_| [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T]).collect(),
-        ]);
+        compressor.build_dictionary(&[(0..10)
+            .flat_map(|_| [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T])
+            .collect()]);
 
         assert!(compressor.dict_size() > 0);
 
@@ -403,23 +432,27 @@ mod tests {
         let mut comp = SequenceDictionaryCompressor::new();
 
         // Créer des séquences de test
-        let seq1_bases: Vec<IupacBase> = (0..20).map(|_| {
-            [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T]
-                .into_iter()
-                .cycle()
-                .take(4)
-                .next()
-                .unwrap()
-        }).collect();
+        let seq1_bases: Vec<IupacBase> = (0..20)
+            .map(|_| {
+                [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T]
+                    .into_iter()
+                    .cycle()
+                    .take(4)
+                    .next()
+                    .unwrap()
+            })
+            .collect();
 
-        let seq2_bases: Vec<IupacBase> = (0..20).map(|_| {
-            [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T]
-                .into_iter()
-                .cycle()
-                .take(4)
-                .next()
-                .unwrap()
-        }).collect();
+        let seq2_bases: Vec<IupacBase> = (0..20)
+            .map(|_| {
+                [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T]
+                    .into_iter()
+                    .cycle()
+                    .take(4)
+                    .next()
+                    .unwrap()
+            })
+            .collect();
 
         let seq1 = DnaSequence::with_encoding_scheme(
             seq1_bases,

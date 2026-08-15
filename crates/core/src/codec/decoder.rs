@@ -1,17 +1,15 @@
 //! Décodeur ADN - Récupère les données depuis les séquences ADN
 
+use crate::codec::fountain;
 use crate::error::{DnaError, Result};
 use crate::sequence::{DnaSequence, IupacBase};
-use rand::Rng;
-use rand_chacha::ChaCha8Rng;
-use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
 // Importer les macros depuis la racine du crate
-pub use crate::{log_operation, log_error};
+pub use crate::{log_error, log_operation};
 
 /// Configuration du décodeur
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,8 +62,9 @@ impl Decoder {
     pub fn decode_from_fasta_auto(&self, fasta_path: &str) -> Result<Vec<u8>> {
         log_operation!("decode_from_fasta_auto", {
             // Lire le fichier FASTA
-            let file = File::open(fasta_path)
-                .map_err(|e| DnaError::Decoding(format!("Impossible d'ouvrir {}: {}", fasta_path, e)))?;
+            let file = File::open(fasta_path).map_err(|e| {
+                DnaError::Decoding(format!("Impossible d'ouvrir {}: {}", fasta_path, e))
+            })?;
 
             let reader = BufReader::new(file);
             let mut sequences = Vec::new();
@@ -75,8 +74,8 @@ impl Decoder {
             let mut current_fasta = String::new();
 
             for line in reader.lines() {
-                let line = line
-                    .map_err(|e| DnaError::Decoding(format!("Erreur lecture: {}", e)))?;
+                let line =
+                    line.map_err(|e| DnaError::Decoding(format!("Erreur lecture: {}", e)))?;
 
                 if line.starts_with('>') {
                     // Nouvelle séquence, parser la précédente si elle existe
@@ -122,12 +121,11 @@ impl Decoder {
         sequences: &[DnaSequence],
         scheme: Option<String>,
     ) -> Result<Vec<u8>> {
-        // Le schéma peut inclure le nombre de chunks : "fountain#4"
+        // Le schéma peut inclure le nombre de chunks, la longueur et la méthode :
+        // "fountain#4" (ancien) ou "fountain#4#1024#l4" (format actuel)
         let scheme_raw = scheme.as_deref().unwrap_or("unknown");
-        let (scheme, embedded_num_chunks) = match scheme_raw.split_once('#') {
-            Some((s, n)) => (s, n.parse::<usize>().ok()),
-            None => (scheme_raw, None),
-        };
+        let (scheme, embedded_num_chunks, embedded_original_len, embedded_method) =
+            Self::parse_scheme_suffix(scheme_raw);
 
         match scheme {
             "goldman_2013" => {
@@ -145,17 +143,23 @@ impl Decoder {
                 let decoder = UltimateDecoder::new(crate::sequence::DnaConstraints::default());
                 decoder.decode(sequences)
             }
-            "fountain" => {
-                // Use proper Fountain decoder with LT code belief propagation
-                self.decode_fountain_with_chunks(sequences, embedded_num_chunks)
+            "fountain" | "erlich_zielinski_2017" | "adaptive" => {
+                // Fountain, EZ 2017 et Adaptive partagent le même format de
+                // payload (LT code + mapping 2-bits rotatif) : on délègue au
+                // décodeur Fountain (peeling decoder, cf. Erlich & Zielinski 2017).
+                self.decode_fountain_with_chunks(
+                    sequences,
+                    embedded_num_chunks,
+                    embedded_original_len,
+                    embedded_method,
+                )
             }
-            "erlich_zielinski_2017" => {
-                // EZ 2017 utilise le même schéma LT/Fountain que DNA Fountain.
-                // On délègue au décodeur Fountain qui implémente le peeling decoder
-                // (c'est la propriété clé de DNA Fountain : récupération même avec
-                // des gouttes manquantes, cf. Erlich & Zielinski 2017).
-                self.decode_fountain_with_chunks(sequences, embedded_num_chunks)
+            "adaptive_auto" => {
+                use crate::codec::adaptive::AdaptiveDecoder;
+                let decoder = AdaptiveDecoder::new(crate::sequence::DnaConstraints::default());
+                decoder.decode_auto(sequences, scheme_raw)
             }
+            "gc_aware" | "enhanced_gc_aware" => self.decode_gc_aware_payloads(scheme, sequences),
             "unknown" => {
                 // Utiliser le décodeur générique pour inconnu
                 self.decode(sequences)
@@ -167,15 +171,94 @@ impl Decoder {
         }
     }
 
+    /// Décode des chunks GC-aware (schémas `gc_aware` / `enhanced_gc_aware`).
+    ///
+    /// Chaque séquence porte un chunk de payload encodé GC-aware ; les chunks
+    /// sont ordonnés par seed croissant (l'ordre d'émission des encodeurs) puis
+    /// concaténés.
+    fn decode_gc_aware_payloads(&self, scheme: &str, sequences: &[DnaSequence]) -> Result<Vec<u8>> {
+        use crate::codec::enhanced_gc_aware::EnhancedGcAwareDecoder;
+        use crate::codec::gc_aware_encoding::GcAwareDecoder;
+
+        let constraints = crate::sequence::DnaConstraints::default();
+        let mut sorted_seqs: Vec<&DnaSequence> = sequences.iter().collect();
+        sorted_seqs.sort_by_key(|s| s.metadata.seed);
+
+        let mut data = Vec::new();
+        for seq in sorted_seqs {
+            let chunk = if scheme == "gc_aware" {
+                GcAwareDecoder::new(constraints.clone()).decode(seq)?
+            } else {
+                EnhancedGcAwareDecoder::new(constraints.clone()).decode(seq)?
+            };
+            data.extend_from_slice(&chunk);
+        }
+        Ok(data)
+    }
+
     /// Decode Fountain-encoded sequences using LT code belief propagation.
     ///
     /// `known_num_chunks`: si fourni (encodé dans le schéma par l'encodeur),
     /// le peeling utilise directement cette valeur — éliminant toute ambiguïté
     /// sur le nombre de chunks. Sinon, on devine en essayant plusieurs valeurs.
+    /// Parse un schéma potentiellement suffixé.
+    ///
+    /// Formats acceptés (les champs numériques et le marqueur de méthode sont
+    /// reconnus à n'importe quelle position après le nom) :
+    /// - `"fountain"` (très ancien)
+    /// - `"fountain#4"` → num_chunks = 4
+    /// - `"fountain#4#1024"` → + longueur du stream encodé (après chunking)
+    /// - `"fountain#4#1024#l4"` → + méthode de compression (`l4`/`zst`/`raw`)
+    /// - `"goldman#raw"` (schémas génériques)
+    fn parse_scheme_suffix(
+        scheme_full: &str,
+    ) -> (&str, Option<usize>, Option<usize>, Option<&str>) {
+        let mut parts = scheme_full.split('#');
+        let scheme = parts.next().unwrap_or("");
+        let mut num_chunks = None;
+        let mut original_len = None;
+        let mut method = None;
+
+        for part in parts {
+            match part {
+                "l4" | "zst" | "raw" => method = Some(part),
+                _ => {
+                    if let Ok(n) = part.parse::<usize>() {
+                        if num_chunks.is_none() {
+                            num_chunks = Some(n);
+                        } else if original_len.is_none() {
+                            original_len = Some(n);
+                        }
+                    }
+                }
+            }
+        }
+
+        (scheme, num_chunks, original_len, method)
+    }
+
+    /// Décompresse un stream selon le marqueur de méthode encodé par l'encodeur.
+    /// `raw` retourne les données telles quelles.
+    fn decompress_by_marker(&self, data: &[u8], method: &str) -> Result<Vec<u8>> {
+        match method {
+            "raw" => Ok(data.to_vec()),
+            "l4" => lz4::block::decompress(data, None)
+                .map_err(|e| DnaError::Decoding(format!("Erreur décompression LZ4: {}", e))),
+            "zst" => zstd::decode_all(data)
+                .map_err(|e| DnaError::Decoding(format!("Erreur décompression Zstd: {}", e))),
+            other => Err(DnaError::Decoding(format!(
+                "Marqueur de compression inconnu: {}",
+                other
+            ))),
+        }
+    }
+
     fn decode_fountain_with_chunks(
         &self,
         sequences: &[DnaSequence],
         known_num_chunks: Option<usize>,
+        known_original_len: Option<usize>,
+        known_method: Option<&str>,
     ) -> Result<Vec<u8>> {
         if sequences.is_empty() {
             return Err(DnaError::Decoding("Aucune séquence fournie".to_string()));
@@ -195,8 +278,8 @@ impl Decoder {
         }
 
         // Step 2: Determine the number of chunks.
-        // Si l'encodeur a stocké num_chunks dans le schéma (format "scheme#N"),
-        // on l'utilise directement — c'est fiable et sans ambiguïté.
+        // Si l'encodeur a stocké num_chunks dans le schéma, on l'utilise
+        // directement — c'est fiable et sans ambiguïté.
         // Sinon, on devine en essayant plusieurs valeurs (fallback legacy).
         let num_droplets = droplet_data.len();
         let max_seed = droplet_data.iter().map(|(s, _)| *s).max().unwrap_or(0) as usize;
@@ -208,33 +291,57 @@ impl Decoder {
             _ => (1..=estimated_max_chunks).collect(),
         };
 
-        let mut best_uncompressed: Option<Vec<u8>> = None;
+        let mut best_result: Option<Vec<u8>> = None;
 
         for num_chunks_guess in guesses {
-            let mut decoder = FountainDecoder::new(self.config.clone(), num_chunks_guess, chunk_size);
+            let mut decoder =
+                FountainDecoder::new(self.config.clone(), num_chunks_guess, chunk_size);
 
             for (seed, payload) in &droplet_data {
-                let degree = Self::sample_degree_for_decoding(num_chunks_guess, *seed);
-                let chunk_indices = Self::select_indices_for_decoding(num_chunks_guess, degree, *seed);
+                let degree = fountain::sample_robust_soliton_degree(num_chunks_guess, *seed);
+                let chunk_indices = fountain::select_chunk_indices(num_chunks_guess, degree, *seed);
                 let droplet = Droplet::new(chunk_indices, payload.clone(), *seed);
 
                 match decoder.add_droplet(droplet)? {
                     Progress::Complete(data) => {
-                        if self.config.auto_decompress {
-                            // Le peeling peut produire un buffer plus grand que le
-                            // stream compressé (padding de chunks en fin). LZ4/zstd
-                            // rejettent les bytes trailing, donc on essaie de tronquer
-                            // progressivement depuis la fin jusqu'à trouver la taille
-                            // exacte du stream compressé.
-                            if let Some(decompressed) = self.try_decompress_with_padding(&data) {
-                                return Ok(decompressed);
+                        // Retirer le padding du dernier chunk si la longueur du
+                        // stream encodé est connue (schéma récent).
+                        let stream = match known_original_len {
+                            Some(len) if len <= data.len() => data[..len].to_vec(),
+                            _ => data.clone(),
+                        };
+
+                        match known_method {
+                            // Méthode explicite encodée par l'encodeur : pas
+                            // d'heuristique, pas de risque de décompression
+                            // spurieuse sur des données non compressées.
+                            Some(method) => {
+                                if self.config.auto_decompress {
+                                    return self.decompress_by_marker(&stream, method);
+                                }
+                                // auto_decompress=false : l'appelant veut le
+                                // stream tel quel (déjà tronqué du padding).
+                                return Ok(stream);
                             }
-                            // La décompression a échoué : essaie le prochain num_chunks
-                        } else {
-                            // Sans compression, on ne peut pas valider. On retient le
-                            // plus petit num_chunks qui complète (le moins de padding).
-                            if best_uncompressed.is_none() {
-                                best_uncompressed = Some(data);
+                            // Ancien format sans marqueur : heuristiques legacy.
+                            None => {
+                                if self.config.auto_decompress
+                                    && self.config.compression_type != CompressionType::None
+                                {
+                                    // Le peeling peut produire un buffer plus grand que le
+                                    // stream compressé (padding de chunks en fin). LZ4/zstd
+                                    // rejettent les bytes trailing, donc on essaie de tronquer
+                                    // progressivement depuis la fin jusqu'à trouver la taille
+                                    // exacte du stream compressé.
+                                    if let Some(decompressed) =
+                                        self.try_decompress_with_padding(&data, None)
+                                    {
+                                        return Ok(decompressed);
+                                    }
+                                    // La décompression a échoué : essaie le prochain num_chunks
+                                } else if best_result.is_none() {
+                                    best_result = Some(stream);
+                                }
                             }
                         }
                         break;
@@ -244,85 +351,14 @@ impl Decoder {
             }
         }
 
-        if let Some(data) = best_uncompressed {
+        if let Some(data) = best_result {
             return Ok(data);
         }
 
         Err(DnaError::Decoding(
-            "Fountain decoding failed: insufficient droplets or incorrect chunk count estimation".to_string()
+            "Fountain decoding failed: insufficient droplets or incorrect chunk count estimation"
+                .to_string(),
         ))
-    }
-
-    /// Sample degree for decoding (matches encoder's distribution exactly)
-    fn sample_degree_for_decoding(num_chunks: usize, seed: u64) -> usize {
-        // Must match encoder's sample_robust_soliton_degree exactly
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-
-        // Distribution Robust Soliton simplifiée
-        // K = num_chunks, c = 0.1, delta = 0.5
-
-        let k = num_chunks as f64;
-        let c = 0.1;
-        let _delta = 0.5; // Paramètre Robust Soliton (non utilisé dans cette implémentation simplifiée)
-
-        // Tau function - MUST match encoder exactly
-        let tau = |d: f64| -> f64 {
-            if d <= (k / c - 1.0).ceil() {
-                1.0 / (d * c)
-            } else {
-                0.0
-            }
-        };
-
-        // Calculer les poids pour chaque degré possible
-        let mut weights = Vec::with_capacity(num_chunks);
-
-        for d in 1..=num_chunks {
-            let d_float = d as f64;
-            let rho = if d == 1 {
-                1.0 / k
-            } else {
-                1.0 / (d_float * (d_float - 1.0))
-            };
-
-            let weight = rho + tau(d as f64);
-            weights.push(weight);
-        }
-
-        // Normaliser
-        let sum: f64 = weights.iter().sum();
-        for w in weights.iter_mut() {
-            *w /= sum;
-        }
-
-        // Échantillonner
-        let mut cumulative = 0.0;
-        let sample = rng.gen::<f64>();
-
-        for (d, &w) in weights.iter().enumerate() {
-            cumulative += w;
-            if sample <= cumulative {
-                return d + 1; // +1 car les degrés commencent à 1
-            }
-        }
-
-        num_chunks // Fallback
-    }
-
-    /// Select chunk indices for decoding (matches encoder's selection)
-    fn select_indices_for_decoding(num_chunks: usize, degree: usize, seed: u64) -> Vec<usize> {
-        use std::collections::HashSet;
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let mut indices = HashSet::new();
-
-        while indices.len() < degree {
-            let idx = rng.gen_range(0..num_chunks);
-            indices.insert(idx);
-        }
-
-        let mut result: Vec<usize> = indices.into_iter().collect();
-        result.sort();
-        result
     }
 
     /// Décode des séquences ADN en données avec gestion des erreurs améliorée.
@@ -338,38 +374,45 @@ impl Decoder {
             }
 
             // Détecter le schéma d'encodage depuis les métadonnées de la 1ère séquence.
-            // Le schéma peut inclure le nombre de chunks : "fountain#4" ou "erlich_zielinski_2017#4"
-            let scheme_full = &sequences[0].metadata.encoding_scheme;
-            let (scheme, embedded_num_chunks) = match scheme_full.split_once('#') {
-                Some((s, n)) => (s, n.parse::<usize>().ok()),
-                None => (scheme_full.as_str(), None),
-            };
+            // Le schéma peut inclure le nombre de chunks, la longueur et la méthode :
+            // "fountain#4#1024#l4", "goldman#raw", etc.
+            let scheme_full = sequences[0].metadata.encoding_scheme.as_str();
+            let (scheme, embedded_num_chunks, embedded_original_len, embedded_method) =
+                Self::parse_scheme_suffix(scheme_full);
 
             // Router vers le décodeur spécialisé si applicable
             match scheme {
-                "fountain" | "erlich_zielinski_2017" => {
-                    return self.decode_fountain_with_chunks(sequences, embedded_num_chunks);
+                "fountain" | "erlich_zielinski_2017" | "adaptive" => {
+                    return self.decode_fountain_with_chunks(
+                        sequences,
+                        embedded_num_chunks,
+                        embedded_original_len,
+                        embedded_method,
+                    );
                 }
                 "goldman_2013" => {
                     use crate::codec::goldman_2013::Goldman2013Decoder;
-                    let decoder = Goldman2013Decoder::new(
-                        crate::sequence::DnaConstraints::default(),
-                    );
+                    let decoder =
+                        Goldman2013Decoder::new(crate::sequence::DnaConstraints::default());
                     return decoder.decode(sequences);
                 }
                 "grass_2015" => {
                     use crate::codec::grass_2015::Grass2015Decoder;
-                    let decoder = Grass2015Decoder::new(
-                        crate::sequence::DnaConstraints::default(),
-                    );
+                    let decoder = Grass2015Decoder::new(crate::sequence::DnaConstraints::default());
                     return decoder.decode(sequences);
                 }
                 "ultimate" => {
                     use crate::codec::ultimate::UltimateDecoder;
-                    let decoder = UltimateDecoder::new(
-                        crate::sequence::DnaConstraints::default(),
-                    );
+                    let decoder = UltimateDecoder::new(crate::sequence::DnaConstraints::default());
                     return decoder.decode(sequences);
+                }
+                "adaptive_auto" => {
+                    use crate::codec::adaptive::AdaptiveDecoder;
+                    let decoder = AdaptiveDecoder::new(crate::sequence::DnaConstraints::default());
+                    return decoder.decode_auto(sequences, scheme_full);
+                }
+                "gc_aware" | "enhanced_gc_aware" => {
+                    return self.decode_gc_aware_payloads(scheme, sequences);
                 }
                 _ => {} // Schéma inconnu : décodage générique ci-dessous
             }
@@ -386,9 +429,13 @@ impl Decoder {
                 data.extend_from_slice(&chunk_data);
             }
 
-            // Décompression si activée
+            // Décompression : le marqueur encodé par l'encodeur (schéma récent)
+            // est déterministe ; sans marqueur, heuristique Auto legacy.
             let result = if self.config.auto_decompress {
-                self.decompress(&data)?
+                match embedded_method {
+                    Some(method) => self.decompress_by_marker(&data, method)?,
+                    None => self.decompress(&data)?,
+                }
             } else {
                 data
             };
@@ -406,7 +453,7 @@ impl Decoder {
         if data.is_empty() {
             return Err(DnaError::Decoding("Données décodées vides".to_string()));
         }
-        
+
         // Ajouter d'autres vérifications d'intégrité ici
         Ok(())
     }
@@ -421,16 +468,29 @@ impl Decoder {
 
         // Déterminer si l'encodage rotatif a été utilisé selon le schéma.
         // Le schéma peut contenir un suffixe "#N" (num_chunks) qu'on ignore ici.
-        let scheme = sequence.metadata.encoding_scheme.split('#').next().unwrap_or("");
-        let use_rotation = matches!(scheme, "fountain" | "erlich_zielinski_2017");
+        let scheme = sequence
+            .metadata
+            .encoding_scheme
+            .split('#')
+            .next()
+            .unwrap_or("");
+        let use_rotation = matches!(scheme, "fountain" | "erlich_zielinski_2017" | "adaptive");
 
         // Tables de rotation inverses
         fn base_to_bits_rotated(base: IupacBase, rotation: usize) -> Result<u8> {
             let bits = match (base, rotation % 4) {
-                (IupacBase::A, 0) | (IupacBase::C, 1) | (IupacBase::G, 2) | (IupacBase::T, 3) => 0b00,
-                (IupacBase::C, 0) | (IupacBase::G, 1) | (IupacBase::T, 2) | (IupacBase::A, 3) => 0b01,
-                (IupacBase::G, 0) | (IupacBase::T, 1) | (IupacBase::A, 2) | (IupacBase::C, 3) => 0b10,
-                (IupacBase::T, 0) | (IupacBase::A, 1) | (IupacBase::C, 2) | (IupacBase::G, 3) => 0b11,
+                (IupacBase::A, 0) | (IupacBase::C, 1) | (IupacBase::G, 2) | (IupacBase::T, 3) => {
+                    0b00
+                }
+                (IupacBase::C, 0) | (IupacBase::G, 1) | (IupacBase::T, 2) | (IupacBase::A, 3) => {
+                    0b01
+                }
+                (IupacBase::G, 0) | (IupacBase::T, 1) | (IupacBase::A, 2) | (IupacBase::C, 3) => {
+                    0b10
+                }
+                (IupacBase::T, 0) | (IupacBase::A, 1) | (IupacBase::C, 2) | (IupacBase::G, 3) => {
+                    0b11
+                }
                 _ => {
                     return Err(DnaError::Decoding(format!(
                         "Base non-standard décodée: {:?}",
@@ -480,19 +540,28 @@ impl Decoder {
     /// LZ4/zstd rejettent les bytes trailing, donc on essaie de décompresser
     /// le buffer complet d'abord, puis en tronquant progressivement depuis la fin
     /// jusqu'à trouver la taille exacte du stream compressé.
+    ///
+    /// `expected_len` (longueur des données originales avant compression, quand
+    /// l'encodeur l'a encodée dans le schéma) sert de validation : une
+    /// "décompression réussie" de taille différente est rejetée — cela évite
+    /// qu'un stream LZ4 spurieux soit accepté sur des données non compressées.
     /// Retourne None si aucune taille ne permet de décompresser.
-    fn try_decompress_with_padding(&self, data: &[u8]) -> Option<Vec<u8>> {
+    fn try_decompress_with_padding(
+        &self,
+        data: &[u8],
+        expected_len: Option<usize>,
+    ) -> Option<Vec<u8>> {
         // Essaie de décompresser en ignorant le fallback "None" de Auto.
         // On teste LZ4 et zstd directement, car le fallback None retournerait
         // les données brutes (y compris le padding) sans validation.
         let try_one = |buf: &[u8]| -> Option<Vec<u8>> {
             if let Ok(d) = lz4::block::decompress(buf, None) {
-                if !d.is_empty() {
+                if !d.is_empty() && expected_len.is_none_or(|l| d.len() == l) {
                     return Some(d);
                 }
             }
             if let Ok(d) = zstd::decode_all(buf) {
-                if !d.is_empty() {
+                if !d.is_empty() && expected_len.is_none_or(|l| d.len() == l) {
                     return Some(d);
                 }
             }
@@ -540,10 +609,8 @@ impl Decoder {
                 lz4::block::decompress(data, None)
                     .map_err(|e| DnaError::Decoding(format!("Erreur décompression LZ4: {}", e)))
             }
-            CompressionType::Zstd => {
-                zstd::decode_all(data)
-                    .map_err(|e| DnaError::Decoding(format!("Erreur décompression Zstd: {}", e)))
-            }
+            CompressionType::Zstd => zstd::decode_all(data)
+                .map_err(|e| DnaError::Decoding(format!("Erreur décompression Zstd: {}", e))),
             CompressionType::None | CompressionType::Auto => Ok(data.to_vec()),
         }
     }
@@ -638,13 +705,14 @@ impl FountainDecoder {
         }
 
         Err(DnaError::Decoding(
-            "Belief propagation: nombre maximum d'itérations atteint".to_string()
+            "Belief propagation: nombre maximum d'itérations atteint".to_string(),
         ))
     }
 
     /// Trouve tous les indices des droplets de degré 1
     fn find_degree_one_droplets(&self) -> Vec<usize> {
-        self.droplets.iter()
+        self.droplets
+            .iter()
             .enumerate()
             .filter(|(_, d)| d.degree() == 1)
             .map(|(i, _)| i)
@@ -655,7 +723,11 @@ impl FountainDecoder {
     fn xor_out_chunk(&mut self, chunk_idx: usize, chunk_data: &[u8]) {
         for droplet in &mut self.droplets {
             // Chercher ce chunk dans les indices du droplet
-            if let Some(pos) = droplet.chunk_indices.iter().position(|&idx| idx == chunk_idx) {
+            if let Some(pos) = droplet
+                .chunk_indices
+                .iter()
+                .position(|&idx| idx == chunk_idx)
+            {
                 // XOR le chunk du payload
                 xor_bytes(&mut droplet.payload, chunk_data);
 
@@ -814,8 +886,14 @@ mod tests {
         let droplet2 = Droplet::new(vec![1], vec![5, 6, 7, 8], 1);
         let droplet3 = Droplet::new(vec![2], vec![9, 10, 11, 12], 2);
 
-        assert!(matches!(decoder.add_droplet(droplet1).unwrap(), Progress::Incomplete));
-        assert!(matches!(decoder.add_droplet(droplet2).unwrap(), Progress::Incomplete));
+        assert!(matches!(
+            decoder.add_droplet(droplet1).unwrap(),
+            Progress::Incomplete
+        ));
+        assert!(matches!(
+            decoder.add_droplet(droplet2).unwrap(),
+            Progress::Incomplete
+        ));
 
         // Le troisième devrait compléter le décodage
         let result = decoder.add_droplet(droplet3).unwrap();
@@ -848,8 +926,14 @@ mod tests {
         let droplet3 = Droplet::new(vec![1], chunk1.clone(), 2);
 
         // Ajouter dans l'ordre: d'abord le droplet de degré 2, puis les degré 1
-        assert!(matches!(decoder.add_droplet(droplet2).unwrap(), Progress::Incomplete));
-        assert!(matches!(decoder.add_droplet(droplet1).unwrap(), Progress::Incomplete));
+        assert!(matches!(
+            decoder.add_droplet(droplet2).unwrap(),
+            Progress::Incomplete
+        ));
+        assert!(matches!(
+            decoder.add_droplet(droplet1).unwrap(),
+            Progress::Incomplete
+        ));
 
         // Après droplet1, belief propagation devrait extraire chunk0
         // et le XOR de droplet2, laissant chunk2
@@ -874,9 +958,18 @@ mod tests {
         let droplet2 = Droplet::new(vec![1], vec![5, 6, 7, 8], 1);
         let droplet3 = Droplet::new(vec![2], vec![9, 10, 11, 12], 2);
 
-        assert!(matches!(decoder.add_droplet(droplet1).unwrap(), Progress::Incomplete));
-        assert!(matches!(decoder.add_droplet(droplet2).unwrap(), Progress::Incomplete));
-        assert!(matches!(decoder.add_droplet(droplet3).unwrap(), Progress::Incomplete));
+        assert!(matches!(
+            decoder.add_droplet(droplet1).unwrap(),
+            Progress::Incomplete
+        ));
+        assert!(matches!(
+            decoder.add_droplet(droplet2).unwrap(),
+            Progress::Incomplete
+        ));
+        assert!(matches!(
+            decoder.add_droplet(droplet3).unwrap(),
+            Progress::Incomplete
+        ));
 
         assert_eq!(decoder.recovered_count(), 3);
         assert!(!decoder.is_complete());

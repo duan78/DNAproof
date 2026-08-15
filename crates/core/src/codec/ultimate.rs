@@ -6,11 +6,12 @@
 //! - Reed-Solomon pour correction d'erreurs
 //! - GC-aware encoding avec padding optimal
 
-use crate::error::{DnaError, Result};
-use crate::sequence::{DnaSequence, DnaConstraints};
 use crate::codec::adaptive::{AdaptiveEncoder, CompressionMethod};
+use crate::codec::enhanced_gc_aware::{EnhancedGcAwareDecoder, EnhancedGcAwareEncoder};
 use crate::codec::enhanced_reed_solomon::EnhancedReedSolomonCodec;
-use crate::codec::enhanced_gc_aware::{EnhancedGcAwareEncoder, EnhancedGcAwareDecoder};
+use crate::codec::huffman::DnaHuffmanCompressor;
+use crate::error::{DnaError, Result};
+use crate::sequence::{DnaConstraints, DnaSequence};
 
 /// Configuration de l'encodeur ultime
 #[derive(Debug, Clone)]
@@ -86,23 +87,33 @@ impl UltimateEncoder {
     /// 3. Reed-Solomon ECC
     /// 4. Code d'étalement (si activé)
     /// 5. Encodage GC-aware avec padding optimal
+    ///
+    /// Les séquences sont taggées `ultimate#<méthode>` où `<méthode>` ∈
+    /// {huffman, lz4, none} : le décodeur lit ce suffixe pour choisir la
+    /// décompression inverse.
     pub fn encode(&mut self, data: &[u8]) -> Result<Vec<DnaSequence>> {
         if data.is_empty() {
             return Ok(Vec::new());
         }
 
         // 1. Choisir la compression (adaptative ou défaut)
-        let compressed = self.compress_data(data)?;
+        let (compressed, method) = self.compress_data(data)?;
 
         // 2. Appliquer Reed-Solomon + Spreading
         let encoded = self.rs_codec.encode(&compressed)?;
 
-        // 3. Encoder en GC-aware
-        self.encode_gc_aware(&encoded)
+        // 3. Encoder en GC-aware et tagger avec la méthode de compression
+        let mut sequences = self.encode_gc_aware(&encoded)?;
+        let scheme = format!("ultimate#{}", method.scheme_suffix());
+        for seq in &mut sequences {
+            seq.metadata.encoding_scheme = scheme.clone();
+        }
+
+        Ok(sequences)
     }
 
     /// Compresse les données selon le type
-    fn compress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
+    fn compress_data(&self, data: &[u8]) -> Result<(Vec<u8>, CompressionMethod)> {
         if let Some(adaptive) = &self.adaptive_encoder {
             // Utiliser l'encodage adaptatif
             let analyzer = adaptive.analyzer();
@@ -110,18 +121,20 @@ impl UltimateEncoder {
 
             match report.recommended_compression {
                 CompressionMethod::Huffman => {
-                    adaptive.compress_huffman(data)
-                },
+                    // Huffman auto-contenu (table embarquée) pour être
+                    // décompressable au décodage sans les données originales
+                    let compressor = DnaHuffmanCompressor::new(data);
+                    Ok((compressor.compress(data)?, CompressionMethod::Huffman))
+                }
                 CompressionMethod::Lz4 => {
-                    adaptive.compress_lz4(data)
-                },
-                CompressionMethod::None => {
-                    Ok(data.to_vec())
-                },
+                    Ok((adaptive.compress_lz4(data)?, CompressionMethod::Lz4))
+                }
+                CompressionMethod::None => Ok((data.to_vec(), CompressionMethod::None)),
             }
         } else {
             // Compression par défaut (LZ4)
             lz4::block::compress(data, None, true)
+                .map(|compressed| (compressed, CompressionMethod::Lz4))
                 .map_err(|e| DnaError::Encoding(format!("Erreur compression LZ4: {}", e)))
         }
     }
@@ -137,11 +150,7 @@ impl UltimateEncoder {
             // Degree de Fountain: varier entre 1 et 10
             let degree = (idx % 10) + 1;
 
-            let sequence = self.gc_aware_encoder.encode(
-                chunk.to_vec(),
-                seed,
-                degree,
-            )?;
+            let sequence = self.gc_aware_encoder.encode(chunk.to_vec(), seed, degree)?;
 
             sequences.push(sequence);
             seed = seed.wrapping_add(1);
@@ -213,6 +222,8 @@ impl UltimateDecoder {
     /// 1. Décodage GC-aware
     /// 2. Reed-Solomon correction
     /// 3. Désentrelacement
+    /// 4. Décompression selon la méthode taggée dans le schéma
+    ///    (`ultimate#huffman` / `ultimate#lz4` / `ultimate#none`)
     pub fn decode(&self, sequences: &[DnaSequence]) -> Result<Vec<u8>> {
         if sequences.is_empty() {
             return Ok(Vec::new());
@@ -228,11 +239,21 @@ impl UltimateDecoder {
         // 2. Décoder Reed-Solomon (avec désentrelacement intégré)
         let rs_decoded = self.rs_codec.decode(&chunks)?;
 
-        // 3. Décompresser (LZ4 avec préfixe de taille, comme fait l'encodeur)
-        let decompressed = lz4::block::decompress(&rs_decoded, None)
-            .map_err(|e| DnaError::Decoding(format!("Erreur décompression LZ4: {}", e)))?;
+        // 3. Décompresser selon la méthode enregistrée par l'encodeur dans le
+        // schéma de la première séquence. Sans suffixe (ancien format), LZ4.
+        let scheme = sequences[0].metadata.encoding_scheme.as_str();
+        let method = scheme.split_once('#').map(|(_, m)| m).unwrap_or("lz4");
 
-        Ok(decompressed)
+        match method {
+            "huffman" => DnaHuffmanCompressor::decompress(&rs_decoded),
+            "none" => Ok(rs_decoded),
+            "lz4" => lz4::block::decompress(&rs_decoded, None)
+                .map_err(|e| DnaError::Decoding(format!("Erreur décompression LZ4: {}", e))),
+            other => Err(DnaError::Decoding(format!(
+                "Méthode de compression inconnue pour ultimate: {}",
+                other
+            ))),
+        }
     }
 
     /// Retourne les contraintes ADN utilisées
@@ -303,12 +324,7 @@ mod tests {
             gc_max: 0.75,
             max_homopolymer: 10,
             max_sequence_length: 152,
-            allowed_bases: vec![
-                IupacBase::A,
-                IupacBase::C,
-                IupacBase::G,
-                IupacBase::T,
-            ],
+            allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
         };
 
         let config = UltimateEncoderConfig {
@@ -329,7 +345,11 @@ mod tests {
         // Round-trip strict : le décodeur est maintenant configuré avec les mêmes
         // paramètres de spreading que l'encodeur.
         let decoded = codec.decode(&sequences).unwrap();
-        assert_eq!(original.to_vec(), decoded, "Ultimate round-trip must be exact");
+        assert_eq!(
+            original.to_vec(),
+            decoded,
+            "Ultimate round-trip must be exact"
+        );
     }
 
     #[test]

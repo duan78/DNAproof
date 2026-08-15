@@ -10,7 +10,10 @@ pub fn display_sequences(sequences: &[DnaSequence]) {
         println!("  ID: {}", seq.id);
         println!("  Longueur: {} bases", seq.len());
         println!("  GC: {:.1}%", seq.metadata.gc_ratio * 100.0);
-        println!("  Sequence: {}", seq.to_string().chars().take(50).collect::<String>());
+        println!(
+            "  Sequence: {}",
+            seq.to_string().chars().take(50).collect::<String>()
+        );
         println!();
     }
 }

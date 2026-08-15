@@ -97,12 +97,7 @@ mod tests {
 
     #[test]
     fn test_entropy() {
-        let bases = vec![
-            IupacBase::A,
-            IupacBase::A,
-            IupacBase::A,
-            IupacBase::A,
-        ];
+        let bases = vec![IupacBase::A, IupacBase::A, IupacBase::A, IupacBase::A];
 
         // Entropie minimale (toutes les mêmes bases)
         let e = entropy(&bases, None);
@@ -111,12 +106,7 @@ mod tests {
 
     #[test]
     fn test_entropy_max() {
-        let bases = vec![
-            IupacBase::A,
-            IupacBase::C,
-            IupacBase::G,
-            IupacBase::T,
-        ];
+        let bases = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
 
         // Entropie maximale (distribution uniforme)
         let e = entropy(&bases, None);
@@ -125,12 +115,7 @@ mod tests {
 
     #[test]
     fn test_gc_content() {
-        let bases = vec![
-            IupacBase::A,
-            IupacBase::C,
-            IupacBase::G,
-            IupacBase::T,
-        ];
+        let bases = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
 
         let gc = gc_content(&bases);
         assert!((gc - 0.5).abs() < 1e-9);
@@ -138,19 +123,9 @@ mod tests {
 
     #[test]
     fn test_hamming_distance() {
-        let seq1 = vec![
-            IupacBase::A,
-            IupacBase::C,
-            IupacBase::G,
-            IupacBase::T,
-        ];
+        let seq1 = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
 
-        let seq2 = vec![
-            IupacBase::A,
-            IupacBase::C,
-            IupacBase::A,
-            IupacBase::T,
-        ];
+        let seq2 = vec![IupacBase::A, IupacBase::C, IupacBase::A, IupacBase::T];
 
         let dist = hamming_distance(&seq1, &seq2).unwrap();
         assert_eq!(dist, 1); // Seule la 3ème base diffère
@@ -158,12 +133,7 @@ mod tests {
 
     #[test]
     fn test_complexity() {
-        let bases = vec![
-            IupacBase::A,
-            IupacBase::A,
-            IupacBase::A,
-            IupacBase::A,
-        ];
+        let bases = vec![IupacBase::A, IupacBase::A, IupacBase::A, IupacBase::A];
 
         // Faible complexité (répétition)
         let c = complexity(&bases, 2);

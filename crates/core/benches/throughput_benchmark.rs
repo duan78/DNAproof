@@ -3,13 +3,15 @@
 //! Usage: cargo bench -p adn-core --bench throughput_benchmark
 //! Les résultats s'affichent en ns/iter ; ce fichier convertit en MB/s.
 
+use adn_core::{Decoder, DecoderConfig, Encoder, EncoderConfig, EncoderType};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use adn_core::{Encoder, Decoder, EncoderConfig, DecoderConfig, EncoderType};
 use std::time::Duration;
 
 /// Données pseudo-aléatoires (non compressibles) pour des mesures réalistes
 fn make_data(size: usize) -> Vec<u8> {
-    (0..size).map(|i| ((i.wrapping_mul(2654435761usize)) as u8)).collect()
+    (0..size)
+        .map(|i| (i.wrapping_mul(2654435761usize)) as u8)
+        .collect()
 }
 
 fn bench_encode_throughput(c: &mut Criterion) {
@@ -63,10 +65,7 @@ fn bench_encode_throughput(c: &mut Criterion) {
 }
 
 fn bench_decode_throughput(c: &mut Criterion) {
-    let sizes: &[(usize, &str)] = &[
-        (4 * 1024, "4KB"),
-        (64 * 1024, "64KB"),
-    ];
+    let sizes: &[(usize, &str)] = &[(4 * 1024, "4KB"), (64 * 1024, "64KB")];
 
     let mut group = c.benchmark_group("decode_throughput");
     group.measurement_time(Duration::from_secs(10));
@@ -89,19 +88,23 @@ fn bench_decode_throughput(c: &mut Criterion) {
         let decoder = Decoder::new(DecoderConfig::default());
 
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(BenchmarkId::new("fountain_decode", label), &sequences, |b, seqs| {
-            b.iter(|| {
-                let _ = decoder.decode(black_box(seqs));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("fountain_decode", label),
+            &sequences,
+            |b, seqs| {
+                b.iter(|| {
+                    let _ = decoder.decode(black_box(seqs));
+                });
+            },
+        );
     }
 
     group.finish();
 }
 
 fn bench_ecc_codecs(c: &mut Criterion) {
-    use adn_core::codec::reed_solomon::ReedSolomonCodec;
     use adn_core::codec::ldpc::LdpcCodec;
+    use adn_core::codec::reed_solomon::ReedSolomonCodec;
 
     let mut group = c.benchmark_group("ecc_codecs");
     group.measurement_time(Duration::from_secs(10));

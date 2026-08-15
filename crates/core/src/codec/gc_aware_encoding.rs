@@ -11,9 +11,9 @@
 //! - DATA: Original data preserved intact (up to 100 bases = 25 bytes max)
 //! - PADDING GC: Bases added to balance GC 40-60%, ignored during decoding
 
-use crate::error::{DnaError, Result};
-use crate::sequence::{DnaSequence, DnaConstraints, IupacBase};
 use crate::codec::reed_solomon::ReedSolomonCodec;
+use crate::error::{DnaError, Result};
+use crate::sequence::{DnaConstraints, DnaSequence, IupacBase};
 
 /// Encodeur GC-Aware pour Erlich-Zielinski 2017
 pub struct GcAwareEncoder {
@@ -34,7 +34,21 @@ impl GcAwareEncoder {
     /// Encode un payload en séquence ADN GC-aware
     ///
     /// Structure: [HEADER 25nt] [DATA up to 100nt] [PADDING GC to reach 152nt]
+    ///
+    /// # Erreurs
+    /// Retourne une erreur si le payload dépasse 25 octets (100 bases) :
+    /// la section DATA ne peut pas en contenir plus, et tronquer
+    /// silencieusement corromprait le round-trip.
     pub fn encode(&self, payload: Vec<u8>, seed: u64, degree: usize) -> Result<DnaSequence> {
+        const MAX_DATA_BYTES: usize = 25;
+        if payload.len() > MAX_DATA_BYTES {
+            return Err(DnaError::Encoding(format!(
+                "Payload trop long pour GcAwareEncoder: {} octets (max {})",
+                payload.len(),
+                MAX_DATA_BYTES
+            )));
+        }
+
         // 1. Créer le HEADER (25 bases)
         let header = self.encode_header(seed, degree)?;
 
@@ -46,33 +60,35 @@ impl GcAwareEncoder {
         let padding_needed = 152_usize.saturating_sub(current_length);
 
         // 4. Générer le padding GC-équilibré
-        let padding = self.generate_gc_padding(
-            &header,
-            &data_bases,
-            padding_needed,
-        )?;
+        let padding = self.generate_gc_padding(&header, &data_bases, padding_needed)?;
 
         // 5. Concaténer toutes les sections
         let mut all_bases = header;
         all_bases.extend_from_slice(&data_bases);
         all_bases.extend_from_slice(&padding);
 
-        // 6. Créer la séquence
+        // 6. Créer la séquence.
+        // Schéma distinct d'EZ2017 : ce format (header 25nt + data + padding
+        // GC, sans LT code) n'est PAS compatible avec le décodeur Fountain
+        // utilisé pour le vrai Erlich-Zielinski 2017.
         let sequence = DnaSequence::with_encoding_scheme(
             all_bases,
-            format!("erlich_zielinski_2017_{}", seed),
+            format!("gc_aware_{}", seed),
             0,
-            payload.len(),  // chunk_size = nombre d'octets dans le payload
+            payload.len(), // chunk_size = nombre d'octets dans le payload
             seed,
-            "erlich_zielinski_2017".to_string(),
+            "gc_aware".to_string(),
         );
 
-        // 7. Valider uniquement la longueur (les autres contraintes sont "best effort")
-        if sequence.bases.len() > self.constraints.max_sequence_length {
+        // 7. Valider uniquement la longueur (les autres contraintes sont "best effort").
+        // Le format produit des oligos de 152nt par construction : relever la
+        // contrainte si elle est plus basse (sinon l'encodage échouerait toujours).
+        let max_len = self.constraints.max_sequence_length.max(152);
+        if sequence.bases.len() > max_len {
             return Err(DnaError::Encoding(format!(
                 "Séquence trop longue: {} > {}",
                 sequence.bases.len(),
-                self.constraints.max_sequence_length
+                max_len
             )));
         }
 
@@ -100,7 +116,12 @@ impl GcAwareEncoder {
     }
 
     /// Encode une valeur sur n bases avec rotation pour éviter homopolymères
-    fn encode_value_2bit(&self, value: u32, num_bases: usize, start_rotation: usize) -> Result<Vec<IupacBase>> {
+    fn encode_value_2bit(
+        &self,
+        value: u32,
+        num_bases: usize,
+        start_rotation: usize,
+    ) -> Result<Vec<IupacBase>> {
         let standard_bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
         let mut bases = Vec::with_capacity(num_bases);
 
@@ -115,17 +136,12 @@ impl GcAwareEncoder {
     }
 
     /// Encode les données (DATA section) - préservées intactes pour roundtrip parfait
+    ///
+    /// Le payload doit déjà être <= 25 octets (garanti par `encode`).
     fn encode_data(&self, payload: &[u8]) -> Result<Vec<IupacBase>> {
-        let max_data_bytes = 25; // 100 bases / 4 bases par byte
-        let truncated_payload = if payload.len() > max_data_bytes {
-            &payload[..max_data_bytes]
-        } else {
-            payload
-        };
+        let mut bases = Vec::with_capacity(payload.len() * 4);
 
-        let mut bases = Vec::with_capacity(truncated_payload.len() * 4);
-
-        for byte in truncated_payload {
+        for byte in payload {
             let bits = [
                 (byte >> 6) & 0b11,
                 (byte >> 4) & 0b11,
@@ -149,7 +165,11 @@ impl GcAwareEncoder {
     }
 
     /// Génère un addressing équilibré pour le header
-    fn generate_balanced_addressing(&self, length: usize, _start_rotation: usize) -> Result<Vec<IupacBase>> {
+    fn generate_balanced_addressing(
+        &self,
+        length: usize,
+        _start_rotation: usize,
+    ) -> Result<Vec<IupacBase>> {
         // Pattern qui aide avec GC: alterner GC/AT
         let gc_bases = [IupacBase::G, IupacBase::C];
         let at_bases = [IupacBase::A, IupacBase::T];
@@ -190,14 +210,25 @@ impl GcAwareEncoder {
         // - AT: A, T = 50%
         // - Jamais plus de 2 bases consécutives identiques
         let balanced_pattern = [
-            IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A,
-            IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A,
+            IupacBase::G,
+            IupacBase::C,
+            IupacBase::T,
+            IupacBase::A,
+            IupacBase::G,
+            IupacBase::C,
+            IupacBase::T,
+            IupacBase::A,
         ];
 
         // Trouver la dernière base de header+data
         let last_base = data.iter().chain(header.iter()).last().copied();
         let current_run = if let Some(last) = last_base {
-            header.iter().chain(data.iter()).rev().take_while(|&&b| b == last).count()
+            header
+                .iter()
+                .chain(data.iter())
+                .rev()
+                .take_while(|&&b| b == last)
+                .count()
         } else {
             0
         };
@@ -266,7 +297,9 @@ pub struct GcAwareDecoder {
 impl GcAwareDecoder {
     /// Crée un nouveau décodeur GC-aware
     pub fn new(constraints: DnaConstraints) -> Self {
-        Self { _constraints: constraints }
+        Self {
+            _constraints: constraints,
+        }
     }
 
     /// Décode une séquence ADN GC-aware en payload
@@ -277,7 +310,7 @@ impl GcAwareDecoder {
 
         if bases.len() < 25 {
             return Err(DnaError::Decoding(
-                "Séquence trop courte pour contenir le header".to_string()
+                "Séquence trop courte pour contenir le header".to_string(),
             ));
         }
 
@@ -286,14 +319,15 @@ impl GcAwareDecoder {
 
         // La longueur du payload est stockée dans metadata.chunk_size
         let payload_len = sequence.metadata.chunk_size;
-        let data_bases_needed = payload_len * 4;  // Chaque octet = 4 bases
+        let data_bases_needed = payload_len * 4; // Chaque octet = 4 bases
 
         // Vérifier qu'on a assez de bases
         if bases.len() < 25 + data_bases_needed {
-            return Err(DnaError::Decoding(
-                format!("Séquence trop courte: besoin de {} bases de données, n'en a que {}",
-                    data_bases_needed, bases.len().saturating_sub(25))
-            ));
+            return Err(DnaError::Decoding(format!(
+                "Séquence trop courte: besoin de {} bases de données, n'en a que {}",
+                data_bases_needed,
+                bases.len().saturating_sub(25)
+            )));
         }
 
         // Extraire uniquement les bases de données (pas le padding)
@@ -309,7 +343,8 @@ impl GcAwareDecoder {
     fn decode_data(&self, bases: &[IupacBase]) -> Result<Vec<u8>> {
         if !bases.len().is_multiple_of(4) {
             return Err(DnaError::Decoding(format!(
-                "Nombre de bases non multiple de 4: {}", bases.len()
+                "Nombre de bases non multiple de 4: {}",
+                bases.len()
             )));
         }
 
@@ -329,7 +364,8 @@ impl GcAwareDecoder {
                     IupacBase::T => 0b11,
                     _ => {
                         return Err(DnaError::Decoding(format!(
-                            "Base invalide dans les données: {:?}", base
+                            "Base invalide dans les données: {:?}",
+                            base
                         )));
                     }
                 };

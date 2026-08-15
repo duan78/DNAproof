@@ -12,7 +12,7 @@
 //! - Segments alternés addressing/data
 
 use crate::error::{DnaError, Result};
-use crate::sequence::{DnaSequence, DnaConstraints, IupacBase};
+use crate::sequence::{DnaConstraints, DnaSequence, IupacBase};
 
 /// Encodeur Goldman 2013
 pub struct Goldman2013Encoder {
@@ -68,10 +68,9 @@ impl Goldman2013Encoder {
         // L'implémentation Huffman complète nécessiterait des ajustements
         // pour gérer la taille variable des données compressées
         let compressed = lz4::block::compress(
-            data,
-            None,
-            true, // avec checksum
-        ).map_err(|e| DnaError::Encoding(format!("Erreur compression: {}", e)))?;
+            data, None, true, // avec checksum
+        )
+        .map_err(|e| DnaError::Encoding(format!("Erreur compression: {}", e)))?;
 
         Ok(compressed)
     }
@@ -79,7 +78,12 @@ impl Goldman2013Encoder {
     /// Encode avec rotation 2-bit (Goldman 2013 simplifié)
     ///
     /// Encodage 2-bit avec rotation pour éviter les homopolymères
-    fn encode_goldman_3base(&self, chunk: &[u8], idx: usize, _total_chunks: usize) -> Result<Vec<IupacBase>> {
+    fn encode_goldman_3base(
+        &self,
+        chunk: &[u8],
+        idx: usize,
+        _total_chunks: usize,
+    ) -> Result<Vec<IupacBase>> {
         let mut bases = Vec::with_capacity(chunk.len() * 4);
 
         // Rotation de départ basée sur l'index pour varier l'encodage
@@ -123,7 +127,8 @@ impl Goldman2013Encoder {
     fn encode_index_8byte_safe(&self, idx: usize) -> Result<Vec<IupacBase>> {
         if idx >= 65536 {
             return Err(DnaError::Encoding(format!(
-                "Index de séquence trop grand: {} (max: 65535)", idx
+                "Index de séquence trop grand: {} (max: 65535)",
+                idx
             )));
         }
 
@@ -156,7 +161,9 @@ pub struct Goldman2013Decoder {
 impl Goldman2013Decoder {
     /// Crée un nouveau décodeur Goldman 2013
     pub fn new(constraints: DnaConstraints) -> Self {
-        Self { _constraints: constraints }
+        Self {
+            _constraints: constraints,
+        }
     }
 
     /// Décode des séquences ADN en données
@@ -192,7 +199,9 @@ impl Goldman2013Decoder {
         let bases = &seq.bases;
 
         if bases.len() < 8 {
-            return Err(DnaError::Decoding("Séquence trop courte pour contenir l'addressing".to_string()));
+            return Err(DnaError::Decoding(
+                "Séquence trop courte pour contenir l'addressing".to_string(),
+            ));
         }
 
         // Extraire l'index depuis les 8 premières bases
@@ -208,7 +217,9 @@ impl Goldman2013Decoder {
     /// Décode un index depuis 8 bases (16 bits)
     fn decode_index_8byte(&self, bases: &[IupacBase]) -> Result<usize> {
         if bases.len() < 8 {
-            return Err(DnaError::Decoding("Pas assez de bases pour l'index".to_string()));
+            return Err(DnaError::Decoding(
+                "Pas assez de bases pour l'index".to_string(),
+            ));
         }
 
         // Mapping inverse
@@ -247,7 +258,8 @@ impl Goldman2013Decoder {
         // Vérifier qu'on a un nombre multiple de 4 bases
         if !bases.len().is_multiple_of(4) {
             return Err(DnaError::Decoding(format!(
-                "Nombre de bases non multiple de 4: {}", bases.len()
+                "Nombre de bases non multiple de 4: {}",
+                bases.len()
             )));
         }
 
@@ -289,9 +301,8 @@ impl Goldman2013Decoder {
             }
         };
 
-        let bits = base_to_bits(base).ok_or_else(|| {
-            DnaError::Decoding(format!("Base invalide: {:?}", base))
-        })?;
+        let bits = base_to_bits(base)
+            .ok_or_else(|| DnaError::Decoding(format!("Base invalide: {:?}", base)))?;
 
         // Inverser la rotation: (x + r) % 4 = bits  =>  x = (bits - r + 4) % 4
         // Parenthèses correctes: (bits + 4 - (rotation % 4)) % 4
@@ -316,8 +327,8 @@ mod tests {
     fn test_goldman_2013_encode_simple() {
         // Contraintes plus souples pour Goldman 2013
         let constraints = DnaConstraints {
-            gc_min: 0.25,  // Plus tolérant que le défaut (0.4)
-            gc_max: 0.75,  // Plus tolérant que le défaut (0.6)
+            gc_min: 0.25, // Plus tolérant que le défaut (0.4)
+            gc_max: 0.75, // Plus tolérant que le défaut (0.6)
             max_homopolymer: 4,
             max_sequence_length: 200,
             allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
@@ -332,8 +343,10 @@ mod tests {
 
         // Vérifier que toutes les séquences respectent les contraintes
         for seq in &sequences {
-            assert!(seq.validate(&constraints).is_ok(),
-                "Séquence ne respecte pas les contraintes");
+            assert!(
+                seq.validate(&constraints).is_ok(),
+                "Séquence ne respecte pas les contraintes"
+            );
         }
     }
 
@@ -397,7 +410,7 @@ mod tests {
         let encoder = Goldman2013Encoder::new(constraints.clone());
         let decoder = Goldman2013Decoder::new(constraints);
 
-        let original = b"A";  // 65 = 0b01000001
+        let original = b"A"; // 65 = 0b01000001
         let sequences = encoder.encode(original).unwrap();
 
         // Décoder
@@ -420,7 +433,7 @@ mod tests {
         let encoder = Goldman2013Encoder::new(constraints.clone());
         let decoder = Goldman2013Decoder::new(constraints);
 
-        let original = b"ABC";  // Exactement 3 octets
+        let original = b"ABC"; // Exactement 3 octets
         let sequences = encoder.encode(original).unwrap();
 
         println!("Number of sequences: {}", sequences.len());
@@ -448,13 +461,16 @@ mod tests {
         let encoder = Goldman2013Encoder::new(constraints.clone());
         let decoder = Goldman2013Decoder::new(constraints);
 
-        let original = b"ABCDEF";  // 6 octets = 2 chunks
+        let original = b"ABCDEF"; // 6 octets = 2 chunks
         let sequences = encoder.encode(original).unwrap();
 
         println!("Number of sequences: {}", sequences.len());
         for (i, seq) in sequences.iter().enumerate() {
             println!("Sequence {}: {} bases", i, seq.bases.len());
-            println!("  Bases: {:?}", seq.bases.iter().take(20).collect::<Vec<_>>());
+            println!(
+                "  Bases: {:?}",
+                seq.bases.iter().take(20).collect::<Vec<_>>()
+            );
         }
 
         // Décoder

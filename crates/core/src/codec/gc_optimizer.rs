@@ -5,7 +5,7 @@
 //! tous les chemins possibles.
 
 use crate::sequence::IupacBase;
-use std::collections::{HashMap, HashSet, BinaryHeap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// Contraintes GC pour l'optimiseur
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +53,9 @@ impl Ord for ScoredState {
         let self_dist = (self.gc_ratio - target).abs();
         let other_dist = (other.gc_ratio - target).abs();
 
-        other_dist.partial_cmp(&self_dist).unwrap_or(std::cmp::Ordering::Equal)
+        other_dist
+            .partial_cmp(&self_dist)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -65,13 +67,21 @@ impl PartialOrd for ScoredState {
 
 /// Optimiseur GC avec programmation dynamique
 pub struct GcOptimizer {
-    /// Cache des solutions déjà calculées
-    cache: HashMap<(usize, usize, usize, IupacBase), Option<Vec<IupacBase>>>,
+    /// Cache des solutions déjà calculées.
+    ///
+    /// La clé inclut l'état de la séquence (longueur, GC, run, dernière base)
+    /// ET les contraintes de la requête (bornes GC, homopolymer, padding max) :
+    /// réutiliser un résultat calculé pour d'autres contraintes retournerait
+    /// un padding invalide.
+    cache: HashMap<GcCacheKey, Option<Vec<IupacBase>>>,
     /// Nombre maximal de bases de padding à essayer
     max_padding_length: usize,
     /// Nombre maximum d'états à garder (élaguation)
     max_states: usize,
 }
+
+/// Clé de cache : état de séquence + contraintes (f64 → bits pour être Hash/Eq)
+type GcCacheKey = (usize, usize, usize, IupacBase, u64, u64, usize, usize);
 
 impl GcOptimizer {
     /// Crée un nouvel optimiseur GC
@@ -121,12 +131,16 @@ impl GcOptimizer {
         let last_base = *current_bases.last()?;
         let current_run = self.count_trailing_run(current_bases);
 
-        // Vérifier cache
-        let cache_key = (
+        // Vérifier cache (clé = état de séquence + contraintes de la requête)
+        let cache_key: GcCacheKey = (
             current_bases.len(),
             current_gc_count,
             current_run,
             last_base,
+            target_gc_min.to_bits(),
+            target_gc_max.to_bits(),
+            max_homopolymer,
+            self.max_padding_length,
         );
 
         if let Some(cached) = self.cache.get(&cache_key) {
@@ -203,7 +217,12 @@ impl GcOptimizer {
             }
 
             // Marquer comme visité
-            let state_key = (state.pos, state.gc_count, state.current_run, state.last_base);
+            let state_key = (
+                state.pos,
+                state.gc_count,
+                state.current_run,
+                state.last_base,
+            );
             if !visited.insert(state_key) {
                 continue; // Déjà visité
             }
@@ -260,10 +279,7 @@ impl GcOptimizer {
         }
 
         let last = bases.last().unwrap();
-        bases.iter()
-            .rev()
-            .take_while(|&&b| b == *last)
-            .count()
+        bases.iter().rev().take_while(|&&b| b == *last).count()
     }
 
     /// Élaguer la file pour ne garder que les meilleurs états
@@ -309,12 +325,7 @@ impl GcOptimizer {
         let mut test_bases = current_bases.to_vec();
 
         // Pattern qui alterne GC/AT
-        let bases_to_try = [
-            IupacBase::G,
-            IupacBase::C,
-            IupacBase::T,
-            IupacBase::A,
-        ];
+        let bases_to_try = [IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A];
 
         let mut attempt = 0;
         let max_attempts = 100;
@@ -332,10 +343,7 @@ impl GcOptimizer {
 
             // Vérifier contrainte d'homopolymer
             if let Some(&last) = test_bases.last() {
-                let run_len = test_bases.iter()
-                    .rev()
-                    .take_while(|&&b| b == last)
-                    .count();
+                let run_len = test_bases.iter().rev().take_while(|&&b| b == last).count();
 
                 if last == new_base && run_len >= max_homopolymer {
                     attempt += 1;
@@ -416,10 +424,9 @@ mod tests {
         ];
 
         let padding = optimizer.find_optimal_padding(
-            &bases,
-            0.40,  // GC min 40%
-            0.60,  // GC max 60%
-            3,     // Max homopolymer
+            &bases, 0.40, // GC min 40%
+            0.60, // GC max 60%
+            3,    // Max homopolymer
         );
 
         assert!(padding.is_some(), "Devrait trouver une solution");
@@ -432,27 +439,20 @@ mod tests {
         test_bases.extend_from_slice(&padding);
 
         let final_gc = optimizer.compute_gc_ratio(&test_bases);
-        assert!((0.40..=0.60).contains(&final_gc),
-            "GC final {} devrait être dans [0.40, 0.60]", final_gc);
+        assert!(
+            (0.40..=0.60).contains(&final_gc),
+            "GC final {} devrait être dans [0.40, 0.60]",
+            final_gc
+        );
     }
 
     #[test]
     fn test_find_simple_padding() {
         let optimizer = GcOptimizer::new();
 
-        let bases: Vec<IupacBase> = vec![
-            IupacBase::A,
-            IupacBase::A,
-            IupacBase::T,
-            IupacBase::T,
-        ];
+        let bases: Vec<IupacBase> = vec![IupacBase::A, IupacBase::A, IupacBase::T, IupacBase::T];
 
-        let padding = optimizer.find_simple_padding(
-            &bases,
-            0.40,
-            0.60,
-            3,
-        );
+        let padding = optimizer.find_simple_padding(&bases, 0.40, 0.60, 3);
 
         // Devrait retourner un padding (pas forcément optimal)
         let mut test_bases = bases.clone();
@@ -479,12 +479,7 @@ mod tests {
             IupacBase::C,
         ];
 
-        let padding = optimizer.find_optimal_padding(
-            &bases,
-            0.40,
-            0.60,
-            3,
-        );
+        let padding = optimizer.find_optimal_padding(&bases, 0.40, 0.60, 3);
 
         // Pas besoin de padding si déjà dans les limites
         // Mais l'algorithme peut retourner Some(vec![]) ou None
@@ -498,17 +493,10 @@ mod tests {
         let mut optimizer = GcOptimizer::new();
 
         // Séquence finissant par AAA
-        let bases: Vec<IupacBase> = vec![
-            IupacBase::A,
-            IupacBase::A,
-            IupacBase::A,
-        ];
+        let bases: Vec<IupacBase> = vec![IupacBase::A, IupacBase::A, IupacBase::A];
 
         let padding = optimizer.find_optimal_padding(
-            &bases,
-            0.40,
-            0.60,
-            3, // Max homopolymer = 3
+            &bases, 0.40, 0.60, 3, // Max homopolymer = 3
         );
 
         if let Some(p) = padding {
@@ -517,8 +505,11 @@ mod tests {
             test_bases.extend_from_slice(&p);
 
             for window in test_bases.windows(4) {
-                assert!(window[0] != window[1] || window[1] != window[2] || window[2] != window[3],
-                    "Homopolymer > 3 détecté: {:?}", window);
+                assert!(
+                    window[0] != window[1] || window[1] != window[2] || window[2] != window[3],
+                    "Homopolymer > 3 détecté: {:?}",
+                    window
+                );
             }
         }
     }

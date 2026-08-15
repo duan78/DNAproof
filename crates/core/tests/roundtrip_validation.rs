@@ -2,7 +2,7 @@
 //!
 //! Tests pour vérifier que les schémas d'encodage peuvent faire un roundtrip complet
 
-use adn_core::{Encoder, EncoderConfig, Decoder, DecoderConfig, DnaConstraints};
+use adn_core::{Decoder, DecoderConfig, DnaConstraints, Encoder, EncoderConfig};
 
 /// Constraints for Goldman-style encodings (lenient GC)
 fn goldman_constraints() -> DnaConstraints {

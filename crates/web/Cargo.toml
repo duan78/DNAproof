@@ -40,3 +40,6 @@ futures = "0.3"
 
 # Configuration
 config = "0.13"
+
+[dev-dependencies]
+toml = "0.8"

@@ -2,8 +2,8 @@
 //!
 //! Mesure combien de bits sont stockés par base ADN pour chaque schéma
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use adn_core::{Encoder, EncoderConfig, EncoderType};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::time::Duration;
 
 fn benchmark_information_density(c: &mut Criterion) {
@@ -35,14 +35,12 @@ fn benchmark_information_density(c: &mut Criterion) {
 
             let encoder = Encoder::new(config).unwrap();
 
-            b.iter(|| {
-                match encoder.encode(black_box(&data)) {
-                    Ok(sequences) => {
-                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                        (original_bits, total_bases, sequences.len())
-                    }
-                    Err(_) => (original_bits, 0, 0),
+            b.iter(|| match encoder.encode(black_box(&data)) {
+                Ok(sequences) => {
+                    let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                    (original_bits, total_bases, sequences.len())
                 }
+                Err(_) => (original_bits, 0, 0),
             });
         });
 
@@ -58,14 +56,12 @@ fn benchmark_information_density(c: &mut Criterion) {
 
             let encoder = Encoder::new(config).unwrap();
 
-            b.iter(|| {
-                match encoder.encode(black_box(&data)) {
-                    Ok(sequences) => {
-                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                        (original_bits, total_bases, sequences.len())
-                    }
-                    Err(_) => (original_bits, 0, 0),
+            b.iter(|| match encoder.encode(black_box(&data)) {
+                Ok(sequences) => {
+                    let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                    (original_bits, total_bases, sequences.len())
                 }
+                Err(_) => (original_bits, 0, 0),
             });
         });
 
@@ -82,14 +78,12 @@ fn benchmark_information_density(c: &mut Criterion) {
 
             let encoder = Encoder::new(config).unwrap();
 
-            b.iter(|| {
-                match encoder.encode(black_box(&data)) {
-                    Ok(sequences) => {
-                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                        (original_bits, total_bases, sequences.len())
-                    }
-                    Err(_) => (original_bits, 0, 0),
+            b.iter(|| match encoder.encode(black_box(&data)) {
+                Ok(sequences) => {
+                    let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                    (original_bits, total_bases, sequences.len())
                 }
+                Err(_) => (original_bits, 0, 0),
             });
         });
 
@@ -105,14 +99,12 @@ fn benchmark_information_density(c: &mut Criterion) {
 
             let encoder = Encoder::new(config).unwrap();
 
-            b.iter(|| {
-                match encoder.encode(black_box(&data)) {
-                    Ok(sequences) => {
-                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                        (original_bits, total_bases, sequences.len())
-                    }
-                    Err(_) => (original_bits, 0, 0),
+            b.iter(|| match encoder.encode(black_box(&data)) {
+                Ok(sequences) => {
+                    let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                    (original_bits, total_bases, sequences.len())
                 }
+                Err(_) => (original_bits, 0, 0),
             });
         });
 
@@ -129,14 +121,12 @@ fn benchmark_information_density(c: &mut Criterion) {
 
             let encoder = Encoder::new(config).unwrap();
 
-            b.iter(|| {
-                match encoder.encode(black_box(&data)) {
-                    Ok(sequences) => {
-                        let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
-                        (original_bits, total_bases, sequences.len())
-                    }
-                    Err(_) => (original_bits, 0, 0),
+            b.iter(|| match encoder.encode(black_box(&data)) {
+                Ok(sequences) => {
+                    let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
+                    (original_bits, total_bases, sequences.len())
                 }
+                Err(_) => (original_bits, 0, 0),
             });
         });
     }
@@ -162,7 +152,7 @@ fn generate_repetitive_data(size: usize) -> Vec<u8> {
     result
 }
 
-criterion_group!{
+criterion_group! {
     name = density_benches;
     config = Criterion::default().warm_up_time(Duration::from_secs(3));
     targets = benchmark_information_density

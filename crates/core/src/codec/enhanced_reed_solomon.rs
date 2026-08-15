@@ -3,9 +3,9 @@
 //! Ce module étend Reed-Solomon avec un code d'étalement pour protéger
 //! contre les burst errors courants dans le séquençage ADN.
 
-use crate::error::Result;
 use crate::codec::reed_solomon::ReedSolomonCodec;
 use crate::codec::spreading::SpreadingCode;
+use crate::error::Result;
 
 /// Codec Reed-Solomon amélioré avec code d'étalement
 pub struct EnhancedReedSolomonCodec {
@@ -95,13 +95,19 @@ impl EnhancedReedSolomonCodec {
     }
 
     /// Décode avec positions d'effacements connus
-    pub fn decode_with_erasures(&self, data: &[u8], erasure_positions: &[usize]) -> Result<Vec<u8>> {
+    pub fn decode_with_erasures(
+        &self,
+        data: &[u8],
+        erasure_positions: &[usize],
+    ) -> Result<Vec<u8>> {
         if data.is_empty() {
             return Ok(Vec::new());
         }
 
         // 1. Décoder Reed-Solomon avec effacements
-        let decoded = self.rs_codec.decode_with_erasures(data, erasure_positions)?;
+        let decoded = self
+            .rs_codec
+            .decode_with_erasures(data, erasure_positions)?;
 
         // 2. Désentrelacer si nécessaire
         let result = if self.use_spreading {
@@ -222,8 +228,7 @@ mod tests {
 
     #[test]
     fn test_custom_block_size() {
-        let codec = EnhancedReedSolomonCodec::new()
-            .with_spreading_block_size(16);
+        let codec = EnhancedReedSolomonCodec::new().with_spreading_block_size(16);
 
         assert_eq!(codec.spreading_block_size(), 16);
         assert_eq!(codec.max_burst_protection(), 16);
@@ -255,8 +260,7 @@ mod tests {
 
     #[test]
     fn test_toggle_spreading() {
-        let codec = EnhancedReedSolomonCodec::new()
-            .with_spreading(false);
+        let codec = EnhancedReedSolomonCodec::new().with_spreading(false);
 
         assert!(!codec.is_spreading_enabled());
 

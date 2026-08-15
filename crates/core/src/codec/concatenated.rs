@@ -9,8 +9,8 @@
 //! - +50% d'efficacité de correction par rapport à RS seul
 //! - Possibilité d'itération entre décodeurs
 
-use crate::error::Result;
 use crate::codec::reed_solomon::ReedSolomonCodec;
+use crate::error::{DnaError, Result};
 
 /// Code convolutif (half-rate, constraint length 7)
 ///
@@ -283,7 +283,18 @@ impl ConcatenatedCodec {
         // 2. Décoder convolutif (si activé)
         if self.use_convolutional {
             // Convertir bytes en bits
-            let bits = self.bytes_to_bits(&rs_decoded);
+            let mut bits = self.bytes_to_bits(&rs_decoded);
+            // L'encodeur convolutif produit (8n+6)*2 = 16n+12 bits, un multiple
+            // de 4 mais jamais de 8 : `bits_to_bytes` (côté encodeur) a donc
+            // ajouté exactement 4 bits de padding nuls. On les retire avant le
+            // Viterbi, sinon le treillis contient 2 pas parasites dont les bits
+            // d'entrée "décodés" ajoutent un octet fantôme en sortie.
+            if bits.len() < 4 {
+                return Err(DnaError::Decoding(
+                    "Données convolutives trop courtes pour être décodées".to_string(),
+                ));
+            }
+            bits.truncate(bits.len() - 4);
             let conv_decoded = self.conv_codec.decode(&bits)?;
 
             // Convertir bits en bytes
@@ -388,8 +399,7 @@ mod tests {
 
     #[test]
     fn test_concatenated_roundtrip_without_conv() {
-        let codec = ConcatenatedCodec::new()
-            .with_convolutional(false);
+        let codec = ConcatenatedCodec::new().with_convolutional(false);
 
         let original = b"Test concatenated codec without convolutional!";
         let encoded = codec.encode(original).unwrap();
@@ -407,7 +417,10 @@ mod tests {
         let original = vec![0xABu8, 0xCD, 0xEF];
         let encoded = codec.encode(&original);
         // (3 bytes * 8 bits + 6 flush) * 2 = 60 bits de sortie
-        assert_eq!(encoded.len(), (original.len() * 8 + codec.constraint_length() - 1) * 2);
+        assert_eq!(
+            encoded.len(),
+            (original.len() * 8 + codec.constraint_length() - 1) * 2
+        );
 
         // Décoder : doit retrouver les 24 bits de données (3 bytes)
         let decoded = codec.decode(&encoded).unwrap();
@@ -416,8 +429,7 @@ mod tests {
 
     #[test]
     fn test_concatenated_with_convolutional() {
-        let codec = ConcatenatedCodec::new()
-            .with_convolutional(true);
+        let codec = ConcatenatedCodec::new().with_convolutional(true);
 
         let original = b"ABC";
         let encoded = codec.encode(original);
@@ -437,8 +449,7 @@ mod tests {
     #[test]
     fn test_overall_rate() {
         let codec_with_conv = ConcatenatedCodec::new();
-        let codec_without_conv = ConcatenatedCodec::new()
-            .with_convolutional(false);
+        let codec_without_conv = ConcatenatedCodec::new().with_convolutional(false);
 
         assert!(codec_with_conv.overall_rate() < codec_without_conv.overall_rate());
         assert!(codec_with_conv.overall_rate() < 0.5);
@@ -500,7 +511,8 @@ mod tests {
 
         let decoded = codec.decode(&corrupted).unwrap();
         assert_eq!(
-            original.to_vec(), decoded,
+            original.to_vec(),
+            decoded,
             "RS doit corriger les erreurs injectées dans le code concaténé"
         );
     }
@@ -534,9 +546,6 @@ mod tests {
             }
             result.push(result_byte);
         }
-        assert_eq!(
-            original, result,
-            "Viterbi doit corriger 1 erreur de bit"
-        );
+        assert_eq!(original, result, "Viterbi doit corriger 1 erreur de bit");
     }
 }

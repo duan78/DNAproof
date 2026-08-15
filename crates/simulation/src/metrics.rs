@@ -124,11 +124,26 @@ impl MetricsCollector {
         }
 
         SimulationMetrics {
-            total_bases: self.metrics.iter().map(|m| m.total_bases).min().unwrap_or(0),
-            substitutions: self.metrics.iter().map(|m| m.substitutions).min().unwrap_or(0),
+            total_bases: self
+                .metrics
+                .iter()
+                .map(|m| m.total_bases)
+                .min()
+                .unwrap_or(0),
+            substitutions: self
+                .metrics
+                .iter()
+                .map(|m| m.substitutions)
+                .min()
+                .unwrap_or(0),
             insertions: self.metrics.iter().map(|m| m.insertions).min().unwrap_or(0),
             deletions: self.metrics.iter().map(|m| m.deletions).min().unwrap_or(0),
-            affected_bases: self.metrics.iter().map(|m| m.affected_bases).min().unwrap_or(0),
+            affected_bases: self
+                .metrics
+                .iter()
+                .map(|m| m.affected_bases)
+                .min()
+                .unwrap_or(0),
         }
     }
 
@@ -139,11 +154,26 @@ impl MetricsCollector {
         }
 
         SimulationMetrics {
-            total_bases: self.metrics.iter().map(|m| m.total_bases).max().unwrap_or(0),
-            substitutions: self.metrics.iter().map(|m| m.substitutions).max().unwrap_or(0),
+            total_bases: self
+                .metrics
+                .iter()
+                .map(|m| m.total_bases)
+                .max()
+                .unwrap_or(0),
+            substitutions: self
+                .metrics
+                .iter()
+                .map(|m| m.substitutions)
+                .max()
+                .unwrap_or(0),
             insertions: self.metrics.iter().map(|m| m.insertions).max().unwrap_or(0),
             deletions: self.metrics.iter().map(|m| m.deletions).max().unwrap_or(0),
-            affected_bases: self.metrics.iter().map(|m| m.affected_bases).max().unwrap_or(0),
+            affected_bases: self
+                .metrics
+                .iter()
+                .map(|m| m.affected_bases)
+                .max()
+                .unwrap_or(0),
         }
     }
 
@@ -161,7 +191,11 @@ impl MetricsCollector {
             values.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n as f64
         };
 
-        let sub_values: Vec<f64> = self.metrics.iter().map(|m| m.substitutions as f64).collect();
+        let sub_values: Vec<f64> = self
+            .metrics
+            .iter()
+            .map(|m| m.substitutions as f64)
+            .collect();
         let ins_values: Vec<f64> = self.metrics.iter().map(|m| m.insertions as f64).collect();
         let del_values: Vec<f64> = self.metrics.iter().map(|m| m.deletions as f64).collect();
 

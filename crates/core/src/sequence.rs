@@ -10,21 +10,21 @@ use uuid::Uuid;
 /// Codes IUPAC pour les nucléotides
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IupacBase {
-    A,  // Adénine
-    C,  // Cytosine
-    G,  // Guanine
-    T,  // Thymine
-    R,  // A ou G (purine)
-    Y,  // C ou T (pyrimidine)
-    S,  // G ou C (strong)
-    W,  // A ou T (weak)
-    K,  // G ou T (keto)
-    M,  // A ou C (amino)
-    B,  // C ou G ou T
-    D,  // A ou G ou T
-    H,  // A ou C ou T
-    V,  // A ou C ou G
-    N,  // Any base
+    A, // Adénine
+    C, // Cytosine
+    G, // Guanine
+    T, // Thymine
+    R, // A ou G (purine)
+    Y, // C ou T (pyrimidine)
+    S, // G ou C (strong)
+    W, // A ou T (weak)
+    K, // G ou T (keto)
+    M, // A ou C (amino)
+    B, // C ou G ou T
+    D, // A ou G ou T
+    H, // A ou C ou T
+    V, // A ou C ou G
+    N, // Any base
 }
 
 impl IupacBase {
@@ -73,12 +73,18 @@ impl IupacBase {
 
     /// Vérifie si c'est une base standard (non ambiguë)
     pub fn is_standard(self) -> bool {
-        matches!(self, IupacBase::A | IupacBase::C | IupacBase::G | IupacBase::T)
+        matches!(
+            self,
+            IupacBase::A | IupacBase::C | IupacBase::G | IupacBase::T
+        )
     }
 
     /// Retourne true si c'est une base GC
     pub fn is_gc(self) -> bool {
-        matches!(self, IupacBase::G | IupacBase::C | IupacBase::S | IupacBase::B | IupacBase::V)
+        matches!(
+            self,
+            IupacBase::G | IupacBase::C | IupacBase::S | IupacBase::B | IupacBase::V
+        )
     }
 }
 
@@ -164,9 +170,13 @@ impl SequenceMetadata {
         seed: u64,
         encoding_scheme: String,
     ) -> Self {
-        // Calcul du ratio GC
+        // Calcul du ratio GC (garde contre les séquences vides → NaN)
         let gc_count = bases.iter().filter(|b| b.is_gc()).count();
-        let gc_ratio = gc_count as f64 / bases.len() as f64;
+        let gc_ratio = if bases.is_empty() {
+            0.0
+        } else {
+            gc_count as f64 / bases.len() as f64
+        };
 
         // Calcul du max homopolymer
         let mut max_homopolymer = 0;
@@ -386,10 +396,11 @@ impl DnaSequence {
     /// Convertit au format FASTA
     pub fn to_fasta(&self) -> String {
         format!(
-            ">{}|scheme:{}|seed:{}|gc:{:.2}|len:{}\n{}\n",
+            ">{}|scheme:{}|seed:{}|chunk:{}|gc:{:.2}|len:{}\n{}\n",
             self.id,
             self.metadata.encoding_scheme,
             self.metadata.seed,
+            self.metadata.chunk_size,
             self.metadata.gc_ratio * 100.0,
             self.bases.len(),
             self
@@ -407,20 +418,24 @@ impl DnaSequence {
         // Parser l'en-tête
         let header = lines[0];
         if !header.starts_with('>') {
-            return Err(DnaError::Decoding("Format FASTA invalide: pas d'en-tête >".to_string()));
+            return Err(DnaError::Decoding(
+                "Format FASTA invalide: pas d'en-tête >".to_string(),
+            ));
         }
 
         // Extraire les métadonnées depuis l'en-tête
         let metadata_parts = header[1..].split('|').collect::<Vec<_>>();
         let mut scheme = "unknown".to_string();
         let mut seed = 0u64;
+        let mut chunk_size: Option<usize> = None;
 
         for part in metadata_parts {
-            if part.contains("scheme:") {
-                scheme = part.split(':').nth(1).unwrap_or("unknown").to_string();
-            } else if part.contains("seed:") {
-                let seed_str = part.split(':').nth(1).unwrap_or("0");
-                seed = seed_str.parse().unwrap_or(0);
+            if let Some(s) = part.strip_prefix("scheme:") {
+                scheme = s.to_string();
+            } else if let Some(s) = part.strip_prefix("seed:") {
+                seed = s.parse().unwrap_or(0);
+            } else if let Some(s) = part.strip_prefix("chunk:") {
+                chunk_size = s.parse().ok();
             }
         }
 
@@ -431,15 +446,14 @@ impl DnaSequence {
             .map(IupacBase::from_char)
             .collect::<Result<Vec<IupacBase>>>()?;
 
+        // chunk_size : celle de l'en-tête si présente, sinon la longueur des
+        // bases (comportement historique). Les schémas GC-aware dépendent de
+        // la vraie valeur (taille du payload ≠ longueur de la séquence padée).
+        let chunk_size = chunk_size.unwrap_or(bases.len());
+
         // Créer les métadonnées
-        let metadata = SequenceMetadata::compute(
-            &bases,
-            String::from("fasta"),
-            0,
-            bases.len(),
-            seed,
-            scheme,
-        );
+        let metadata =
+            SequenceMetadata::compute(&bases, String::from("fasta"), 0, chunk_size, seed, scheme);
 
         Ok(Self {
             bases,
@@ -469,7 +483,13 @@ impl DnaSequence {
         let bases: Result<Vec<IupacBase>> = s.chars().map(IupacBase::from_char).collect();
         let bases = bases?;
 
-        Ok(Self::new(bases, original_file, chunk_index, chunk_size, seed))
+        Ok(Self::new(
+            bases,
+            original_file,
+            chunk_index,
+            chunk_size,
+            seed,
+        ))
     }
 }
 
@@ -496,7 +516,8 @@ mod tests {
     #[test]
     fn test_gc_content() {
         let bases = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
-        let metadata = SequenceMetadata::compute(&bases, "test.txt".to_string(), 0, 4, 0, "test".to_string());
+        let metadata =
+            SequenceMetadata::compute(&bases, "test.txt".to_string(), 0, 4, 0, "test".to_string());
 
         assert_eq!(metadata.gc_ratio, 0.5);
     }
@@ -510,7 +531,8 @@ mod tests {
             IupacBase::C,
             IupacBase::G,
         ];
-        let metadata = SequenceMetadata::compute(&bases, "test.txt".to_string(), 0, 5, 0, "test".to_string());
+        let metadata =
+            SequenceMetadata::compute(&bases, "test.txt".to_string(), 0, 5, 0, "test".to_string());
 
         assert_eq!(metadata.max_homopolymer, 3);
     }
@@ -531,12 +553,7 @@ mod tests {
         assert!(constraints.validate(&valid_bases).is_ok());
 
         // Homopolymer trop long
-        let invalid_bases = vec![
-            IupacBase::A,
-            IupacBase::A,
-            IupacBase::A,
-            IupacBase::A,
-        ];
+        let invalid_bases = vec![IupacBase::A, IupacBase::A, IupacBase::A, IupacBase::A];
         assert!(constraints.validate(&invalid_bases).is_err());
     }
 

@@ -1,11 +1,11 @@
 //! Module de performance et optimisation
 
-use rayon::prelude::*;
 use parking_lot::Mutex;
-use std::sync::Arc;
+use rayon::prelude::*;
+use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::fs;
+use std::sync::Arc;
 
 /// Cache pour les opérations coûteuses
 #[derive(Debug)]
@@ -56,7 +56,12 @@ pub struct HybridCache {
 
 impl HybridCache {
     /// Crée un nouveau cache hybride
-    pub fn new(memory_capacity: usize, disk_cache_enabled: bool, cache_dir: Option<PathBuf>, max_disk_size: usize) -> Self {
+    pub fn new(
+        memory_capacity: usize,
+        disk_cache_enabled: bool,
+        cache_dir: Option<PathBuf>,
+        max_disk_size: usize,
+    ) -> Self {
         Self {
             memory_cache: Arc::new(PerformanceCache::new(memory_capacity)),
             disk_cache_enabled,
@@ -68,13 +73,12 @@ impl HybridCache {
     /// Initialise le cache disque
     pub fn initialize_disk_cache(&self, cache_dir: PathBuf) -> crate::error::Result<()> {
         let mut dir_guard = self.cache_dir.lock();
-        
+
         // Créer le répertoire s'il n'existe pas
         if !cache_dir.exists() {
-            fs::create_dir_all(&cache_dir)
-                .map_err(crate::error::DnaError::Io)?;
+            fs::create_dir_all(&cache_dir).map_err(crate::error::DnaError::Io)?;
         }
-        
+
         *dir_guard = Some(cache_dir);
         Ok(())
     }
@@ -82,29 +86,30 @@ impl HybridCache {
     /// Génère un nom de fichier pour une clé
     fn get_cache_file_name(&self, key: u64) -> Option<PathBuf> {
         let dir_guard = self.cache_dir.lock();
-        dir_guard.as_ref().map(|dir| dir.join(format!("{:016x}.cache", key)))
+        dir_guard
+            .as_ref()
+            .map(|dir| dir.join(format!("{:016x}.cache", key)))
     }
 
     /// Ajoute un élément au cache (mémoire et disque)
     pub fn insert(&self, key: u64, value: Vec<u8>) -> crate::error::Result<()> {
         // Ajouter à la mémoire
         self.memory_cache.insert(key, value.clone());
-        
+
         // Ajouter au disque si activé
         if self.disk_cache_enabled {
             if let Some(file_path) = self.get_cache_file_name(key) {
                 // Sérialiser et écrire sur le disque
                 let serialized = bincode::serialize(&value)
                     .map_err(|e| crate::error::DnaError::Serialization(e.to_string()))?;
-                
-                fs::write(&file_path, serialized)
-                    .map_err(crate::error::DnaError::Io)?;
-                
+
+                fs::write(&file_path, serialized).map_err(crate::error::DnaError::Io)?;
+
                 // Vérifier et nettoyer si nécessaire
                 self.cleanup_disk_cache()?;
             }
         }
-        
+
         Ok(())
     }
 
@@ -114,7 +119,7 @@ impl HybridCache {
         if let Some(value) = self.memory_cache.get(key) {
             return Some(value);
         }
-        
+
         // Puis vérifier le disque si activé
         if self.disk_cache_enabled {
             if let Some(file_path) = self.get_cache_file_name(key) {
@@ -129,14 +134,14 @@ impl HybridCache {
                 }
             }
         }
-        
+
         None
     }
 
     /// Nettoie le cache
     pub fn clear(&self) -> crate::error::Result<()> {
         self.memory_cache.clear();
-        
+
         if self.disk_cache_enabled {
             if let Some(dir) = self.cache_dir.lock().as_ref() {
                 if dir.exists() {
@@ -149,7 +154,7 @@ impl HybridCache {
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -158,15 +163,15 @@ impl HybridCache {
         if !self.disk_cache_enabled {
             return Ok(());
         }
-        
+
         if let Some(dir) = self.cache_dir.lock().as_ref() {
             if !dir.exists() {
                 return Ok(());
             }
-            
+
             let mut total_size = 0usize;
             let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
-            
+
             // Calculer la taille totale et collecter les fichiers
             for entry in fs::read_dir(dir)? {
                 let entry = entry?;
@@ -174,30 +179,30 @@ impl HybridCache {
                     let metadata = entry.metadata()?;
                     let file_size = metadata.len() as usize;
                     total_size += file_size;
-                    
+
                     if let Ok(modified) = entry.metadata()?.modified() {
                         files.push((entry.path(), file_size as u64, modified));
                     }
                 }
             }
-            
+
             // Nettoyer si nécessaire
             if total_size > self.max_disk_size {
                 // Trier par date de modification (les plus anciens d'abord)
                 files.sort_by(|a, b| a.2.cmp(&b.2));
-                
+
                 // Supprimer les fichiers jusqu'à ce que nous soyons sous la limite
                 for (path, file_size, _) in files {
                     if total_size <= self.max_disk_size {
                         break;
                     }
-                    
+
                     fs::remove_file(&path)?;
                     total_size -= file_size as usize;
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -206,9 +211,9 @@ impl HybridCache {
         if !self.disk_cache_enabled {
             return Ok(0);
         }
-        
+
         let mut total_size = 0usize;
-        
+
         if let Some(dir) = self.cache_dir.lock().as_ref() {
             if dir.exists() {
                 for entry in fs::read_dir(dir)? {
@@ -219,7 +224,7 @@ impl HybridCache {
                 }
             }
         }
-        
+
         Ok(total_size)
     }
 
@@ -257,10 +262,13 @@ pub struct AdvancedCacheManager {
 
 impl AdvancedCacheManager {
     /// Crée un nouveau gestionnaire de cache
-    pub fn new(strategy: CacheStrategy, memory_capacity: usize, 
-                _disk_enabled: bool, cache_dir: Option<PathBuf>, max_disk_size: usize) 
-                -> crate::error::Result<Self> {
-        
+    pub fn new(
+        strategy: CacheStrategy,
+        memory_capacity: usize,
+        _disk_enabled: bool,
+        cache_dir: Option<PathBuf>,
+        max_disk_size: usize,
+    ) -> crate::error::Result<Self> {
         let (memory_cache, hybrid_cache) = match strategy {
             CacheStrategy::MemoryOnly => {
                 (Some(Arc::new(PerformanceCache::new(memory_capacity))), None)
@@ -275,7 +283,8 @@ impl AdvancedCacheManager {
             }
             CacheStrategy::Hybrid => {
                 let cache_dir_clone = cache_dir.clone();
-                let hybrid_cache = HybridCache::new(memory_capacity, true, cache_dir, max_disk_size);
+                let hybrid_cache =
+                    HybridCache::new(memory_capacity, true, cache_dir, max_disk_size);
                 if let Some(dir) = cache_dir_clone {
                     hybrid_cache.initialize_disk_cache(dir)?;
                 }
@@ -283,7 +292,7 @@ impl AdvancedCacheManager {
             }
             CacheStrategy::None => (None, None),
         };
-        
+
         Ok(Self {
             strategy,
             memory_cache,
@@ -306,7 +315,7 @@ impl AdvancedCacheManager {
             }
             CacheStrategy::None => {}
         }
-        
+
         Ok(())
     }
 
@@ -338,7 +347,7 @@ impl AdvancedCacheManager {
             }
             CacheStrategy::None => {}
         }
-        
+
         Ok(())
     }
 
@@ -350,12 +359,14 @@ impl AdvancedCacheManager {
     /// Retourne la taille du cache mémoire
     pub fn memory_cache_size(&self) -> Option<usize> {
         match self.strategy {
-            CacheStrategy::MemoryOnly => {
-                self.memory_cache.as_ref().map(|cache| cache.cache.lock().len())
-            }
-            CacheStrategy::Hybrid => {
-                self.hybrid_cache.as_ref().map(|cache| cache.memory_cache_len())
-            }
+            CacheStrategy::MemoryOnly => self
+                .memory_cache
+                .as_ref()
+                .map(|cache| cache.cache.lock().len()),
+            CacheStrategy::Hybrid => self
+                .hybrid_cache
+                .as_ref()
+                .map(|cache| cache.memory_cache_len()),
             _ => None,
         }
     }
@@ -396,12 +407,9 @@ impl PerformanceOptimizer {
         T: Sync + Send,
         F: Fn(&T) -> Vec<u8> + Sync + Send,
     {
-        data.par_chunks(self.parallelism)
-            .map(|chunk| {
-                chunk.iter()
-                    .map(&operation)
-                    .collect::<Vec<_>>()
-            })
+        // par_chunks(0) panique : normaliser un parallélisme nul à 1
+        data.par_chunks(self.parallelism.max(1))
+            .map(|chunk| chunk.iter().map(&operation).collect::<Vec<_>>())
             .flatten()
             .collect()
     }

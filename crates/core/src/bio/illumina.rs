@@ -51,12 +51,30 @@ impl IlluminaBarcode {
         // Les vrais barcodes dépendent du kit utilisé
         vec![
             Self::new(
-                vec![IupacBase::A, IupacBase::T, IupacBase::G, IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::C, IupacBase::A],
+                vec![
+                    IupacBase::A,
+                    IupacBase::T,
+                    IupacBase::G,
+                    IupacBase::A,
+                    IupacBase::C,
+                    IupacBase::G,
+                    IupacBase::C,
+                    IupacBase::A,
+                ],
                 "N701".to_string(),
                 BarcodePosition::FivePrime,
             ),
             Self::new(
-                vec![IupacBase::C, IupacBase::G, IupacBase::T, IupacBase::A, IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A],
+                vec![
+                    IupacBase::C,
+                    IupacBase::G,
+                    IupacBase::T,
+                    IupacBase::A,
+                    IupacBase::G,
+                    IupacBase::C,
+                    IupacBase::T,
+                    IupacBase::A,
+                ],
                 "N702".to_string(),
                 BarcodePosition::FivePrime,
             ),
@@ -97,9 +115,18 @@ impl IlluminaAdapter {
     pub fn standard_p5() -> Self {
         Self::new(
             vec![
-                IupacBase::A, IupacBase::A, IupacBase::T, IupacBase::G,
-                IupacBase::A, IupacBase::T, IupacBase::C, IupacBase::G,
-                IupacBase::G, IupacBase::A, IupacBase::G, IupacBase::A,
+                IupacBase::A,
+                IupacBase::A,
+                IupacBase::T,
+                IupacBase::G,
+                IupacBase::A,
+                IupacBase::T,
+                IupacBase::C,
+                IupacBase::G,
+                IupacBase::G,
+                IupacBase::A,
+                IupacBase::G,
+                IupacBase::A,
                 // P5 est plus long en réalité, version simplifiée
             ],
             AdapterType::P5,
@@ -110,9 +137,18 @@ impl IlluminaAdapter {
     pub fn standard_p7() -> Self {
         Self::new(
             vec![
-                IupacBase::C, IupacBase::A, IupacBase::A, IupacBase::G,
-                IupacBase::C, IupacBase::A, IupacBase::G, IupacBase::A,
-                IupacBase::C, IupacBase::G, IupacBase::A, IupacBase::C,
+                IupacBase::C,
+                IupacBase::A,
+                IupacBase::A,
+                IupacBase::G,
+                IupacBase::C,
+                IupacBase::A,
+                IupacBase::G,
+                IupacBase::A,
+                IupacBase::C,
+                IupacBase::G,
+                IupacBase::A,
+                IupacBase::C,
                 // P7 est plus long en réalité, version simplifiée
             ],
             AdapterType::P7,
@@ -149,7 +185,10 @@ impl Default for IlluminaConfig {
     fn default() -> Self {
         Self {
             barcodes: IlluminaBarcode::standard_barcodes(),
-            adapters: vec![IlluminaAdapter::standard_p5(), IlluminaAdapter::standard_p7()],
+            adapters: vec![
+                IlluminaAdapter::standard_p5(),
+                IlluminaAdapter::standard_p7(),
+            ],
             target_length: 150, // Standard Illumina
             min_gc: 0.40,
             max_gc: 0.60,
@@ -184,17 +223,29 @@ impl IlluminaSystem {
 
         for seq in sequences {
             // Trouver le barcode P5 et P7
-            let p5_barcode = self.config.barcodes.iter()
+            let p5_barcode = self
+                .config
+                .barcodes
+                .iter()
                 .find(|b| b.position == BarcodePosition::FivePrime);
 
-            let p7_barcode = self.config.barcodes.iter()
+            let p7_barcode = self
+                .config
+                .barcodes
+                .iter()
                 .find(|b| b.position == BarcodePosition::ThreePrime);
 
             // Trouver les adapters
-            let p5_adapter = self.config.adapters.iter()
+            let p5_adapter = self
+                .config
+                .adapters
+                .iter()
                 .find(|a| a.adapter_type == AdapterType::P5);
 
-            let p7_adapter = self.config.adapters.iter()
+            let p7_adapter = self
+                .config
+                .adapters
+                .iter()
                 .find(|a| a.adapter_type == AdapterType::P7);
 
             // Construire la nouvelle séquence
@@ -242,22 +293,34 @@ impl IlluminaSystem {
 
         for seq in sequences {
             // Trouver les adapters pour connaître leurs longueurs
-            let p5_adapter_len = self.config.adapters.iter()
+            let p5_adapter_len = self
+                .config
+                .adapters
+                .iter()
                 .find(|a| a.adapter_type == AdapterType::P5)
                 .map(|a| a.len())
                 .unwrap_or(0);
 
-            let p5_barcode_len = self.config.barcodes.iter()
+            let p5_barcode_len = self
+                .config
+                .barcodes
+                .iter()
                 .find(|b| b.position == BarcodePosition::FivePrime)
                 .map(|b| b.len())
                 .unwrap_or(0);
 
-            let p7_barcode_len = self.config.barcodes.iter()
+            let p7_barcode_len = self
+                .config
+                .barcodes
+                .iter()
                 .find(|b| b.position == BarcodePosition::ThreePrime)
                 .map(|b| b.len())
                 .unwrap_or(0);
 
-            let p7_adapter_len = self.config.adapters.iter()
+            let p7_adapter_len = self
+                .config
+                .adapters
+                .iter()
                 .find(|a| a.adapter_type == AdapterType::P7)
                 .map(|a| a.len())
                 .unwrap_or(0);
@@ -268,7 +331,8 @@ impl IlluminaSystem {
             // Vérifier que la séquence est assez longue
             if seq.bases.len() <= prefix_len + suffix_len {
                 return Err(DnaError::ConstraintViolation(
-                    "Séquence trop courte pour contenir des données après retrait des adapters".to_string()
+                    "Séquence trop courte pour contenir des données après retrait des adapters"
+                        .to_string(),
                 ));
             }
 
@@ -312,7 +376,9 @@ impl IlluminaValidator {
         // Vérifier la longueur
         if seq.bases.len() > self.target_length * 2 {
             return Err(DnaError::ConstraintViolation(format!(
-                "Séquence trop longue: {} nt (max {})", seq.bases.len(), self.target_length * 2
+                "Séquence trop longue: {} nt (max {})",
+                seq.bases.len(),
+                self.target_length * 2
             )));
         }
 
@@ -331,7 +397,7 @@ impl IlluminaValidator {
         // Vérifier les homopolymères
         if self.has_long_homopolymer(&seq.bases) {
             return Err(DnaError::ConstraintViolation(
-                "Homopolymère de plus de 3 bases détecté".to_string()
+                "Homopolymère de plus de 3 bases détecté".to_string(),
             ));
         }
 
@@ -344,7 +410,8 @@ impl IlluminaValidator {
             return 0.0;
         }
 
-        let gc_count = bases.iter()
+        let gc_count = bases
+            .iter()
             .filter(|b| matches!(b, IupacBase::G | IupacBase::C))
             .count();
 
@@ -404,7 +471,13 @@ mod tests {
 
         // Créer une séquence alternée avec ~50% GC
         let bases: Vec<IupacBase> = (0..50)
-            .map(|i| if i % 2 == 0 { IupacBase::G } else { IupacBase::A })
+            .map(|i| {
+                if i % 2 == 0 {
+                    IupacBase::G
+                } else {
+                    IupacBase::A
+                }
+            })
             .collect();
 
         let seq = DnaSequence::new(bases, "test".to_string(), 0, 50, 42);
@@ -417,13 +490,7 @@ mod tests {
         let validator = IlluminaValidator::from_config(&IlluminaConfig::default());
 
         // Tout A/T -> GC = 0%
-        let seq = DnaSequence::new(
-            vec![IupacBase::A; 100],
-            "test".to_string(),
-            0,
-            100,
-            42,
-        );
+        let seq = DnaSequence::new(vec![IupacBase::A; 100], "test".to_string(), 0, 100, 42);
 
         assert!(validator.validate(&seq).is_err());
     }
@@ -434,8 +501,13 @@ mod tests {
 
         // Homopolymère de 4 A
         let bases = vec![
-            IupacBase::A, IupacBase::A, IupacBase::A, IupacBase::A,
-            IupacBase::C, IupacBase::G, IupacBase::T,
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::A,
+            IupacBase::C,
+            IupacBase::G,
+            IupacBase::T,
         ];
         let seq = DnaSequence::new(bases, "test".to_string(), 0, 7, 42);
 
@@ -448,7 +520,13 @@ mod tests {
 
         // Créer une séquence avec ~50% GC
         let bases: Vec<IupacBase> = (0..50)
-            .map(|i| if i % 2 == 0 { IupacBase::G } else { IupacBase::A })
+            .map(|i| {
+                if i % 2 == 0 {
+                    IupacBase::G
+                } else {
+                    IupacBase::A
+                }
+            })
             .collect();
 
         let seq = DnaSequence::new(bases, "test".to_string(), 0, 50, 42);
@@ -471,10 +549,14 @@ mod tests {
 
         let seq = DnaSequence::new(
             vec![
-                IupacBase::G, IupacBase::C,  // 2 GC
-                IupacBase::A, IupacBase::T,  // 2 AT
-                IupacBase::G, IupacBase::C,  // 2 GC
-                IupacBase::A, IupacBase::T,  // 2 AT
+                IupacBase::G,
+                IupacBase::C, // 2 GC
+                IupacBase::A,
+                IupacBase::T, // 2 AT
+                IupacBase::G,
+                IupacBase::C, // 2 GC
+                IupacBase::A,
+                IupacBase::T, // 2 AT
             ],
             "test".to_string(),
             0,

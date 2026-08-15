@@ -3,9 +3,9 @@
 //! Ce module améliore l'encodeur GC-Aware existant en utilisant
 //! le GcOptimizer pour trouver un padding optimal de longueur minimale.
 
-use crate::error::{DnaError, Result};
-use crate::sequence::{DnaSequence, DnaConstraints, IupacBase};
 use crate::codec::gc_optimizer::GcOptimizer;
+use crate::error::{DnaError, Result};
+use crate::sequence::{DnaConstraints, DnaSequence, IupacBase};
 
 /// Encodeur GC-Aware amélioré avec optimisation du padding
 pub struct EnhancedGcAwareEncoder {
@@ -16,8 +16,7 @@ pub struct EnhancedGcAwareEncoder {
 impl EnhancedGcAwareEncoder {
     /// Crée un nouvel encodeur GC-aware amélioré
     pub fn new(constraints: DnaConstraints) -> Self {
-        let gc_optimizer = GcOptimizer::new()
-            .with_max_padding(50);
+        let gc_optimizer = GcOptimizer::new().with_max_padding(50);
 
         Self {
             constraints,
@@ -28,7 +27,21 @@ impl EnhancedGcAwareEncoder {
     /// Encode un payload en séquence ADN GC-aware optimisé
     ///
     /// Structure: [HEADER 25nt] [DATA up to 100nt] [PADDING optimal GC]
+    ///
+    /// # Erreurs
+    /// Retourne une erreur si le payload dépasse 25 octets (100 bases) :
+    /// la section DATA ne peut pas en contenir plus, et tronquer
+    /// silencieusement corromprait le round-trip.
     pub fn encode(&mut self, payload: Vec<u8>, seed: u64, degree: usize) -> Result<DnaSequence> {
+        const MAX_DATA_BYTES: usize = 25;
+        if payload.len() > MAX_DATA_BYTES {
+            return Err(DnaError::Encoding(format!(
+                "Payload trop long pour EnhancedGcAwareEncoder: {} octets (max {})",
+                payload.len(),
+                MAX_DATA_BYTES
+            )));
+        }
+
         // 1. Créer le HEADER (25 bases)
         let header = self.encode_header(seed, degree)?;
 
@@ -39,11 +52,7 @@ impl EnhancedGcAwareEncoder {
         let current_length = header.len() + data_bases.len();
         let padding_needed = 152_usize.saturating_sub(current_length);
 
-        let padding = self.generate_optimal_gc_padding(
-            &header,
-            &data_bases,
-            padding_needed,
-        )?;
+        let padding = self.generate_optimal_gc_padding(&header, &data_bases, padding_needed)?;
 
         // 4. Concaténer toutes les sections
         let mut all_bases = header;
@@ -60,12 +69,15 @@ impl EnhancedGcAwareEncoder {
             "enhanced_gc_aware".to_string(),
         );
 
-        // 6. Valider uniquement la longueur
-        if sequence.bases.len() > self.constraints.max_sequence_length {
+        // 6. Valider uniquement la longueur.
+        // Le format produit des oligos de 152nt par construction : relever la
+        // contrainte si elle est plus basse (sinon l'encodage échouerait toujours).
+        let max_len = self.constraints.max_sequence_length.max(152);
+        if sequence.bases.len() > max_len {
             return Err(DnaError::Encoding(format!(
                 "Séquence trop longue: {} > {}",
                 sequence.bases.len(),
-                self.constraints.max_sequence_length
+                max_len
             )));
         }
 
@@ -98,7 +110,12 @@ impl EnhancedGcAwareEncoder {
     }
 
     /// Encode une valeur sur n bases avec rotation
-    fn encode_value_2bit(&self, value: u32, num_bases: usize, start_rotation: usize) -> Result<Vec<IupacBase>> {
+    fn encode_value_2bit(
+        &self,
+        value: u32,
+        num_bases: usize,
+        start_rotation: usize,
+    ) -> Result<Vec<IupacBase>> {
         let standard_bases = [IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
         let mut bases = Vec::with_capacity(num_bases);
 
@@ -113,17 +130,12 @@ impl EnhancedGcAwareEncoder {
     }
 
     /// Encode les données (DATA section)
+    ///
+    /// Le payload doit déjà être <= 25 octets (garanti par `encode`).
     fn encode_data(&self, payload: &[u8]) -> Result<Vec<IupacBase>> {
-        let max_data_bytes = 25; // 100 bases / 4 bases par byte
-        let truncated_payload = if payload.len() > max_data_bytes {
-            &payload[..max_data_bytes]
-        } else {
-            payload
-        };
+        let mut bases = Vec::with_capacity(payload.len() * 4);
 
-        let mut bases = Vec::with_capacity(truncated_payload.len() * 4);
-
-        for byte in truncated_payload {
+        for byte in payload {
             let bits = [
                 (byte >> 6) & 0b11,
                 (byte >> 4) & 0b11,
@@ -191,16 +203,19 @@ impl EnhancedGcAwareEncoder {
         // Si l'optimiseur trouve une solution, l'utiliser
         if let Some(optimal_padding) = padding {
             // Tronquer à la longueur demandée
-            let truncated: Vec<IupacBase> = optimal_padding.into_iter()
-                .take(padding_length)
-                .collect();
+            let truncated: Vec<IupacBase> =
+                optimal_padding.into_iter().take(padding_length).collect();
 
             // Vérifier que le padding atteint la cible GC
             let mut test_sequence = current_bases.clone();
             test_sequence.extend_from_slice(&truncated);
 
             let final_gc = self.gc_optimizer.compute_gc_ratio(&test_sequence);
-            if self.gc_optimizer.is_gc_in_range(final_gc, self.constraints.gc_min, self.constraints.gc_max) {
+            if self.gc_optimizer.is_gc_in_range(
+                final_gc,
+                self.constraints.gc_min,
+                self.constraints.gc_max,
+            ) {
                 return Ok(truncated);
             }
         }
@@ -235,7 +250,9 @@ pub struct EnhancedGcAwareDecoder {
 impl EnhancedGcAwareDecoder {
     /// Crée un nouveau décodeur GC-aware
     pub fn new(constraints: DnaConstraints) -> Self {
-        Self { _constraints: constraints }
+        Self {
+            _constraints: constraints,
+        }
     }
 
     /// Décode une séquence ADN GC-aware en payload
@@ -244,7 +261,7 @@ impl EnhancedGcAwareDecoder {
 
         if bases.len() < 25 {
             return Err(DnaError::Decoding(
-                "Séquence trop courte pour contenir le header".to_string()
+                "Séquence trop courte pour contenir le header".to_string(),
             ));
         }
 
@@ -257,10 +274,11 @@ impl EnhancedGcAwareDecoder {
 
         // Vérifier qu'on a assez de bases
         if bases.len() < 25 + data_bases_needed {
-            return Err(DnaError::Decoding(
-                format!("Séquence trop courte: besoin de {} bases de données, n'en a que {}",
-                    data_bases_needed, bases.len().saturating_sub(25))
-            ));
+            return Err(DnaError::Decoding(format!(
+                "Séquence trop courte: besoin de {} bases de données, n'en a que {}",
+                data_bases_needed,
+                bases.len().saturating_sub(25)
+            )));
         }
 
         // Extraire uniquement les bases de données
@@ -276,7 +294,8 @@ impl EnhancedGcAwareDecoder {
     fn decode_data(&self, bases: &[IupacBase]) -> Result<Vec<u8>> {
         if !bases.len().is_multiple_of(4) {
             return Err(DnaError::Decoding(format!(
-                "Nombre de bases non multiple de 4: {}", bases.len()
+                "Nombre de bases non multiple de 4: {}",
+                bases.len()
             )));
         }
 
@@ -296,7 +315,8 @@ impl EnhancedGcAwareDecoder {
                     IupacBase::T => 0b11,
                     _ => {
                         return Err(DnaError::Decoding(format!(
-                            "Base invalide dans les données: {:?}", base
+                            "Base invalide dans les données: {:?}",
+                            base
                         )));
                     }
                 };
@@ -364,8 +384,7 @@ mod tests {
     fn test_max_padding_configuration() {
         let constraints = DnaConstraints::default();
 
-        let mut encoder = EnhancedGcAwareEncoder::new(constraints)
-            .with_max_padding(30);
+        let mut encoder = EnhancedGcAwareEncoder::new(constraints).with_max_padding(30);
 
         let payload = vec![0xAA, 0xBB, 0xCC];
         let sequence = encoder.encode(payload, 999, 1);

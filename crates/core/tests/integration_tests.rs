@@ -1,15 +1,17 @@
 //! Tests d'intégration pour ADN Core
 
-use adn_core::{Encoder, Decoder, EncoderConfig, DecoderConfig, DnaSequence, DnaConstraints, IupacBase};
 use adn_core::codec::EncoderType;
+use adn_core::{
+    Decoder, DecoderConfig, DnaConstraints, DnaSequence, Encoder, EncoderConfig, IupacBase,
+};
 use std::time::Instant;
 
 /// Helper function to create lenient constraints for testing
 fn lenient_constraints() -> DnaConstraints {
     DnaConstraints {
-        gc_min: 0.0,   // Allow any GC content for old Goldman encoder
-        gc_max: 1.0,   // Allow any GC content for old Goldman encoder
-        max_homopolymer: 100,  // Old Goldman can create very long runs without rotation
+        gc_min: 0.0,          // Allow any GC content for old Goldman encoder
+        gc_max: 1.0,          // Allow any GC content for old Goldman encoder
+        max_homopolymer: 100, // Old Goldman can create very long runs without rotation
         max_sequence_length: 200,
         allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
     }
@@ -21,7 +23,7 @@ fn test_large_file_encoding() {
     let data = vec![0u8; 1024 * 1024]; // 1MB
 
     let config = EncoderConfig {
-        encoder_type: EncoderType::Goldman,  // Use old Goldman for compatibility with generic Decoder
+        encoder_type: EncoderType::Goldman, // Use old Goldman for compatibility with generic Decoder
         chunk_size: 32,
         redundancy: 1.5,
         compression_enabled: false,
@@ -34,7 +36,11 @@ fn test_large_file_encoding() {
     let sequences = encoder.encode(&data).unwrap();
     let duration = start.elapsed();
 
-    println!("Encodage de 1MB: {} séquences en {:?}", sequences.len(), duration);
+    println!(
+        "Encodage de 1MB: {} séquences en {:?}",
+        sequences.len(),
+        duration
+    );
 
     // Vérifier que nous avons bien des séquences
     assert!(!sequences.is_empty());
@@ -49,7 +55,7 @@ fn test_roundtrip_with_compression() {
 
     // Encoder (using old Goldman for compatibility with generic Decoder)
     let encoder_config = EncoderConfig {
-        encoder_type: EncoderType::Goldman,  // Use old Goldman for compatibility
+        encoder_type: EncoderType::Goldman, // Use old Goldman for compatibility
         chunk_size: 32,
         redundancy: 1.5,
         compression_enabled: false,
@@ -77,8 +83,8 @@ fn test_multiple_roundtrips() {
     let test_cases: Vec<Vec<u8>> = vec![
         b"Short text".to_vec(),
         b"This is a medium length text that should be encoded and decoded correctly.".to_vec(),
-        vec![0u8; 1024], // 1KB de zéros
-        vec![255u8; 512], // 512 octets de 255
+        vec![0u8; 1024],                // 1KB de zéros
+        vec![255u8; 512],               // 512 octets de 255
         (0..=255).collect::<Vec<u8>>(), // Tous les octets possibles
     ];
 
@@ -86,7 +92,7 @@ fn test_multiple_roundtrips() {
         println!("Test case {}", i + 1);
 
         let encoder_config = EncoderConfig {
-            encoder_type: EncoderType::Goldman,  // Use old Goldman for compatibility
+            encoder_type: EncoderType::Goldman, // Use old Goldman for compatibility
             chunk_size: 32,
             constraints: lenient_constraints(),
             ..Default::default()
@@ -117,7 +123,9 @@ fn test_sequence_validation() {
     );
 
     // Cette séquence devrait être valide
-    assert!(valid_sequence.validate(&adn_core::DnaConstraints::default()).is_ok());
+    assert!(valid_sequence
+        .validate(&adn_core::DnaConstraints::default())
+        .is_ok());
 
     // Tester avec des contraintes plus strictes
     let strict_constraints = adn_core::DnaConstraints {
@@ -135,7 +143,7 @@ fn test_sequence_validation() {
 fn test_error_handling() {
     // Tester la gestion des erreurs
     let encoder_config = EncoderConfig {
-        encoder_type: EncoderType::Goldman,  // Use Goldman for compatibility
+        encoder_type: EncoderType::Goldman, // Use Goldman for compatibility
         chunk_size: 32,
         constraints: lenient_constraints(),
         ..Default::default()
@@ -166,7 +174,7 @@ fn test_parallel_encoding() {
     let data = vec![0u8; 1024 * 100]; // 100KB
 
     let config = EncoderConfig {
-        encoder_type: EncoderType::Goldman2013,  // Use Goldman2013 for reliable encoding
+        encoder_type: EncoderType::Goldman2013, // Use Goldman2013 for reliable encoding
         chunk_size: 32,
         redundancy: 1.5,
         compression_enabled: false,

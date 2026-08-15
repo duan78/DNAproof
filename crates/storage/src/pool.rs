@@ -96,7 +96,8 @@ impl DnaPool {
 
     /// Recherche des séquences par similarité
     pub fn search(&self, query: &str, threshold: f64) -> Vec<&DnaSequence> {
-        self.index.search(query, threshold)
+        self.index
+            .search(query, threshold)
             .into_iter()
             .filter_map(|id| self.sequences.get(&id))
             .collect()
@@ -151,20 +152,9 @@ mod tests {
         let config = PoolConfig::default();
         let mut pool = DnaPool::new(config);
 
-        let bases = vec![
-            IupacBase::A,
-            IupacBase::C,
-            IupacBase::G,
-            IupacBase::T,
-        ];
+        let bases = vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T];
 
-        let seq = DnaSequence::new(
-            bases,
-            "test.txt".to_string(),
-            0,
-            4,
-            42,
-        );
+        let seq = DnaSequence::new(bases, "test.txt".to_string(), 0, 4, 42);
 
         let id = seq.id.to_string();
         pool.insert(seq).unwrap();

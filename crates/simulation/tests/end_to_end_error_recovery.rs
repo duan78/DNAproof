@@ -8,9 +8,9 @@
 //! Le canal d'erreur existait (crates/simulation) mais n'était jamais connecté
 //! au décodeur pour vérifier la récupération.
 
-use adn_core::{Encoder, Decoder, EncoderConfig, DecoderConfig};
 use adn_core::codec::EncoderType;
-use adn_simulation::channel::{DnaChannel, ChannelConfig};
+use adn_core::{Decoder, DecoderConfig, Encoder, EncoderConfig};
+use adn_simulation::channel::{ChannelConfig, DnaChannel};
 use adn_simulation::error_model::ErrorModel;
 
 /// Crée un canal avec un modèle d'erreur donné
@@ -37,14 +37,21 @@ fn test_fountain_no_error_roundtrip() {
         redundancy: 2.0,
         compression_enabled: true,
         ..Default::default()
-    }).unwrap();
+    })
+    .unwrap();
 
     let sequences = encoder.encode(&original).unwrap();
-    assert!(!sequences.is_empty(), "L'encodage doit produire des séquences");
+    assert!(
+        !sequences.is_empty(),
+        "L'encodage doit produire des séquences"
+    );
 
     let decoder = Decoder::new(DecoderConfig::default());
     let recovered = decoder.decode(&sequences).unwrap();
-    assert_eq!(original, recovered, "Round-trip sans erreur doit être parfait");
+    assert_eq!(
+        original, recovered,
+        "Round-trip sans erreur doit être parfait"
+    );
 }
 
 #[test]
@@ -59,14 +66,16 @@ fn test_fountain_with_low_substitution_rate() {
         redundancy: 3.0, // Redondance élevée pour tolérer les erreurs
         compression_enabled: true,
         ..Default::default()
-    }).unwrap();
+    })
+    .unwrap();
 
     let sequences = encoder.encode(&original).unwrap();
     let num_seqs = sequences.len();
 
     // Injecter 0.1% de substitutions
     let mut channel = make_channel(0.001, 0.0, 0.0, 42);
-    let corrupted: Vec<_> = sequences.iter()
+    let corrupted: Vec<_> = sequences
+        .iter()
         .map(|seq| channel.transmit(seq).unwrap().0)
         .collect();
 
@@ -83,7 +92,10 @@ fn test_fountain_with_low_substitution_rate() {
         Ok(recovered) => {
             // Si le décodage réussit, les données doivent être correctes
             // (la décompression LZ4 valide l'intégrité)
-            println!("Récupération réussie avec 0.1% sub: len={}", recovered.len());
+            println!(
+                "Récupération réussie avec 0.1% sub: len={}",
+                recovered.len()
+            );
             if recovered == original {
                 println!("  -> Récupération parfaite");
             } else {
@@ -93,7 +105,10 @@ fn test_fountain_with_low_substitution_rate() {
         Err(e) => {
             // Le décodage peut échouer si trop de droplets sont corrompus.
             // C'est attendu pour des taux d'erreur élevés.
-            println!("Décodage échoué avec 0.1% sub (attendu pour taux élevés): {}", e);
+            println!(
+                "Décodage échoué avec 0.1% sub (attendu pour taux élevés): {}",
+                e
+            );
         }
     }
 }
@@ -102,7 +117,8 @@ fn test_fountain_with_low_substitution_rate() {
 fn test_droplet_loss_tolerance() {
     // Propriété clé de DNA Fountain : la capacité à décoder même avec
     // des gouttes (séquences) entièrement manquantes.
-    let original = b"Important archival data that must survive partial loss of DNA sequences.".to_vec();
+    let original =
+        b"Important archival data that must survive partial loss of DNA sequences.".to_vec();
 
     let encoder = Encoder::new(EncoderConfig {
         encoder_type: EncoderType::Fountain,
@@ -110,7 +126,8 @@ fn test_droplet_loss_tolerance() {
         redundancy: 4.0, // Forte redondance pour tolérer 30% de perte
         compression_enabled: true,
         ..Default::default()
-    }).unwrap();
+    })
+    .unwrap();
 
     let mut sequences = encoder.encode(&original).unwrap();
     let total = sequences.len();
@@ -158,7 +175,10 @@ fn test_error_model_validation() {
         deletion_rate: 0.005,
         seed: 123,
     };
-    assert!(model.is_valid(), "Le modèle d'erreur par défaut doit être valide");
+    assert!(
+        model.is_valid(),
+        "Le modèle d'erreur par défaut doit être valide"
+    );
 
     let bad_model = ErrorModel {
         substitution_rate: 0.6,
@@ -166,5 +186,8 @@ fn test_error_model_validation() {
         deletion_rate: 0.2,
         seed: 123,
     };
-    assert!(!bad_model.is_valid(), "Un taux total > 1.0 doit être invalide");
+    assert!(
+        !bad_model.is_valid(),
+        "Un taux total > 1.0 doit être invalide"
+    );
 }

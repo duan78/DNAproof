@@ -119,7 +119,7 @@ pub struct SearchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adn_core::{IupacBase, DnaSequence};
+    use adn_core::{DnaSequence, IupacBase};
 
     #[test]
     fn test_index_creation() {

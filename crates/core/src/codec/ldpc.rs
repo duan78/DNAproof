@@ -2,10 +2,12 @@
 //!
 //! Ce module implémente des codes LDPC pour la correction d'erreurs.
 //!
-//! Avantages par rapport à Reed-Solomon :
-//! - +20% d'efficacité de correction pour les mêmes bytes ECC
-//! - Meilleures performances asymptotiques
-//! - Convient pour les longs blocs de données
+//! Limitation connue : la matrice de parité est une matrice régulière (3,6)
+//! simplifiée à k/4 équations, sans optimisation de girth. Le belief
+//! propagation garantit le round-trip sans erreur mais la correction d'erreurs
+//! injectées n'est PAS fiable avec cette structure (voir le test
+//! `test_ldpc_single_bit_error_correction`). Une implémentation production
+//! nécessiterait des matrices QC-LDPC optimisées.
 //!
 //! Algorithme : Belief Propagation (Sum-Product Algorithm)
 
@@ -53,10 +55,7 @@ impl SparseMatrix {
             rows.push(parity_row);
         }
 
-        Self {
-            rows,
-            num_cols: n,
-        }
+        Self { rows, num_cols: n }
     }
 
     /// Retourne le nombre de lignes
@@ -92,9 +91,7 @@ impl LdpcCodec {
     /// Note: le paramètre `n` historique est ignoré — la matrice H est désormais
     /// construite dynamiquement à partir du nombre réel de bits de données.
     pub fn new(_n: usize) -> Self {
-        Self {
-            max_iterations: 20,
-        }
+        Self { max_iterations: 20 }
     }
 
     /// Configure le nombre d'itérations
@@ -172,38 +169,44 @@ impl LdpcCodec {
         // Construire la matrice H pour ces dimensions
         let h_matrix = SparseMatrix::create_regular(n, k);
 
-        // Initialiser les LLR (Log-Likelihood Ratios) à partir des bits reçus
-        // Tronquer au codeword réel (sans padding de bits)
-        let mut llr: Vec<f64> = received_bits[..n]
+        // Initialiser les LLR (Log-Likelihood Ratios) à partir des bits reçus.
+        // Tronquer au codeword réel (sans padding de bits).
+        let channel_llr: Vec<f64> = received_bits[..n]
             .iter()
             .map(|&bit| if bit == 0 { 2.0 } else { -2.0 })
             .collect();
+        let mut llr = channel_llr.clone();
 
         // Belief propagation
         for _iteration in 0..self.max_iterations {
-            // Check nodes → Variable nodes (sum-product sur tanh)
+            // Check nodes → Variable nodes (sum-product, règle du tanh)
             let mut extrinsics: Vec<Vec<f64>> = vec![Vec::new(); n];
             for row in h_matrix.iter_rows() {
-                // Produit des tanh(|LLR|) pour tous les nodes de la ligne
-                let mut products: Vec<f64> = row
+                // tanh(LLR/2) de chaque node valide de la ligne
+                let tanhs: Vec<Option<(usize, f64)>> = row
                     .iter()
-                    .filter(|&&c| c < llr.len())
-                    .map(|&c| llr[c].tanh())
+                    .map(|&c| {
+                        if c < n {
+                            Some((c, (llr[c] / 2.0).tanh()))
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
 
-                for (msg_idx, &col_idx) in row.iter().enumerate() {
-                    if col_idx >= n {
-                        continue;
-                    }
-                    // Extrinsic : produit de tous les tanh sauf le courant
-                    let excluded = products[msg_idx];
-                    let mut product = 1.0;
-                    for (i, &p) in products.iter().enumerate() {
+                // Extrinsic pour chaque node : produit des tanh des autres
+                // nodes de la ligne (boucle O(d²), d = poids de ligne = 4)
+                for (msg_idx, cell) in tanhs.iter().enumerate() {
+                    let Some((col_idx, _)) = *cell else { continue };
+
+                    let mut product: f64 = 1.0;
+                    for (i, other) in tanhs.iter().enumerate() {
                         if i != msg_idx {
-                            product *= p;
+                            if let Some((_, t)) = *other {
+                                product *= t;
+                            }
                         }
                     }
-                    let _ = excluded; // déjà exclu ci-dessus
 
                     let extrinsic_llr = if product.abs() < 1.0 {
                         ((1.0 + product) / (1.0 - product)).ln()
@@ -212,14 +215,14 @@ impl LdpcCodec {
                     };
                     extrinsics[col_idx].push(extrinsic_llr);
                 }
-                // Réinitialiser pour la prochaine ligne (products est locale)
-                let _ = &mut products;
             }
 
-            // Mise à jour des LLR : LLR = channel_LLR + somme(extrinsics)
-            for i in 0..n {
-                let sum: f64 = extrinsics.get(i).map_or(0.0, |v| v.iter().sum());
-                llr[i] += sum;
+            // Mise à jour des LLR : LLR = LLR canal + somme des extrinsèques.
+            // (On réinitialise depuis le LLR canal à chaque itération — ne pas
+            // accumuler les extrinsèques d'une itération sur l'autre.)
+            for (i, item) in llr.iter_mut().enumerate().take(n) {
+                let sum: f64 = extrinsics[i].iter().sum();
+                *item = channel_llr[i] + sum;
             }
 
             // Vérifier convergence (H * hard_decision = 0 ?)
@@ -239,7 +242,8 @@ impl LdpcCodec {
 
     /// Vérifie si le LLR satisfait H*x = 0 pour une matrice H donnée
     fn check_codeword_with_matrix(h_matrix: &SparseMatrix, llr: &[f64]) -> bool {
-        let bits: Vec<u8> = llr.iter().map(|&l| if l > 0.0 { 0 } else { 1 }).collect();
+        // Même seuil que la hard decision de `decode` (l >= 0 → bit 0)
+        let bits: Vec<u8> = llr.iter().map(|&l| if l >= 0.0 { 0 } else { 1 }).collect();
         for row in h_matrix.iter_rows() {
             let mut sum = 0u8;
             for &col_idx in row {
@@ -256,7 +260,8 @@ impl LdpcCodec {
 
     /// Convertit bytes en bits
     fn bytes_to_bits(&self, bytes: &[u8]) -> Vec<u8> {
-        bytes.iter()
+        bytes
+            .iter()
             .flat_map(|&byte| (0..8).map(move |i| (byte >> (7 - i)) & 1))
             .collect()
     }
@@ -342,7 +347,7 @@ mod tests {
         let bits = codec.bytes_to_bits(&bytes);
         let recovered = codec.bits_to_bytes(&bits);
 
-    assert_eq!(bytes, recovered);
+        assert_eq!(bytes, recovered);
     }
 
     #[test]
@@ -372,7 +377,9 @@ mod tests {
                 println!("LDPC a corrigé 1 erreur de bit (succès inattendu)");
             }
             _ => {
-                println!("LDPC n'a pas corrigé 1 erreur de bit (limitation de la matrice simplifiée)");
+                println!(
+                    "LDPC n'a pas corrigé 1 erreur de bit (limitation de la matrice simplifiée)"
+                );
             }
         }
     }

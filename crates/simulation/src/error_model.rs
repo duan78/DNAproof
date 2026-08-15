@@ -32,9 +32,9 @@ pub struct ErrorModel {
 impl Default for ErrorModel {
     fn default() -> Self {
         Self {
-            substitution_rate: 0.01,  // 1%
-            insertion_rate: 0.005,    // 0.5%
-            deletion_rate: 0.005,     // 0.5%
+            substitution_rate: 0.01, // 1%
+            insertion_rate: 0.005,   // 0.5%
+            deletion_rate: 0.005,    // 0.5%
             seed: 42,
         }
     }

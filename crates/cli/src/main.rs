@@ -7,12 +7,12 @@ use std::path::PathBuf;
 mod commands;
 mod display;
 
-use commands::{encode, decode, simulate, visualize};
+use commands::{decode, encode, simulate, visualize};
 
 #[derive(Parser)]
 #[command(name = "adn")]
 #[command(about = "Encodage de fichiers en ADN virtuel", long_about = None)]
-#[command(version = "0.1.0")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -42,9 +42,9 @@ enum Commands {
         #[arg(short, long, default_value = "1.5")]
         redundancy: f64,
 
-        /// Activer la compression
-        #[arg(short = 'z', long, default_value = "true")]
-        compress: bool,
+        /// Désactiver la compression
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        no_compress: bool,
 
         /// Algorithme de compression
         #[arg(short = 'c', long, value_enum)]
@@ -77,7 +77,7 @@ enum Commands {
         substitution_rate: f64,
 
         /// Taux d'erreur d'insertion (0.0-1.0)
-        #[arg(short = 'i', long, default_value = "0.005")]
+        #[arg(long, default_value = "0.005")]
         insertion_rate: f64,
 
         /// Taux d'erreur de délétion (0.0-1.0)
@@ -107,6 +107,8 @@ enum Commands {
 
 #[derive(clap::ValueEnum, Clone)]
 pub enum EncodingAlgorithm {
+    /// DNA Fountain validé (Erlich-Zielinski 2017) — recommandé
+    Ez2017,
     Fountain,
     Goldman,
     Goldman2013,
@@ -133,16 +135,27 @@ pub enum VisualizationFormat {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    if cli.verbose > 0 {
+        println!("adn v{}", env!("CARGO_PKG_VERSION"));
+    }
+
     match cli.command {
         Commands::Encode {
             input,
             output,
             algorithm,
             redundancy,
-            compress,
+            no_compress,
             compression,
         } => {
-            encode::run(input, output, algorithm, redundancy, compress, compression)?;
+            encode::run(
+                input,
+                output,
+                algorithm,
+                redundancy,
+                !no_compress,
+                compression,
+            )?;
         }
         Commands::Decode {
             input,
@@ -158,7 +171,13 @@ fn main() -> anyhow::Result<()> {
             deletion_rate,
             iterations,
         } => {
-            simulate::run(input, substitution_rate, insertion_rate, deletion_rate, iterations)?;
+            simulate::run(
+                input,
+                substitution_rate,
+                insertion_rate,
+                deletion_rate,
+                iterations,
+            )?;
         }
         Commands::Visualize {
             input,
@@ -188,9 +207,11 @@ pub fn create_progress_bar(length: u64, msg: &str) -> ProgressBar {
 /// Crée une barre de progression spinner
 pub fn create_spinner(msg: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::default_spinner()
-        .template("{spinner:.green} [{elapsed_precise}] {msg}")
-        .unwrap());
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} [{elapsed_precise}] {msg}")
+            .unwrap(),
+    );
     pb.set_message(msg.to_string());
     pb
 }

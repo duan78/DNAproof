@@ -5,8 +5,8 @@
 //!
 //! Référence: Erlich & Zielinski 2017, Science 355, 950-954
 
-use adn_core::{Encoder, Decoder, EncoderConfig, DecoderConfig};
 use adn_core::codec::EncoderType;
+use adn_core::{Decoder, DecoderConfig, Encoder, EncoderConfig};
 
 #[test]
 /// Test 1: Validation des paramètres Robust Soliton
@@ -40,13 +40,13 @@ fn test_ez2017_robust_soliton_parameters() {
     let actual_droplets = sequences.len() as f64;
 
     // Le nombre de droplets doit être ≥ 1 (au moins une séquence)
-    assert!(
-        actual_droplets >= 1.0,
-        "Aucune goutte générée"
-    );
+    assert!(actual_droplets >= 1.0, "Aucune goutte générée");
     // Vérifier que le nombre de droplets est cohérent avec la redondance
     // (au moins K droplets, au plus K * redundancy * 1.5 pour tolérer l'arrondi)
-    println!("EZ 2017: {} droplets générés (redundancy={})", actual_droplets, redundancy);
+    println!(
+        "EZ 2017: {} droplets générés (redundancy={})",
+        actual_droplets, redundancy
+    );
 }
 
 #[test]
@@ -72,15 +72,14 @@ fn test_ez2017_gc_content_constraint() {
 
     // Toutes les séquences doivent respecter les contraintes GC
     for (i, seq) in sequences.iter().enumerate() {
-        let gc_count = seq.bases.iter()
-            .filter(|b| b.is_gc())
-            .count();
+        let gc_count = seq.bases.iter().filter(|b| b.is_gc()).count();
         let gc_ratio = gc_count as f64 / seq.bases.len() as f64;
 
         assert!(
             (0.40..=0.60).contains(&gc_ratio),
             "Séquence {} GC ratio {:.2} hors limites 40-60%",
-            i, gc_ratio
+            i,
+            gc_ratio
         );
     }
 }
@@ -111,7 +110,8 @@ fn test_ez2017_homopolymer_constraint() {
         assert!(
             max_homopolymer < 4,
             "Séquence {} contient homopolymer de longueur {} (doit être <4)",
-            i, max_homopolymer
+            i,
+            max_homopolymer
         );
     }
 }
@@ -130,7 +130,7 @@ fn test_ez2017_sequence_length() {
     };
 
     let encoder = Encoder::new(config).unwrap();
-    let data = vec![42u8; 128];  // Données prévisibles
+    let data = vec![42u8; 128]; // Données prévisibles
 
     let sequences = encoder.encode(&data).unwrap();
 
@@ -142,7 +142,8 @@ fn test_ez2017_sequence_length() {
         assert!(
             (128..=152).contains(&len),
             "Séquence {} longueur {} hors limites EZ 2017 (128-152nt)",
-            i, len
+            i,
+            len
         );
     }
 }
@@ -152,7 +153,8 @@ fn test_ez2017_sequence_length() {
 ///
 /// Valide que les données peuvent être encodées puis décodées correctement
 fn test_ez2017_roundtrip() {
-    let original_data = b"Erlich-Zielinski 2017 roundtrip test data with various characters: ABCxyz123!@#";
+    let original_data =
+        b"Erlich-Zielinski 2017 roundtrip test data with various characters: ABCxyz123!@#";
 
     // Encoder avec EZ 2017
     // Note: overhead 1.05× est théorique pour K très grand. Pour ce petit fichier
@@ -192,7 +194,7 @@ fn test_ez2017_roundtrip() {
 /// Mesure l'overhead (total_bases / theoretical_min_bases). Avec la redondance
 /// configurée, l'overhead reflète le facteur de redondance du LT code.
 fn test_ez2017_overhead() {
-    let original_size = 1024;  // 1KB de données
+    let original_size = 1024; // 1KB de données
     let data = vec![42u8; original_size];
 
     let redundancy = 2.0;
@@ -200,7 +202,7 @@ fn test_ez2017_overhead() {
         encoder_type: EncoderType::ErlichZielinski2017,
         chunk_size: 32,
         redundancy,
-        compression_enabled: false,  // Sans compression pour mesurer l'overhead pur
+        compression_enabled: false, // Sans compression pour mesurer l'overhead pur
         ..Default::default()
     };
 
@@ -208,9 +210,7 @@ fn test_ez2017_overhead() {
     let sequences = encoder.encode(&data).unwrap();
 
     // Calculer le nombre total de bases
-    let total_bases: usize = sequences.iter()
-        .map(|s| s.bases.len())
-        .sum();
+    let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
 
     // Overhead = total_bases / (original_size * 4)
     let theoretical_min_bases = original_size * 4;
@@ -220,7 +220,8 @@ fn test_ez2017_overhead() {
     assert!(
         overhead >= redundancy * 0.9 && overhead <= redundancy * 1.1,
         "Overhead {:.2} hors de la plage attendue (autour de {:.1})",
-        overhead, redundancy
+        overhead,
+        redundancy
     );
 }
 
@@ -233,7 +234,7 @@ fn test_ez2017_information_density() {
         encoder_type: EncoderType::ErlichZielinski2017,
         chunk_size: 32,
         redundancy: 2.0,
-        compression_enabled: true,  // Avec compression comme dans le papier
+        compression_enabled: true, // Avec compression comme dans le papier
         ..Default::default()
     };
 
@@ -243,9 +244,7 @@ fn test_ez2017_information_density() {
 
     let sequences = encoder.encode(&data).unwrap();
 
-    let total_bases: usize = sequences.iter()
-        .map(|s| s.bases.len())
-        .sum();
+    let total_bases: usize = sequences.iter().map(|s| s.bases.len()).sum();
 
     // Bits par base = (original_bytes * 8) / total_bases
     let bits_per_base = (compressed_len * 8) as f64 / total_bases as f64;
@@ -257,7 +256,10 @@ fn test_ez2017_information_density() {
         bits_per_base
     );
 
-    println!("EZ 2017 Information density: {:.2} bits/base", bits_per_base);
+    println!(
+        "EZ 2017 Information density: {:.2} bits/base",
+        bits_per_base
+    );
 }
 
 #[test]
@@ -266,7 +268,8 @@ fn test_ez2017_information_density() {
 /// Une propriété clé de DNA Fountain est la capacité à décoder même
 /// avec une fraction des gouttes manquantes
 fn test_ez2017_droplet_tolerance() {
-    let original_data = b"Test data for droplet loss tolerance. This should survive even with 20% loss.";
+    let original_data =
+        b"Test data for droplet loss tolerance. This should survive even with 20% loss.";
 
     let config = EncoderConfig {
         encoder_type: EncoderType::ErlichZielinski2017,
@@ -295,13 +298,26 @@ fn test_ez2017_droplet_tolerance() {
     // Avec 20% de perte et redundancy=3.0, on devrait pouvoir décoder
     match result {
         Ok(decoded) => {
-            assert_eq!(original_data.to_vec(), decoded, "Decode failed after droplet loss");
-            println!("✓ Successfully decoded with 20% droplet loss ({}/{})", sequences.len(), total);
+            assert_eq!(
+                original_data.to_vec(),
+                decoded,
+                "Decode failed after droplet loss"
+            );
+            println!(
+                "✓ Successfully decoded with 20% droplet loss ({}/{})",
+                sequences.len(),
+                total
+            );
         }
         Err(e) => {
             // Le peeling peut échouer si les droplets restants ne couvrent pas tous les chunks.
             // C'est probabiliste : on documente sans faire échouer.
-            println!("⚠ Decode failed after 20% droplet loss ({}/{}): {}", sequences.len(), total, e);
+            println!(
+                "⚠ Decode failed after 20% droplet loss ({}/{}): {}",
+                sequences.len(),
+                total,
+                e
+            );
         }
     }
 }

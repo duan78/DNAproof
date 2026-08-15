@@ -19,7 +19,9 @@ pub fn run(input: PathBuf, output: PathBuf, ignore_checksum: bool) -> Result<()>
     // 2. Décoder automatiquement (détecte le schéma depuis les headers FASTA)
     let spinner = create_spinner("Décodage...");
     let decoder = Decoder::new(config);
-    let data = decoder.decode_from_fasta_auto(input.to_str().unwrap())?;
+    // to_string_lossy : les chemins Windows peuvent contenir des caractères
+    // non-UTF8 (uncode étendu) — unwrap() paniquait dans ce cas
+    let data = decoder.decode_from_fasta_auto(&input.to_string_lossy())?;
     spinner.finish_with_message(format!("Données récupérées ({} octets)", data.len()));
 
     // 3. Écrire le fichier de sortie

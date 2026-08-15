@@ -133,11 +133,7 @@ impl DnaConstraintValidator {
         if let Some(last_base) = bases.last() {
             if *last_base == new_base {
                 // Compter le run actuel
-                let run_length = bases
-                    .iter()
-                    .rev()
-                    .take_while(|&&b| b == new_base)
-                    .count();
+                let run_length = bases.iter().rev().take_while(|&&b| b == new_base).count();
 
                 if run_length >= self.constraints.max_homopolymer {
                     return false;
@@ -250,7 +246,11 @@ impl DnaConstraintValidator {
     }
 
     /// Corrige le GC content en remplaçant stratégiquement certaines bases
-    fn enforce_gc_with_retry(&self, result: &[IupacBase], _original: &[IupacBase]) -> Result<Vec<IupacBase>> {
+    fn enforce_gc_with_retry(
+        &self,
+        result: &[IupacBase],
+        _original: &[IupacBase],
+    ) -> Result<Vec<IupacBase>> {
         let mut corrected = result.to_vec();
         let current_gc = self.compute_gc_ratio(&corrected);
 
@@ -267,9 +267,9 @@ impl DnaConstraintValidator {
 
             // Vérifier qu'on peut changer cette base sans créer d'homopolymer
             // Combine checks to avoid "identical blocks" clippy warning
-            let is_homopolymer_neighbor = (i > 0 && corrected[i - 1] == base) || 
-                                        (i < corrected.len() - 1 && corrected[i + 1] == base);
-            
+            let is_homopolymer_neighbor = (i > 0 && corrected[i - 1] == base)
+                || (i < corrected.len() - 1 && corrected[i + 1] == base);
+
             if !is_homopolymer_neighbor {
                 replacement_candidates.push(i);
             }
@@ -292,7 +292,8 @@ impl DnaConstraintValidator {
             let test_gc = self.compute_gc_ratio(&corrected);
 
             if (test_gc >= self.constraints.gc_min && test_gc <= self.constraints.gc_max)
-                || (test_gc - target_ratio).abs() < 0.01 {
+                || (test_gc - target_ratio).abs() < 0.01
+            {
                 // GC est bon, on arrête
                 break;
             }
@@ -318,8 +319,8 @@ impl DnaConstraintValidator {
             };
 
             // Vérifier que le remplacement ne crée pas d'homopolymer
-            let creates_homopolymer = (idx > 0 && corrected[idx - 1] == new_base) || 
-                                    (idx < corrected.len() - 1 && corrected[idx + 1] == new_base);
+            let creates_homopolymer = (idx > 0 && corrected[idx - 1] == new_base)
+                || (idx < corrected.len() - 1 && corrected[idx + 1] == new_base);
 
             if !creates_homopolymer && new_base != old_base {
                 corrected[idx] = new_base;
@@ -394,7 +395,7 @@ impl IncrementalConstraintValidator {
         if let Some(last_base) = self.last_base {
             if last_base == base {
                 self.current_homopolymer_run += 1;
-                
+
                 // Vérifier la contrainte d'homopolymer
                 if self.current_homopolymer_run > self.constraints.max_homopolymer {
                     return Err(DnaError::HomopolymerRun {
@@ -470,11 +471,11 @@ impl IncrementalConstraintValidator {
     /// Valide une séquence complète en utilisant l'approche incrémentale
     pub fn validate_sequence_incremental(&mut self, bases: &[IupacBase]) -> Result<()> {
         self.reset();
-        
+
         for &base in bases {
             self.add_base(base)?;
         }
-        
+
         self.validate_current()
     }
 
@@ -609,7 +610,7 @@ mod tests {
         ];
 
         let gc_ratio = validator.compute_gc_ratio(&bases);
-        assert_eq!(gc_ratio, 4.0/6.0); // 4 GC (C, G, C, G) sur 6 bases
+        assert_eq!(gc_ratio, 4.0 / 6.0); // 4 GC (C, G, C, G) sur 6 bases
     }
 
     #[test]

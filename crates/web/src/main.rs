@@ -2,9 +2,9 @@
 //!
 //! Serveur web pour l'encodage/décodage de fichiers en ADN virtuel
 
+use actix_cors::Cors;
 use actix_files::Files;
 use actix_web::{web, App, HttpServer};
-use actix_cors::Cors;
 use tracing_actix_web::TracingLogger;
 
 mod config;
@@ -20,7 +20,10 @@ async fn main() -> std::io::Result<()> {
     let config = match AppConfig::load_from_file("config.toml") {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Erreur de chargement de la configuration: {}. Utilisation des valeurs par défaut.", e);
+            eprintln!(
+                "Erreur de chargement de la configuration: {}. Utilisation des valeurs par défaut.",
+                e
+            );
             AppConfig::default()
         }
     };
@@ -30,14 +33,12 @@ async fn main() -> std::io::Result<()> {
 
     // Initialiser la base de données si activée
     let database = if config.database.enabled {
-        let mut db_manager = adn_storage::DatabaseManager::new(
-            adn_storage::DatabaseConfig {
-                db_type: adn_storage::DatabaseType::Sqlite,
-                connection_string: config.database.url.clone(),
-                max_connections: config.database.max_connections,
-            }
-        );
-        
+        let mut db_manager = adn_storage::DatabaseManager::new(adn_storage::DatabaseConfig {
+            db_type: adn_storage::DatabaseType::Sqlite,
+            connection_string: config.database.url.clone(),
+            max_connections: config.database.max_connections,
+        });
+
         if let Err(e) = db_manager.initialize().await {
             eprintln!("Erreur d'initialisation de la base de données: {}", e);
             None
@@ -58,18 +59,21 @@ async fn main() -> std::io::Result<()> {
     };
 
     // Créer le canal de progression pour les mises à jour temps réel
-    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<models::ProgressMessage>();
+    let (progress_tx, mut progress_rx) =
+        tokio::sync::mpsc::unbounded_channel::<models::ProgressMessage>();
 
     // Spawn task to handle progress updates (rate-limited to avoid contention)
-    let jobs_for_progress: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, models::JobState>>> =
-        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let jobs_for_progress: std::sync::Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, models::JobState>>,
+    > = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
     let jobs_clone = jobs_for_progress.clone();
 
     tokio::spawn(async move {
         use tokio::time::{interval, Duration};
         let mut ticker = interval(Duration::from_millis(100)); // Max 10 updates/second
 
-        let mut pending_updates: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut pending_updates: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
 
         loop {
             tokio::select! {
@@ -97,13 +101,16 @@ async fn main() -> std::io::Result<()> {
     let app_state = web::Data::new(AppState {
         tera: std::sync::Arc::new(tera),
         jobs: jobs_for_progress,
-        _config: config.clone(),
+        config: config.clone(),
         database: database.map(std::sync::Arc::new),
         progress_tx: Some(progress_tx),
     });
 
-    tracing::info!("🧬 Démarrage du serveur ADN Storage sur http://{}:{}",
-        config.server.host, config.server.port);
+    tracing::info!(
+        "🧬 Démarrage du serveur ADN Storage sur http://{}:{}",
+        config.server.host,
+        config.server.port
+    );
 
     HttpServer::new(move || {
         // Configurer CORS (recrée pour chaque worker)
@@ -127,8 +134,10 @@ async fn main() -> std::io::Result<()> {
             .service(routes::download_result)
             .service(routes::download_fasta)
             .service(routes::health_check)
-            .service(Files::new("/static", config.server.static_files.clone())
-                .show_files_listing())
+            // Pas de listing de répertoire : sert uniquement les fichiers
+            // statiques référencés par les templates (évite la divulgation
+            // du contenu du dossier).
+            .service(Files::new("/static", config.server.static_files.clone()))
     })
     .workers(config.server.workers)
     .bind((config.server.host.clone(), config.server.port))?
@@ -161,5 +170,3 @@ fn init_logging(config: &crate::config::LoggingConfig) {
         }
     }
 }
-
-

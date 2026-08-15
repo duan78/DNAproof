@@ -1,38 +1,39 @@
 //! Encodeurs et décodeurs ADN
 
-pub mod encoder;
+pub mod adaptive;
+pub mod concatenated;
 pub mod decoder;
-pub mod reed_solomon;
+pub mod dictionary;
+pub mod encoder;
+pub mod enhanced_gc_aware;
+pub mod enhanced_reed_solomon;
+pub mod fountain;
+pub mod gc_aware_encoding;
+pub mod gc_optimizer;
 pub mod goldman_2013;
 pub mod grass_2015;
-pub mod gc_aware_encoding;
 pub mod huffman;
-pub mod spreading;
-pub mod adaptive;
-pub mod gc_optimizer;
-pub mod enhanced_reed_solomon;
-pub mod enhanced_gc_aware;
-pub mod ultimate;
-pub mod concatenated;
-pub mod dictionary;
 pub mod ldpc;
+pub mod reed_solomon;
+pub mod spreading;
+pub mod ultimate;
 
-pub use encoder::{Encoder, EncoderConfig, EncoderType};
-pub use decoder::{Decoder, DecoderConfig};
-pub use reed_solomon::ReedSolomonCodec;
-pub use goldman_2013::{Goldman2013Encoder, Goldman2013Decoder};
-pub use grass_2015::{Grass2015Encoder, Grass2015Decoder};
-pub use gc_aware_encoding::{GcAwareEncoder, GcAwareDecoder};
-pub use huffman::{HuffmanCompressor, DnaHuffmanCompressor};
-pub use spreading::SpreadingCode;
-pub use adaptive::{AdaptiveEncoder, DataType, DataAnalyzer};
-pub use gc_optimizer::GcOptimizer;
-pub use enhanced_reed_solomon::EnhancedReedSolomonCodec;
-pub use enhanced_gc_aware::{EnhancedGcAwareEncoder, EnhancedGcAwareDecoder};
-pub use ultimate::{UltimateEncoder, UltimateDecoder, UltimateCodec, UltimateEncoderConfig};
+pub use adaptive::{AdaptiveEncoder, DataAnalyzer, DataType};
 pub use concatenated::{ConcatenatedCodec, ConvolutionalCodec};
-pub use dictionary::{DictionaryCompressor, SequenceDictionaryCompressor, DictionaryStats};
+pub use decoder::{Decoder, DecoderConfig};
+pub use dictionary::{DictionaryCompressor, DictionaryStats, SequenceDictionaryCompressor};
+pub use encoder::{Encoder, EncoderConfig, EncoderType};
+pub use enhanced_gc_aware::{EnhancedGcAwareDecoder, EnhancedGcAwareEncoder};
+pub use enhanced_reed_solomon::EnhancedReedSolomonCodec;
+pub use gc_aware_encoding::{GcAwareDecoder, GcAwareEncoder};
+pub use gc_optimizer::GcOptimizer;
+pub use goldman_2013::{Goldman2013Decoder, Goldman2013Encoder};
+pub use grass_2015::{Grass2015Decoder, Grass2015Encoder};
+pub use huffman::{DnaHuffmanCompressor, HuffmanCompressor};
 pub use ldpc::{LdpcCodec, SparseMatrix};
+pub use reed_solomon::ReedSolomonCodec;
+pub use spreading::SpreadingCode;
+pub use ultimate::{UltimateCodec, UltimateDecoder, UltimateEncoder, UltimateEncoderConfig};
 
 use crate::error::Result;
 use crate::sequence::DnaSequence;
@@ -83,7 +84,7 @@ mod tests {
         codec.encoder_config.constraints = crate::sequence::DnaConstraints {
             gc_min: 0.15,
             gc_max: 0.85,
-            max_homopolymer: 20,  // Old Goldman doesn't use rotation, can create long runs
+            max_homopolymer: 20, // Old Goldman doesn't use rotation, can create long runs
             max_sequence_length: 200,
             allowed_bases: vec![
                 crate::sequence::IupacBase::A,

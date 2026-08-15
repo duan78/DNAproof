@@ -7,7 +7,7 @@
 //! avec 32 bytes de ECC par bloc (standard Reed-Solomon 255, 223)
 
 use crate::error::{DnaError, Result};
-use reed_solomon::{Encoder, Decoder};
+use reed_solomon::{Decoder, Encoder};
 
 /// Taille max des données par bloc (255 total - 32 ECC)
 const MAX_DATA_BLOCK_SIZE: usize = 223;
@@ -106,7 +106,7 @@ impl ReedSolomonCodec {
         // Extraire la longueur originale (4 bytes)
         if data.len() < 4 {
             return Err(DnaError::Correction(
-                "Données Reed-Solomon trop courtes (pas de longueur)".to_string()
+                "Données Reed-Solomon trop courtes (pas de longueur)".to_string(),
             ));
         }
 
@@ -130,15 +130,25 @@ impl ReedSolomonCodec {
                     result.extend_from_slice(corrected.data());
                 }
                 Err(_) => {
-                    return Err(DnaError::Correction(
-                        format!("Reed-Solomon: correction impossible pour un bloc de {} bytes", block.len())
-                    ));
+                    return Err(DnaError::Correction(format!(
+                        "Reed-Solomon: correction impossible pour un bloc de {} bytes",
+                        block.len()
+                    )));
                 }
             }
         }
 
-        // Tronquer à la longueur originale
+        // Tronquer à la longueur originale — et vérifier qu'on l'atteint bien :
+        // un préfixe de longueur corrompu (trop grand) produirait sinon des
+        // données silencieusement plus courtes que l'original.
         result.truncate(original_len);
+        if result.len() != original_len {
+            return Err(DnaError::Correction(format!(
+                "Longueur décodée incohérente: attendu {} octets, obtenu {}",
+                original_len,
+                result.len()
+            )));
+        }
 
         Ok(result)
     }
@@ -148,7 +158,11 @@ impl ReedSolomonCodec {
     /// # Arguments
     /// * `data` - Les données encodées (data + ecc)
     /// * `erasure_positions` - Positions connues des erreurs (indices dans le buffer complet, après le préfixe de 4 bytes)
-    pub fn decode_with_erasures(&self, data: &[u8], erasure_positions: &[usize]) -> Result<Vec<u8>> {
+    pub fn decode_with_erasures(
+        &self,
+        data: &[u8],
+        erasure_positions: &[usize],
+    ) -> Result<Vec<u8>> {
         if data.is_empty() {
             return Ok(Vec::new());
         }
@@ -158,7 +172,7 @@ impl ReedSolomonCodec {
         // Extraire la longueur originale (4 bytes)
         if data.len() < 4 {
             return Err(DnaError::Correction(
-                "Données Reed-Solomon trop courtes".to_string()
+                "Données Reed-Solomon trop courtes".to_string(),
             ));
         }
 
@@ -167,7 +181,7 @@ impl ReedSolomonCodec {
 
         if !encoded_data.len().is_multiple_of(block_size) {
             return Err(DnaError::Correction(
-                "Longueur des données invalide pour Reed-Solomon".to_string()
+                "Longueur des données invalide pour Reed-Solomon".to_string(),
             ));
         }
 
@@ -193,21 +207,30 @@ impl ReedSolomonCodec {
                 }
                 Err(_) => {
                     return Err(DnaError::Correction(
-                        "Correction avec effacements impossible".to_string()
+                        "Correction avec effacements impossible".to_string(),
                     ));
                 }
             }
         }
 
-        // Tronquer à la longueur originale
+        // Tronquer à la longueur originale — et vérifier qu'on l'atteint bien
         result.truncate(original_len);
+        if result.len() != original_len {
+            return Err(DnaError::Correction(format!(
+                "Longueur décodée incohérente: attendu {} octets, obtenu {}",
+                original_len,
+                result.len()
+            )));
+        }
 
         Ok(result)
     }
 
     /// Vérifie si les données contiennent des erreurs (sans correction)
     pub fn is_corrupted(&self, data: &[u8]) -> bool {
-        if data.is_empty() {
+        // Données trop courtes pour contenir le préfixe de longueur + un bloc :
+        // considérées non vérifiables (et donc non corrompues au sens RS).
+        if data.len() < 4 {
             return false;
         }
 
@@ -215,9 +238,9 @@ impl ReedSolomonCodec {
         let encoded_data = &data[4..];
         let block_size = self.max_data_block + self.ecc_len;
 
-        encoded_data.chunks(block_size).any(|block| {
-            self.decoder.is_corrupted(block)
-        })
+        encoded_data
+            .chunks(block_size)
+            .any(|block| self.decoder.is_corrupted(block))
     }
 
     /// Retourne la longueur du ECC en bytes par bloc
@@ -311,7 +334,7 @@ mod tests {
         let mut encoded = codec.encode(original).unwrap();
 
         // Corrompre quelques bytes dans le premier bloc (après le préfixe de 4 bytes)
-        encoded[9] = 0xFF;  // 5 + 4
+        encoded[9] = 0xFF; // 5 + 4
         encoded[14] = 0xFF; // 10 + 4
         encoded[19] = 0xFF; // 15 + 4
 
@@ -338,7 +361,9 @@ mod tests {
 
         // Corriger avec positions connues (les positions doivent être relatives aux données encodées, après le préfixe)
         let relative_positions: Vec<usize> = erasure_positions.iter().map(|&p| p - 4).collect();
-        let recovered = codec.decode_with_erasures(&encoded, &relative_positions).unwrap();
+        let recovered = codec
+            .decode_with_erasures(&encoded, &relative_positions)
+            .unwrap();
         assert_eq!(original.to_vec(), recovered);
     }
 

@@ -40,6 +40,9 @@ pub enum DnaError {
     #[error("Erreur de correction: {0}")]
     Correction(String),
 
+    #[error("Configuration invalide: {0}")]
+    InvalidConfig(String),
+
     #[error("Données corrompues irrécupérables")]
     DataCorrupted,
 }

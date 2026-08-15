@@ -1,11 +1,10 @@
 //! Commande de simulation
 
+use crate::commands::read_fasta;
 use crate::create_progress_bar;
-use adn_simulation::{DnaChannel, ChannelConfig, ErrorModel, MetricsCollector};
-use adn_core::DnaSequence;
+use adn_simulation::{ChannelConfig, DnaChannel, ErrorModel, MetricsCollector};
 use anyhow::Result;
 use std::path::PathBuf;
-use std::io::{BufRead, BufReader};
 
 pub fn run(
     input: PathBuf,
@@ -17,8 +16,12 @@ pub fn run(
     println!("🧬 Simulation d'erreurs sur: {}", input.display());
 
     // 1. Lire les séquences
-    let sequences = read_fasta(&input)?;
+    let sequences = read_fasta(&input, "simulated")?;
     println!("{} séquences chargées", sequences.len());
+
+    if sequences.is_empty() {
+        anyhow::bail!("Aucune séquence trouvée dans {}", input.display());
+    }
 
     // 2. Configurer le canal
     let error_model = ErrorModel {
@@ -35,8 +38,9 @@ pub fn run(
         storage_duration_days: 30,
     };
 
-    // 3. Simuler
-    let pb = create_progress_bar((iterations * sequences.len()) as u64, "Simulation en cours...");
+    // 3. Simuler — la barre progresse d'une unité par séquence traitée
+    // (toutes ses itérations de transmission incluses).
+    let pb = create_progress_bar(sequences.len() as u64, "Simulation en cours...");
     let mut channel = DnaChannel::new(config);
     let mut collector = MetricsCollector::new();
 
@@ -64,55 +68,4 @@ pub fn run(
     println!("\n✅ Simulation terminée!");
 
     Ok(())
-}
-
-/// Lit un fichier FASTA (version simplifiée)
-fn read_fasta(path: &PathBuf) -> Result<Vec<DnaSequence>> {
-    let file = std::fs::File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut sequences = Vec::new();
-
-    let mut current_seq = String::new();
-    let mut chunk_index = 0;
-
-    for line in reader.lines() {
-        let line = line?;
-        let line = line.trim();
-
-        if line.is_empty() {
-            continue;
-        }
-
-        if line.starts_with('>') {
-            if !current_seq.is_empty() {
-                if let Ok(seq) = DnaSequence::from_str(
-                    &current_seq,
-                    "simulated".to_string(),
-                    chunk_index,
-                    current_seq.len() / 4,
-                    0,
-                ) {
-                    sequences.push(seq);
-                    chunk_index += 1;
-                }
-            }
-            current_seq = String::new();
-        } else {
-            current_seq.push_str(line);
-        }
-    }
-
-    if !current_seq.is_empty() {
-        if let Ok(seq) = DnaSequence::from_str(
-            &current_seq,
-            "simulated".to_string(),
-            chunk_index,
-            current_seq.len() / 4,
-            0,
-        ) {
-            sequences.push(seq);
-        }
-    }
-
-    Ok(sequences)
 }

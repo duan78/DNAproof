@@ -1,11 +1,11 @@
 //! Modèles de données pour l'API web
 
+use adn_core::codec::EncoderType;
+use adn_core::{DecoderConfig, EncoderConfig};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use adn_core::{EncoderConfig, DecoderConfig};
-use adn_core::codec::EncoderType;
-use chrono::{DateTime, Utc};
 
 /// Message de progression pour les mises à jour temps réel
 #[derive(Debug, Clone)]
@@ -19,10 +19,14 @@ pub struct ProgressMessage {
 pub struct AppState {
     pub tera: Arc<tera::Tera>,
     pub jobs: Arc<tokio::sync::RwLock<HashMap<String, JobState>>>,
-    pub _config: crate::config::AppConfig,
+    pub config: crate::config::AppConfig,
     pub database: Option<Arc<adn_storage::DatabaseManager>>,
     pub progress_tx: Option<tokio::sync::mpsc::UnboundedSender<ProgressMessage>>,
 }
+
+/// Durée de rétention des jobs terminés avant éviction (et suppression des
+/// fichiers associés dans uploads/).
+pub const JOB_RETENTION: chrono::Duration = chrono::Duration::hours(1);
 
 /// État d'un job d'encodage/décodage
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,8 +117,14 @@ impl From<EncodeRequest> for EncoderConfig {
         if let Some(algorithm) = req.algorithm {
             config.encoder_type = match algorithm.to_lowercase().as_str() {
                 "goldman" => EncoderType::Goldman,
+                "goldman_2013" | "goldman2013" => EncoderType::Goldman2013,
+                "grass_2015" | "grass2015" => EncoderType::Grass2015,
+                "erlich_zielinski_2017" | "ez2017" | "dna_fountain" => {
+                    EncoderType::ErlichZielinski2017
+                }
                 "adaptive" => EncoderType::Adaptive,
                 "base3" => EncoderType::Base3,
+                "ultimate" => EncoderType::Ultimate,
                 _ => EncoderType::Fountain,
             };
         }
@@ -164,11 +174,11 @@ impl Default for DecodeRequest {
 impl From<DecodeRequest> for DecoderConfig {
     fn from(req: DecodeRequest) -> Self {
         let mut config = DecoderConfig::default();
-        
+
         if let Some(auto_decompress) = req.auto_decompress {
             config.auto_decompress = auto_decompress;
         }
-        
+
         config
     }
 }

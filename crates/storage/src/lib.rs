@@ -1,13 +1,13 @@
 //! Gestion du stockage virtuel ADN
 
-pub mod pool;
-pub mod index;
-pub mod error;
 pub mod database;
+pub mod error;
+pub mod index;
+pub mod pool;
 pub mod repository;
 
+pub use database::{DatabaseConfig, DatabaseManager, DatabasePool, DatabaseType};
+pub use error::{Result, StorageError};
+pub use index::{SearchResult, SequenceIndex};
 pub use pool::{DnaPool, PoolConfig};
-pub use index::{SequenceIndex, SearchResult};
-pub use error::{StorageError, Result};
-pub use database::{DatabaseManager, DatabaseConfig, DatabaseType, DatabasePool};
-pub use repository::{SequenceRepository, DbSequence};
+pub use repository::{DbSequence, SequenceRepository};

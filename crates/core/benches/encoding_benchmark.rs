@@ -1,16 +1,16 @@
 //! Benchmarks pour l'encodage ADN
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use adn_core::{Encoder, EncoderConfig, EncoderType};
 use adn_core::codec::encoder::CompressionType;
+use adn_core::{Encoder, EncoderConfig, EncoderType};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::time::Duration;
 
 fn benchmark_encoding(c: &mut Criterion) {
     // Données de test de différentes tailles
     let test_data = vec![
-        ("small", vec![0u8; 1024]),           // 1KB
-        ("medium", vec![0u8; 1024 * 100]),   // 100KB
-        ("large", vec![0u8; 1024 * 1024]),   // 1MB
+        ("small", vec![0u8; 1024]),        // 1KB
+        ("medium", vec![0u8; 1024 * 100]), // 100KB
+        ("large", vec![0u8; 1024 * 1024]), // 1MB
     ];
 
     let mut group = c.benchmark_group("Encoding Performance");
@@ -28,7 +28,7 @@ fn benchmark_encoding(c: &mut Criterion) {
             };
 
             let encoder = Encoder::new(config).unwrap();
-            
+
             b.iter(|| {
                 let _ = encoder.encode(black_box(&data));
             });
@@ -148,7 +148,7 @@ fn benchmark_compression(c: &mut Criterion) {
         };
 
         let encoder = Encoder::new(config).unwrap();
-        
+
         b.iter(|| {
             let _ = encoder.encode(black_box(&data));
         });
@@ -166,7 +166,7 @@ fn benchmark_compression(c: &mut Criterion) {
         };
 
         let encoder = Encoder::new(config).unwrap();
-        
+
         b.iter(|| {
             let _ = encoder.encode(black_box(&data));
         });
@@ -175,7 +175,7 @@ fn benchmark_compression(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!{
+criterion_group! {
     name = benches;
     config = Criterion::default().warm_up_time(Duration::from_secs(5));
     targets = benchmark_encoding, benchmark_fountain_vs_goldman, benchmark_compression

@@ -6,6 +6,6 @@
 pub mod illumina;
 
 pub use illumina::{
-    IlluminaBarcode, IlluminaAdapter, AdapterType, IlluminaSystem,
-    IlluminaConfig, IlluminaValidator, BarcodePosition,
+    AdapterType, BarcodePosition, IlluminaAdapter, IlluminaBarcode, IlluminaConfig, IlluminaSystem,
+    IlluminaValidator,
 };

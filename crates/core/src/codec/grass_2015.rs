@@ -10,9 +10,9 @@
 //! - 4% de redondance logique
 //! - Séquences 124nt
 
-use crate::error::{DnaError, Result};
-use crate::sequence::{DnaSequence, DnaConstraints, IupacBase};
 use crate::codec::reed_solomon::ReedSolomonCodec;
+use crate::error::{DnaError, Result};
+use crate::sequence::{DnaConstraints, DnaSequence, IupacBase};
 
 /// Encodeur Grass 2015
 pub struct Grass2015Encoder {
@@ -116,9 +116,7 @@ impl Grass2015Encoder {
         while bases.len() < self.sequence_length {
             // Utiliser un pattern GC-équilibré au lieu de seulement 'A'
             // Pattern: GCTAGCTA... (50% GC, évite homopolymères)
-            let balanced_pattern = [
-                IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A,
-            ];
+            let balanced_pattern = [IupacBase::G, IupacBase::C, IupacBase::T, IupacBase::A];
 
             let position = bases.len() % balanced_pattern.len();
             bases.push(balanced_pattern[position]);
@@ -142,9 +140,9 @@ impl Grass2015Encoder {
     /// Encode une valeur d'adressage sur n bases avec rotation
     fn encode_address_value(&self, value: u32, start_rotation: usize) -> Result<Vec<IupacBase>> {
         let num_bases = match start_rotation {
-            0 => 4,  // byte_offset (8 bits)
-            4 => 2,  // bit_offset (4 bits)
-            6 => 8,  // block_index (16 bits) - supports up to ~16MB files
+            0 => 4, // byte_offset (8 bits)
+            4 => 2, // bit_offset (4 bits)
+            6 => 8, // block_index (16 bits) - supports up to ~16MB files
             _ => return Err(DnaError::Encoding("Invalid start rotation".to_string())),
         };
 
@@ -214,7 +212,8 @@ impl Grass2015Decoder {
                 original_len_bytes[byte_offset as usize] = data_byte;
             } else if bit_offset == 0 {
                 // Regular data block
-                blocks.entry(block_index)
+                blocks
+                    .entry(block_index)
                     .or_default()
                     .insert(byte_offset, data_byte);
             }
@@ -308,7 +307,9 @@ impl Grass2015Decoder {
     /// Décode un octet avec rotation
     fn decode_byte_with_rotation(&self, bases: &[IupacBase], position: usize) -> Result<u8> {
         if bases.len() < 4 {
-            return Err(DnaError::Decoding("Pas assez de bases pour l'octet".to_string()));
+            return Err(DnaError::Decoding(
+                "Pas assez de bases pour l'octet".to_string(),
+            ));
         }
 
         let base_to_bits = |b: IupacBase| -> Result<usize> {
@@ -344,9 +345,9 @@ mod tests {
     fn test_grass_2015_encode_simple() {
         // Use lenient constraints for Grass 2015 (currently uses lots of 'A' padding)
         let constraints = DnaConstraints {
-            gc_min: 0.0,   // Allow any GC content
-            gc_max: 1.0,   // Allow any GC content
-            max_homopolymer: 150,  // Allow very long runs (124nt sequence can have 111 'A' padding)
+            gc_min: 0.0,          // Allow any GC content
+            gc_max: 1.0,          // Allow any GC content
+            max_homopolymer: 150, // Allow very long runs (124nt sequence can have 111 'A' padding)
             max_sequence_length: 200,
             allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
         };
@@ -370,7 +371,7 @@ mod tests {
         let constraints = DnaConstraints {
             gc_min: 0.0,
             gc_max: 1.0,
-            max_homopolymer: 150,  // Allow very long runs (124nt sequence can have 111 'A' padding)
+            max_homopolymer: 150, // Allow very long runs (124nt sequence can have 111 'A' padding)
             max_sequence_length: 200,
             allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
         };
@@ -386,8 +387,13 @@ mod tests {
 
         // Check first few sequences
         for (i, seq) in sequences.iter().take(5).enumerate() {
-            println!("Sequence {}: block={}, offset={}, bases={}",
-                i, seq.metadata.seed, seq.metadata.seed % 255, seq.bases.len());
+            println!(
+                "Sequence {}: block={}, offset={}, bases={}",
+                i,
+                seq.metadata.seed,
+                seq.metadata.seed % 255,
+                seq.bases.len()
+            );
         }
 
         let recovered = decoder.decode(&sequences).unwrap();

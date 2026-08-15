@@ -3,11 +3,11 @@
 //! Ce module analyse automatiquement les données et choisit la meilleure
 //! stratégie de compression et d'encodage selon leurs caractéristiques.
 
-use crate::error::{DnaError, Result};
-use crate::sequence::{DnaSequence, DnaConstraints};
-use crate::codec::reed_solomon::ReedSolomonCodec;
 use crate::codec::gc_aware_encoding::GcAwareEncoder;
-use crate::codec::huffman::HuffmanCompressor;
+use crate::codec::huffman::DnaHuffmanCompressor;
+use crate::codec::reed_solomon::ReedSolomonCodec;
+use crate::error::{DnaError, Result};
+use crate::sequence::{DnaConstraints, DnaSequence};
 
 /// Type de données détecté
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,29 +93,61 @@ impl DataAnalyzer {
             return None;
         }
 
-        // Signatures courantes
-        match &data[0..4.min(data.len())] {
-            // Images
-            b"\xFF\xD8\xFF" => Some(DataType::Image),  // JPEG
-            b"\x89PNG" => Some(DataType::Image),       // PNG
-            b"RIFF" if data.len() > 8 && &data[8..12] == b"WEBP" => Some(DataType::Image),
-            b"MM\x00\x2A" | b"II\x2A\x00" => Some(DataType::Image), // TIFF
-            b"BM" => Some(DataType::Image),            // BMP
-
-            // Audio
-            b"ID3" | b"\xFF\xFB" | b"\xFF\xFA" => Some(DataType::Audio), // MP3
-            b"RIFF" if data.len() > 8 && &data[8..12] == b"WAVE" => Some(DataType::Audio), // WAV
-            b"fLaC" => Some(DataType::Audio),          // FLAC
-            b"OggS" => Some(DataType::Audio),          // OGG
-
-            // Compressés
-            b"PK\x03\x04" | b"PK\x05\x06" => Some(DataType::Compressed), // ZIP
-            b"\x1F\x8B" => Some(DataType::Compressed), // GZIP
-            b"BZh" => Some(DataType::Compressed),     // BZIP2
-            b"\x78\x9C" | b"\x78\x01" | b"\x78\xDA" => Some(DataType::Compressed), // ZLIB
-
-            _ => None,
+        // Signatures courantes (longueurs variables → starts_with)
+        if data.starts_with(b"\xFF\xD8\xFF") {
+            return Some(DataType::Image); // JPEG
         }
+        if data.starts_with(b"\x89PNG") {
+            return Some(DataType::Image); // PNG
+        }
+        if data.starts_with(b"BM") {
+            return Some(DataType::Image); // BMP
+        }
+        if data.starts_with(b"MM\x00\x2A") || data.starts_with(b"II\x2A\x00") {
+            return Some(DataType::Image); // TIFF
+        }
+
+        if data.starts_with(b"ID3")
+            || data.starts_with(b"\xFF\xFB")
+            || data.starts_with(b"\xFF\xFA")
+        {
+            return Some(DataType::Audio); // MP3
+        }
+        if data.starts_with(b"fLaC") {
+            return Some(DataType::Audio); // FLAC
+        }
+        if data.starts_with(b"OggS") {
+            return Some(DataType::Audio); // OGG
+        }
+
+        if data.starts_with(b"PK\x03\x04") || data.starts_with(b"PK\x05\x06") {
+            return Some(DataType::Compressed); // ZIP
+        }
+        if data.starts_with(b"\x1F\x8B") {
+            return Some(DataType::Compressed); // GZIP
+        }
+        if data.starts_with(b"BZh") {
+            return Some(DataType::Compressed); // BZIP2
+        }
+        if data.starts_with(b"\x78\x9C")
+            || data.starts_with(b"\x78\x01")
+            || data.starts_with(b"\x78\xDA")
+        {
+            return Some(DataType::Compressed); // ZLIB
+        }
+
+        // RIFF conteneurs : WAV (audio) ou WEBP (image) selon le sous-type
+        if data.starts_with(b"RIFF") {
+            if data.len() > 12 && &data[8..12] == b"WAVE" {
+                return Some(DataType::Audio);
+            }
+            if data.len() > 12 && &data[8..12] == b"WEBP" {
+                return Some(DataType::Image);
+            }
+            return Some(DataType::Binary);
+        }
+
+        None
     }
 
     /// Calcule l'entropie de Shannon (0-8, où 8 = aléatoire maximal)
@@ -198,12 +230,17 @@ impl DataAnalyzer {
     }
 
     /// Recommande une méthode de compression
-    fn recommend_compression(&self, data_type: DataType, entropy: f64, repetition: f64) -> CompressionMethod {
+    fn recommend_compression(
+        &self,
+        data_type: DataType,
+        entropy: f64,
+        repetition: f64,
+    ) -> CompressionMethod {
         match (data_type, entropy, repetition) {
             (DataType::Text, _, _) => CompressionMethod::Huffman,
             (DataType::Repetitive, _, _) if repetition > 0.7 => CompressionMethod::Huffman,
             (DataType::Compressed, _, _) => CompressionMethod::None, // Déjà compressé
-            (_, ent, _) if ent > 7.5 => CompressionMethod::None, // Trop aléatoire
+            (_, ent, _) if ent > 7.5 => CompressionMethod::None,     // Trop aléatoire
             (_, _, rep) if rep > 0.5 => CompressionMethod::Huffman,
             _ => CompressionMethod::Lz4,
         }
@@ -272,6 +309,26 @@ impl CompressionMethod {
             CompressionMethod::Lz4 => "LZ4",
         }
     }
+
+    /// Suffixe de schéma utilisé pour tagger les séquences encodées avec
+    /// cette méthode (ex. `adaptive_auto#huffman`).
+    pub fn scheme_suffix(&self) -> &'static str {
+        match self {
+            CompressionMethod::None => "none",
+            CompressionMethod::Huffman => "huffman",
+            CompressionMethod::Lz4 => "lz4",
+        }
+    }
+
+    /// Reconstruit la méthode depuis un suffixe de schéma
+    pub fn from_scheme_suffix(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(CompressionMethod::None),
+            "huffman" => Some(CompressionMethod::Huffman),
+            "lz4" => Some(CompressionMethod::Lz4),
+            _ => None,
+        }
+    }
 }
 
 /// Encodeur adaptatif
@@ -291,7 +348,11 @@ impl AdaptiveEncoder {
         }
     }
 
-    /// Encode automatiquement avec la meilleure stratégie
+    /// Encode automatiquement avec la meilleure stratégie.
+    ///
+    /// Les séquences sont taggées `adaptive_auto#<méthode>` (huffman/lz4/none)
+    /// pour que `AdaptiveDecoder::decode_auto` (ou le `Decoder` principal, qui
+    /// route ce schéma) puisse inverser exactement le pipeline.
     pub fn encode_auto(&self, data: &[u8]) -> Result<Vec<DnaSequence>> {
         // Analyser les données
         let report = self.analyzer.analyze(data);
@@ -306,13 +367,26 @@ impl AdaptiveEncoder {
         // Appliquer Reed-Solomon pour la correction d'erreurs
         let rs_encoded = self.rs_codec.encode(&compressed)?;
 
-        // Encoder avec GC-aware
-        self.encode_gc_aware(&rs_encoded, &report)
+        // Encoder avec GC-aware et tagger la méthode de compression
+        let mut sequences = self.encode_gc_aware(&rs_encoded, &report)?;
+        let scheme = format!(
+            "adaptive_auto#{}",
+            report.recommended_compression.scheme_suffix()
+        );
+        for seq in &mut sequences {
+            seq.metadata.encoding_scheme = scheme.clone();
+        }
+
+        Ok(sequences)
     }
 
-    /// Compression Huffman
+    /// Compression Huffman.
+    ///
+    /// Utilise `DnaHuffmanCompressor` qui embarque sa table de codage dans le
+    /// flux compressé : la décompression est ainsi possible sans accès aux
+    /// données originales.
     pub fn compress_huffman(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let compressor = HuffmanCompressor::new(data);
+        let compressor = DnaHuffmanCompressor::new(data);
         compressor.compress(data)
     }
 
@@ -346,6 +420,69 @@ impl AdaptiveEncoder {
     /// Retourne l'analyseur de données
     pub fn analyzer(&self) -> &DataAnalyzer {
         &self.analyzer
+    }
+}
+
+/// Décodeur adaptatif — inverse exact de `AdaptiveEncoder::encode_auto`.
+///
+/// Pipeline inverse : chunks GC-aware (tri par seed) → Reed-Solomon →
+/// décompression selon la méthode taggée dans le schéma.
+pub struct AdaptiveDecoder {
+    constraints: DnaConstraints,
+    rs_codec: ReedSolomonCodec,
+}
+
+impl AdaptiveDecoder {
+    /// Crée un nouveau décodeur adaptatif
+    pub fn new(constraints: DnaConstraints) -> Self {
+        Self {
+            constraints,
+            rs_codec: ReedSolomonCodec::new(),
+        }
+    }
+
+    /// Décode des séquences produites par `AdaptiveEncoder::encode_auto`.
+    ///
+    /// `scheme_full` est le schéma complet de la première séquence
+    /// (`adaptive_auto#<méthode>`), tel que lu par le routeur du `Decoder`.
+    pub fn decode_auto(&self, sequences: &[DnaSequence], scheme_full: &str) -> Result<Vec<u8>> {
+        if sequences.is_empty() {
+            return Err(DnaError::Decoding("Aucune séquence fournie".to_string()));
+        }
+
+        // Méthode de compression depuis le suffixe du schéma
+        let method = scheme_full
+            .split_once('#')
+            .and_then(|(_, m)| CompressionMethod::from_scheme_suffix(m))
+            .ok_or_else(|| {
+                DnaError::Decoding(format!(
+                    "Schéma adaptatif sans méthode de compression valide: {}",
+                    scheme_full
+                ))
+            })?;
+
+        // 1. Décoder les chunks GC-aware dans l'ordre d'émission (seed croissant)
+        use crate::codec::gc_aware_encoding::GcAwareDecoder;
+        let gc_decoder = GcAwareDecoder::new(self.constraints.clone());
+        let mut sorted_seqs: Vec<&DnaSequence> = sequences.iter().collect();
+        sorted_seqs.sort_by_key(|s| s.metadata.seed);
+
+        let mut data = Vec::new();
+        for seq in sorted_seqs {
+            let chunk = gc_decoder.decode(seq)?;
+            data.extend_from_slice(&chunk);
+        }
+
+        // 2. Décoder Reed-Solomon
+        let rs_decoded = self.rs_codec.decode(&data)?;
+
+        // 3. Décompresser selon la méthode enregistrée
+        match method {
+            CompressionMethod::Huffman => DnaHuffmanCompressor::decompress(&rs_decoded),
+            CompressionMethod::Lz4 => lz4::block::decompress(&rs_decoded, None)
+                .map_err(|e| DnaError::Decoding(format!("Erreur décompression LZ4: {}", e))),
+            CompressionMethod::None => Ok(rs_decoded),
+        }
     }
 }
 
@@ -434,8 +571,28 @@ mod tests {
         let compressed = encoder.compress_huffman(data);
 
         assert!(compressed.is_ok());
-        // Huffman devrait réduire la taille pour ces données répétitives
-        assert!(compressed.unwrap().len() <= data.len());
+        // Format auto-contenu (table embarquée) : round-trip exact garanti.
+        let compressed = compressed.unwrap();
+        let decompressed = crate::codec::huffman::DnaHuffmanCompressor::decompress(&compressed)
+            .expect("Huffman auto-contenu doit se décompresser sans les données originales");
+        assert_eq!(decompressed, data.to_vec());
+
+        // Sur des données suffisamment volumineuses, Huffman doit réduire la taille
+        // (l'en-tête + la table sont amortis).
+        let big: Vec<u8> = (0..2000)
+            .map(|i| match i % 10 {
+                0..=5 => b'A',
+                6..=8 => b'B',
+                _ => b'C',
+            })
+            .collect();
+        let compressed_big = encoder.compress_huffman(&big).unwrap();
+        assert!(
+            compressed_big.len() < big.len(),
+            "Huffman devrait réduire la taille ({} -> {})",
+            big.len(),
+            compressed_big.len()
+        );
     }
 
     #[test]

@@ -2,10 +2,10 @@
 
 use crate::{DatabasePool, Result, StorageError};
 use adn_core::{DnaSequence, IupacBase};
-use sqlx::{FromRow, Row};
-use uuid::Uuid;
-use tracing::{info, instrument};
 use chrono::Utc;
+use sqlx::{FromRow, Row};
+use tracing::{info, instrument};
+use uuid::Uuid;
 
 /// Modèle de séquence ADN pour la base de données
 #[derive(Debug, FromRow)]
@@ -14,8 +14,8 @@ pub struct DbSequence {
     pub uuid: String,
     pub sequence_data: String,
     pub metadata: String,
-    pub created_at: String,  // Stocké comme ISO 8601 string
-    pub updated_at: String,  // Stocké comme ISO 8601 string
+    pub created_at: String, // Stocké comme ISO 8601 string
+    pub updated_at: String, // Stocké comme ISO 8601 string
 }
 
 /// Repository pour les opérations sur les séquences ADN
@@ -35,14 +35,15 @@ impl SequenceRepository {
         let metadata_json = serde_json::to_string(&sequence.metadata)
             .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
 
-        let sequence_data = sequence.bases.iter()
+        let sequence_data = sequence
+            .bases
+            .iter()
             .map(|base| base.as_char())
             .collect::<String>();
 
         let now = Utc::now().to_rfc3339();
 
-        let query =
-            "INSERT INTO sequences (uuid, sequence_data, metadata, created_at, updated_at)
+        let query = "INSERT INTO sequences (uuid, sequence_data, metadata, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5)
              RETURNING id";
 
@@ -104,21 +105,27 @@ impl SequenceRepository {
     /// Recherche des séquences par métadonnées
     #[instrument(skip(self))]
     pub async fn search_sequences(&self, query_str: &str) -> Result<Vec<DnaSequence>> {
-        let search_query =
-            "SELECT * FROM sequences
-             WHERE metadata LIKE $1
+        // Échapper les jokers LIKE (% et _) pour une recherche littérale,
+        // avec la clause ESCAPE (supportée par SQLite et PostgreSQL).
+        let escaped = query_str
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+
+        let search_query = "SELECT * FROM sequences
+             WHERE metadata LIKE $1 ESCAPE '\\'
              ORDER BY created_at DESC";
 
         let rows = match &*self.pool {
             DatabasePool::Sqlite(pool) => {
                 sqlx::query_as::<_, DbSequence>(search_query)
-                    .bind(format!("%{}", query_str))
+                    .bind(format!("%{}%", escaped))
                     .fetch_all(pool)
                     .await?
             }
             DatabasePool::Postgres(pool) => {
                 sqlx::query_as::<_, DbSequence>(search_query)
-                    .bind(format!("%{}", query_str))
+                    .bind(format!("%{}%", escaped))
                     .fetch_all(pool)
                     .await?
             }
@@ -170,7 +177,8 @@ impl SequenceRepository {
         use adn_core::SequenceId;
 
         // Parse les bases
-        let bases: Vec<IupacBase> = db_seq.sequence_data
+        let bases: Vec<IupacBase> = db_seq
+            .sequence_data
             .chars()
             .map(|c| {
                 IupacBase::from_char(c)

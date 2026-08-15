@@ -1,17 +1,21 @@
 //! Commande de visualisation
 
+use crate::commands::read_fasta;
 use crate::VisualizationFormat;
-use adn_core::{DnaSequence, ConstraintChecker};
+use adn_core::{ConstraintChecker, DnaSequence};
 use anyhow::Result;
 use std::path::PathBuf;
-use std::io::{BufRead, BufReader};
 
 pub fn run(input: PathBuf, format: VisualizationFormat, output: Option<PathBuf>) -> Result<()> {
     println!("📊 Visualisation de: {}", input.display());
 
     // 1. Lire les séquences
-    let sequences = read_fasta(&input)?;
+    let sequences = read_fasta(&input, "visualized")?;
     println!("{} séquences chargées", sequences.len());
+
+    if sequences.is_empty() {
+        anyhow::bail!("Aucune séquence trouvée dans {}", input.display());
+    }
 
     // 2. Visualiser selon le format
     match format {
@@ -100,6 +104,16 @@ fn visualize_json(sequences: &[DnaSequence], output: Option<PathBuf>) -> Result<
     Ok(())
 }
 
+/// Échappe les caractères spéciaux HTML (défense en profondeur contre le XSS
+/// si l'export HTML est ouvert dans un navigateur)
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 /// Visualisation en HTML
 fn visualize_html(sequences: &[DnaSequence], output: Option<PathBuf>) -> Result<()> {
     let html = format!(
@@ -139,9 +153,10 @@ fn visualize_html(sequences: &[DnaSequence], output: Option<PathBuf>) -> Result<
         sequences
             .iter()
             .map(|seq| {
+                let id: String = seq.id.to_string().chars().take(8).collect();
                 format!(
                     "<tr><td>{}</td><td>{}</td><td>{:.1}%</td><td>{}</td><td>{:.2}</td></tr>",
-                    seq.id.to_string().chars().take(8).collect::<String>(),
+                    escape_html(&id),
                     seq.len(),
                     seq.metadata.gc_ratio * 100.0,
                     seq.metadata.max_homopolymer,
@@ -160,55 +175,4 @@ fn visualize_html(sequences: &[DnaSequence], output: Option<PathBuf>) -> Result<
     }
 
     Ok(())
-}
-
-/// Lit un fichier FASTA
-fn read_fasta(path: &PathBuf) -> Result<Vec<DnaSequence>> {
-    let file = std::fs::File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut sequences = Vec::new();
-
-    let mut current_seq = String::new();
-    let mut chunk_index = 0;
-
-    for line in reader.lines() {
-        let line = line?;
-        let line = line.trim();
-
-        if line.is_empty() {
-            continue;
-        }
-
-        if line.starts_with('>') {
-            if !current_seq.is_empty() {
-                if let Ok(seq) = DnaSequence::from_str(
-                    &current_seq,
-                    "visualized".to_string(),
-                    chunk_index,
-                    current_seq.len() / 4,
-                    0,
-                ) {
-                    sequences.push(seq);
-                    chunk_index += 1;
-                }
-            }
-            current_seq = String::new();
-        } else {
-            current_seq.push_str(line);
-        }
-    }
-
-    if !current_seq.is_empty() {
-        if let Ok(seq) = DnaSequence::from_str(
-            &current_seq,
-            "visualized".to_string(),
-            chunk_index,
-            current_seq.len() / 4,
-            0,
-        ) {
-            sequences.push(seq);
-        }
-    }
-
-    Ok(sequences)
 }

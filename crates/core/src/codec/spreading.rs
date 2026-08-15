@@ -6,7 +6,6 @@
 //!
 //! Principe: Matrix interleaving - écrire en colonnes, lire en lignes
 
-
 /// Code d'étalement pour protéger contre les burst errors
 pub struct SpreadingCode {
     /// Taille de bloc pour l'entrelacement (matrix block_size x block_size)
@@ -21,9 +20,14 @@ impl SpreadingCode {
     ///
     /// Plus le block_size est grand, meilleure est la protection contre
     /// les burst errors longs, mais plus la latence est élevée.
+    ///
+    /// Une puissance de 2 est recommandée mais pas requise : l'entrelacement
+    /// matriciel et son inverse sont exacts pour toute taille >= 1.
+    /// `block_size = 0` est normalisé à 1 (pass-through).
     pub fn new(block_size: usize) -> Self {
-        assert!(block_size.is_power_of_two(), "block_size doit être une puissance de 2");
-        Self { block_size }
+        Self {
+            block_size: block_size.max(1),
+        }
     }
 
     /// Entrelace les données pour distribuer les burst errors
