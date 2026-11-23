@@ -1,20 +1,29 @@
 # 🧬 ADN Data Storage
 
-**Archiver des fichiers numériques en séquences d'ADN, et les restituer à l'identique.**
+**Une boîte à outils Rust pour le stockage de données sur ADN : les schémas de la littérature,
+les codes correcteurs, la simulation, l'outillage — rien n'est annoncé sans être mesuré.**
 
-Une bibliothèque Rust, une ligne de commande (`adn`) et un serveur web (`adn-web`). Le fichier
-devient un ensemble d'oligos, écrit dans un fichier FASTA qu'on peut confier à un prestataire de
-synthèse ; les lectures issues du séquençage redonnent le fichier d'origine.
+ADN Data Storage transforme un fichier numérique en séquences d'ADN, et le restitue à
+l'identique. Le fichier devient un ensemble d'oligos, écrit dans un fichier FASTA qu'on peut
+confier à un prestataire de synthèse ; les lectures issues du séquençage redonnent le fichier
+d'origine.
 
-> ⚠️ **Périmètre** : c'est un logiciel d'encodage et de décodage. Il ne synthétise ni ne séquence
-> d'ADN : il produit des fichiers FASTA *qui pourraient* être envoyés à un prestataire de synthèse,
-> et il lit des fichiers de lectures issus du séquençage.
+C'est une bibliothèque Rust, une ligne de commande (`adn`) et un serveur web (`adn-web`). Le
+projet vise à couvrir les grandes idées de la littérature du stockage sur ADN — des schémas
+d'encodage publiés aux familles de codes correcteurs. L'état de chaque brique, livrée ou au
+programme, est dans [la couverture de la littérature](#-couverture-de-la-littérature).
+
+> **Périmètre** : c'est un logiciel d'encodage et de décodage. La synthèse et le séquençage sont
+> confiées à un prestataire : le logiciel écrit le fichier FASTA à lui envoyer et lit les lectures
+> qu'il renvoie. Les adaptateurs de bibliothèque (Illumina) sont au programme, pas encore dans le
+> code.
 
 ---
 
 ## 📋 Table des matières
 
 - [Pourquoi l'ADN ?](#-pourquoi-ladn-)
+- [Couverture de la littérature](#-couverture-de-la-littérature)
 - [Ce que fait la bibliothèque](#-ce-que-fait-la-bibliothèque)
 - [Architecture](#-architecture)
 - [Installation et usage](#-installation-et-usage)
@@ -31,9 +40,7 @@ synthèse ; les lectures issues du séquençage redonnent le fichier d'origine.
 
 ## 🚀 Pourquoi l'ADN ?
 
-L'ADN est un support attrayant pour l'archivage de long terme, par sa densité et sa durabilité.
-Cette section donne le contexte général ; les chiffres sont des propriétés physiques du support,
-pas des performances de ce logiciel.
+L'ADN est un support attrayant pour l'archivage à long terme, par sa densité et sa durabilité.
 
 ### Le problème
 
@@ -55,6 +62,33 @@ pas des performances de ce logiciel.
 
 ---
 
+## 🗺️ Couverture de la littérature
+
+Le stockage sur ADN a produit, en dix ans, une poignée d'idées fortes. ADN Data Storage veut les
+rassembler dans une seule boîte à outils — et dire où chacune en est.
+
+| Famille | Brique | Source | Statut |
+|---------|--------|--------|:------:|
+| Encodage | DNA Fountain : gouttes LT sans adresse, criblage | Erlich et Zielinski, 2017 | ✅ livré |
+| Encodage | Brins codés : index dans l'ADN, deux niveaux de Reed-Solomon | architecture de Grass et al., 2015 | ✅ livré |
+| Encodage | Code ternaire sans répétition, parité XOR | Goldman et al., 2013 | 📋 planifié |
+| Encodage | Reed-Solomon sur le corps à 47 éléments | Grass et al., 2015 | 📋 planifié |
+| Encodage | Code à hash, résistant aux insertions et suppressions (HEDGES) | Press et al., 2020 | 📋 planifié |
+| Codes correcteurs | Reed-Solomon GF(256), interne et externe | — | ✅ livré |
+| Codes correcteurs | Code LT, marge de perte certifiée | Luby, 2002 | ✅ livré |
+| Codes correcteurs | Code convolutif et décodage de Viterbi (K = 7, rendement ½) | — | 📋 planifié |
+| Codes correcteurs | LDPC à propagation de croyances | — | 📋 planifié |
+| Codes correcteurs | Entrelacement contre les salves d'erreurs | — | 📋 planifié |
+| Traitement | Compression (zstd, LZ4), manifeste embarqué, empreinte SHA-256 | — | ✅ livré |
+| Format | FASTA | — | ✅ livré |
+| Format | Bibliothèques Illumina : adaptateurs P5/P7, index, multiplexage | — | 📋 planifié |
+| Simulation | Synthèse, séquençage, perte, couverture — reliée au décodeur | — | ✅ livré |
+| Outillage | CLI, serveur web, SQLite et PostgreSQL, Docker, CI | — | ✅ livré |
+
+✅ livré et mesuré · 📋 planifié : annoncé ici comme objectif, pas encore dans le code
+
+---
+
 ## ✨ Ce que fait la bibliothèque
 
 ### Les trois garanties
@@ -68,7 +102,17 @@ pas des performances de ce logiciel.
 3. **Les oligos respectent les contraintes biochimiques.** Par défaut 45 à 55 % de GC, et jamais
    plus de trois bases identiques de suite.
 
-### Les deux schémas
+### Les schémas d'encodage
+
+| Schéma | Idée | Statut |
+|--------|------|:------:|
+| DNA Fountain — `fountain` | gouttes sans adresse, réglables par la marge de perte | ✅ livré |
+| Brins codés — `strands` | brins adressés, protégés par deux niveaux de Reed-Solomon | ✅ livré |
+| Goldman 2013 | code ternaire, base toujours différente de la précédente, parité XOR | 📋 planifié |
+| Grass 2015 | Reed-Solomon sur le corps à 47 éléments, un symbole par groupe de bases | 📋 planifié |
+| HEDGES — Press et al., 2020 | code à hash, résistant aux insertions et aux suppressions | 📋 planifié |
+
+Les deux schémas livrés, comparés :
 
 | | `fountain` — DNA Fountain | `strands` — brins codés |
 |---|---|---|
@@ -87,12 +131,16 @@ beaucoup moins d'oligos : un fichier de 75 octets donne 49 brins, contre 141 oli
 
 ### Corrections d'erreurs
 
-| Code | Où | Corrige | Vérifié avec erreurs injectées ? |
-|------|----|---------|:---:|
-| Reed-Solomon interne | chaque oligo `fountain` (2 octets par défaut, réglable jusqu'à 32) | ⌊parité/2⌋ octets erronés | ✅ |
-| Code LT + épluchage | entre les oligos `fountain` | la marge de perte déclarée, certifiée à l'encodage | ✅ |
-| Reed-Solomon interne | chaque brin `strands` (4 octets) | 2 octets erronés | ✅ |
-| Reed-Solomon externe | chaque bloc de 255 brins `strands` (32 brins de parité) | tout motif `2 × erreurs + brins manquants ≤ 32` | ✅ |
+| Code | Où | Corrige | Statut |
+|------|----|---------|:------:|
+| Reed-Solomon interne | chaque oligo `fountain` (2 octets par défaut, réglable jusqu'à 32) | ⌊parité/2⌋ octets erronés | ✅ livré, mesuré |
+| Code LT + épluchage | entre les oligos `fountain` | la marge de perte déclarée, certifiée à l'encodage | ✅ livré, mesuré |
+| Reed-Solomon interne | chaque brin `strands` (4 octets) | 2 octets erronés | ✅ livré, mesuré |
+| Reed-Solomon externe | chaque bloc de 255 brins `strands` (32 brins de parité) | tout motif `2 × erreurs + brins manquants ≤ 32` | ✅ livré, mesuré |
+| Code concaténé | `strands` : Reed-Solomon interne sous Reed-Solomon externe | les deux codes à la fois | ✅ livré |
+| Code convolutif + Viterbi | code interne (K = 7, rendement ½), décodage par treillis | erreurs dispersées, avec des décisions souples | 📋 planifié |
+| LDPC | code externe à rendement élevé, propagation de croyances | une fraction d'erreurs aléatoires proche de la capacité du canal | 📋 planifié |
+| Entrelacement | avant Reed-Solomon | transforme une salve en erreurs dispersées | 📋 planifié |
 
 Les mesures de tolérance (670 tirages de simulation, erreurs réelles injectées) sont dans
 [les schémas d'encodage](docs/encoding_schemes.md#tolérance-aux-erreurs).
@@ -110,6 +158,8 @@ Les mesures de tolérance (670 tirages de simulation, erreurs réelles injectée
 
 - **FASTA** : lecture et écriture du format standard, séquences repliées à 60 nt ; les en-têtes
   sont informatifs, le décodage ne les lit pas
+- **Illumina** 📋 : adaptateurs P5/P7, index i5/i7 et multiplexage — prévu ; l'ancien code n'en
+  contenait que des séquences factices
 - **Contraintes** : bornes de GC et homopolymère configurables par encodage ; des contraintes
   irréalisables sont refusées d'emblée, avec le calcul qui le justifie
 - **Format autosuffisant** : décrit précisément dans [docs/FORMAT.md](docs/FORMAT.md)
@@ -448,6 +498,9 @@ hasard.
   cinquante fois la taille du fichier en mémoire
 - **Le serveur web n'expose ni la marge ni la parité** : passer par la ligne de commande pour un
   canal difficile
+- **Tout n'est pas encore reconstruit** : Goldman 2013, Grass 2015, le code convolutif et Viterbi,
+  le LDPC, l'entrelacement et le format Illumina sont au programme, pas encore dans le code —
+  voir [la couverture de la littérature](#-couverture-de-la-littérature)
 
 ---
 
@@ -469,14 +522,26 @@ hasard.
   [schémas](docs/encoding_schemes.md), [performances](docs/PERFORMANCE.md),
   [production](PRODUCTION_GUIDE.md), [API web](docs/api_reference.md)
 
-### Prévu
+### Le programme
+
+La direction du projet : couvrir, pour de vrai, ce que la littérature a proposé de meilleur.
+
+1. **Les schémas publiés** — Goldman 2013 (code ternaire) et Grass 2015 (Reed-Solomon sur
+   GF(47)), conformes aux articles, avec mesure de tolérance.
+2. **Le format des bibliothèques Illumina** — adaptateurs P5/P7, index i5/i7, multiplexage et
+   démultiplexage tolérants aux erreurs.
+3. **Les familles de codes correcteurs** — code convolutif et décodage de Viterbi, LDPC à
+   propagation de croyances capable de corriger, entrelacement contre les salves d'erreurs.
+4. **Les insertions et suppressions** — le point faible mesuré : HEDGES et codes apparentés.
+
+Ensuite :
 
 - [ ] Marge et parité réglables depuis le serveur web (aujourd'hui : ligne de commande)
-- [ ] Authentification pour publier le serveur web au-delà d'un proxy
 - [ ] Envoi en flux de gros fichiers (aujourd'hui : le fichier est lu en mémoire)
-- [ ] Tolérance aux insertions et suppressions (marqueurs de synchronisation, codes adaptés)
+- [ ] Authentification pour publier le serveur web au-delà d'un proxy
 - [ ] Conformité aux spécifications d'industrie de la DNA Data Storage Alliance
 - [ ] Intégration d'un prestataire de synthèse et de séquençage (API)
+- [ ] Plus loin : turbocodes et codes polaires, accélération GPU
 
 ---
 
@@ -523,6 +588,10 @@ git push origin feature/votre-fonction
   synthesised DNA*, Nature 494:77–80, 2013.
   [doi:10.1038/nature11875](https://www.nature.com/articles/nature11875)
 - Luby M. — *LT codes*, FOCS 2002.
+- Press W. H., Hawkins J. A., Jones S. K. Jr., Schaub J. M., Finkelstein I. J. — *HEDGES
+  error-correcting code for DNA storage corrects indels and allows sequence constraints*,
+  Proceedings of the National Academy of Sciences 117:18489–18496, 2020 (au programme du projet).
+  [doi:10.1073/pnas.2004821117](https://www.pnas.org/doi/10.1073/pnas.2004821117)
 
 ### Industrie
 

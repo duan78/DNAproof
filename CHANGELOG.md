@@ -57,6 +57,12 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
 
 - Les schémas `goldman`, `goldman2013`, `grass2015`, `adaptive`, `base3` et `ultimate` : ils
   n'implémentaient pas ce que leur nom annonçait. Les noms sont refusés avec un message explicite.
+- Les codecs LDPC et convolutif (Viterbi), « Reed-Solomon renforcé avec entrelacement », la
+  compression Huffman et les séquences Illumina. Le LDPC ne corrigeait aucune erreur, le code
+  convolutif n'était jamais testé avec des erreurs injectées, les séquences Illumina étaient
+  fictives ; la compression Huffman est remplacée par zstd et LZ4. Goldman 2013, Grass 2015, le
+  code convolutif, le LDPC, l'entrelacement, HEDGES et le format Illumina sont au programme du
+  projet, pour être reconstruits pour de vrai (voir la feuille de route du README).
 - La lecture des archives de la version 0.1.
 - `POST /api/encode/stream` : il ne transmettait rien en flux, et contournait les contrôles.
 - CORS : l'API ne se lit que depuis les pages du serveur.
