@@ -14,9 +14,9 @@ d'encodage publiés aux familles de codes correcteurs. L'état de chaque brique,
 programme, est dans [la couverture de la littérature](#-couverture-de-la-littérature).
 
 > **Périmètre** : c'est un logiciel d'encodage et de décodage. La synthèse et le séquençage sont
-> confiées à un prestataire : le logiciel écrit le fichier FASTA à lui envoyer et lit les lectures
-> qu'il renvoie. Les adaptateurs de bibliothèque (Illumina) sont au programme, pas encore dans le
-> code.
+> confiées à un prestataire : le logiciel écrit le fichier à lui envoyer et lit les lectures
+> qu'il renvoie, FASTA ou FASTQ. Les bibliothèques de séquençage sont prises en charge, du pool
+> multiplexé au démultiplexage : [Bibliothèques Illumina](docs/LIBRARY.md).
 
 ---
 
@@ -80,9 +80,10 @@ rassembler dans une seule boîte à outils — et dire où chacune en est.
 | Codes correcteurs | LDPC à propagation de croyances | — | 📋 planifié |
 | Codes correcteurs | Entrelacement contre les salves d'erreurs | — | 📋 planifié |
 | Traitement | Compression (zstd, LZ4), manifeste embarqué, empreinte SHA-256 | — | ✅ livré |
-| Format | FASTA | — | ✅ livré |
-| Format | Bibliothèques Illumina : adaptateurs P5/P7, index, multiplexage | — | 📋 planifié |
+| Format | FASTA et FASTQ | — | ✅ livré |
+| Format | Bibliothèques Illumina : adaptateurs P5/P7, index i5/i7, multiplexage | Illumina, *Adapter Sequences* 1000000002694 | ✅ livré |
 | Simulation | Synthèse, séquençage, perte, couverture — reliée au décodeur | — | ✅ livré |
+| Simulation | Séquenceur : lectures appariées, lectures d'index, sauts d'index | — | ✅ livré |
 | Outillage | CLI, serveur web, SQLite et PostgreSQL, Docker, CI | — | ✅ livré |
 
 ✅ livré et mesuré · 📋 planifié : annoncé ici comme objectif, pas encore dans le code
@@ -165,10 +166,13 @@ Les mesures de tolérance (mille tirages de simulation, erreurs réelles inject�
 
 ### Format et conformité
 
-- **FASTA** : lecture et écriture du format standard, séquences repliées à 60 nt ; les en-têtes
-  sont informatifs, le décodage ne les lit pas
-- **Illumina** 📋 : adaptateurs P5/P7, index i5/i7 et multiplexage — prévu ; l'ancien code n'en
-  contenait que des séquences factices
+- **FASTA et FASTQ** : lecture et écriture des deux formats, reconnus à leur premier caractère ;
+  séquences repliées à 60 nt en FASTA, qualités Phred+33 contrôlées par leur longueur en FASTQ.
+  Les en-têtes sont informatifs, le décodage ne les lit pas
+- **Illumina** : molécules au format Nextera, index du kit (`N501`–`N508`, `N701`–`N712`) ou
+  séquences libres, multiplexage d'un pool et démultiplexage à une erreur par index, dans les
+  deux sens de lecture ; lectures appariées coupées des adaptateurs —
+  [Bibliothèques Illumina](docs/LIBRARY.md)
 - **Contraintes** : bornes de GC et homopolymère configurables par encodage ; des contraintes
   irréalisables sont refusées d'emblée, avec le calcul qui le justifie
 - **Format autosuffisant** : décrit précisément dans [docs/FORMAT.md](docs/FORMAT.md)
@@ -180,11 +184,13 @@ Les mesures de tolérance (mille tirages de simulation, erreurs réelles inject�
 - **Reproductible** : générateur déterministe à graines explicites ; un tirage rejoué donne le
   même résultat
 - **Bilan** : récupérations, échecs annoncés, fichiers faux — `adn simulate` les compte
+- **Séquenceur** : lectures appariées, lectures d'index, erreurs croissantes le long de la
+  lecture avec leurs qualités, sauts d'index — branché sur le démultiplexage et le décodeur
 
 ### CLI et serveur web
 
 - **CLI** (`adn`) : `encode`, `decode`, `verify`, `simulate`, `visualize` (table, JSON ou HTML),
-  sortie `--json` partout
+  `library` et `demux`, sortie `--json` partout
 - **Web** (`adn-web`) : dépôt de fichier par glisser-déposer, tâches d'encodage et de décodage,
   téléchargement des résultats. **Pas d'authentification** : réservé à un usage local
 
@@ -198,12 +204,13 @@ Les mesures de tolérance (mille tirages de simulation, erreurs réelles inject�
 DNAproof/
 ├── crates/
 │   ├── core/         # format v2, quatre schémas (fountain, strands, goldman, grass),
-│   │                 # Reed-Solomon sur GF(256), GF(47) et GF(47²), enveloppe, FASTA
+│   │                 # Reed-Solomon sur GF(256), GF(47) et GF(47²), enveloppe,
+│   │                 # FASTA et FASTQ, bibliothèques Illumina
 │   ├── cli/          # ligne de commande (clap)
 │   ├── web/          # serveur local (actix-web + tera), tâches, téléchargements
 │   ├── storage/      # miroir des archives : SQLite ou PostgreSQL (sqlx)
-│   └── simulation/   # canal d'erreurs et métriques
-├── docs/             # FORMAT.md, schémas, performances, API web
+│   └── simulation/   # canal d'erreurs et séquenceur Illumina
+├── docs/             # FORMAT.md, schémas, bibliothèques Illumina, performances, API web
 ├── Cargo.toml        # manifeste du workspace (verrou suivi dans le dépôt)
 └── config.toml       # configuration du serveur, documentée ligne à ligne
 ```
@@ -269,6 +276,25 @@ Lectures FASTA → normalisation (majuscules, blancs) → manifeste (vote entre 
 Si le corps ne passe pas le contrôle, DNA Fountain rejoue le décodage sans les lectures que la
 parité a « corrigées » : elles peuvent l'avoir été à tort. Si l'empreinte finale ne correspond
 pas, rien n'est écrit.
+
+### Des archives au séquenceur : les bibliothèques Illumina
+
+```
+Archives ──adn library──▶ pool : une molécule Nextera par oligo
+   │                        P5 | index i5 | amorce | ME | insert | MEᶜ | amorce | index i7 | P7ᶜ
+   │
+   └── adn simulate --library ──▶ lectures 1 et 2, index i7 et i5, sauts d'index
+                                      │
+lectures FASTQ ──── adn demux ────────▶ par échantillon : une erreur tolérée par index, dans les
+   │                                     deux sens ; adaptateurs coupés, lecture 2 remise dans
+   │                                     le sens de l'insert
+   ▼
+adn decode ──▶ le fichier d'origine, à l'identique
+```
+
+Plusieurs archives partagent une cellule de séquençage, et chacune garde ses propres codes
+correcteurs : une lecture rangée dans le mauvais échantillon, par un saut d'index, est écartée
+par les siens. Le détail : [Bibliothèques Illumina](docs/LIBRARY.md).
 
 ---
 
@@ -341,6 +367,61 @@ d'écart, rien n'est écrit.
 `adn verify` contrôle une archive sans rien écrire ; `adn simulate` dégrade une archive (perte,
 substitutions, insertions, suppressions, couverture) et compte les récupérations sur N tirages ;
 `adn visualize` donne les statistiques d'un ensemble de séquences (table, JSON ou HTML).
+
+### Bibliothèques Illumina
+
+```console
+$ adn library -o pool.fasta --sample photo.jpg.adn.fasta=N701+N501 \
+    --sample chanson.mp3.adn.fasta=N702+N502
+Bibliothèque de 2 échantillons écrit dans pool.fasta : 4 003 molécules
+
+Échantillon              Index                               Oligos Insert          Molécule
+chanson.mp3.adn          i7 N702 CGTACTAG  i5 N502 CTCTCTAT    2 745 117 à 200 nt    253 à 336 nt
+photo.jpg.adn            i7 N701 TAAGGCGA  i5 N501 TAGATCGC    1 258 152 nt          288 nt
+```
+
+Chaque archive devient un échantillon du pool, reconnaissable à ses index. Un index est un nom
+du kit Nextera ou une séquence ; la bibliothèque refuse deux index qu'une erreur pourrait
+confondre. Le séquenceur simulé lit ensuite le pool, et chaque tirage va jusqu'au décodage :
+
+```console
+$ adn simulate -i pool.fasta --library --coverage 10 --index-hopping 0.02 -n 3 --reads lectures
+Simulation d'un séquenceur sur pool.fasta : 3 tirages, 2 échantillons, 4 003 molécules
+Lectures de 300 bases, index de 8 ; couverture 10 ; séquençage 0.10 % / 0.00 % / 0.00 %, index 0.10 % ; …
+
+Tirage  Échantillon                Paires   Fausses  Résultat
+1       chanson.mp3.adn             27274       195  récupéré
+        photo.jpg.adn               12478       165  récupéré
+        sans réponse : 0 ambiguës, 4 inconnues ; 830 sauts d'index
+…
+Récupérations : 3 sur 3 tirages, tous échantillons restitués
+Fichiers faux : 0 : un échec est toujours annoncé
+```
+
+Deux pour cent des paires portent les index d'une autre molécule : elles sont rangées dans un
+autre échantillon, comptées comme fausses, et les deux fichiers sont pourtant restitués à
+l'identique. Sur les lectures d'un vrai séquenceur, `adn demux` sépare les échantillons et coupe
+les adaptateurs ; chaque fichier se décode ensuite par `adn decode` :
+
+```console
+$ adn demux --r1 lectures/R1.fastq --r2 lectures/R2.fastq --i7 lectures/I1.fastq \
+    --i5 lectures/I2.fastq --library pool.fasta --output demultiplexe --truth
+Démultiplexage de 39 756 paires de lectures : 2 échantillons, sortie dans demultiplexe
+
+Échantillon                  Paires     Lectures  Fichier
+chanson.mp3.adn              27 274       54 548  demultiplexe\chanson.mp3.adn.fasta
+photo.jpg.adn                12 478       24 956  demultiplexe\photo.jpg.adn.fasta
+Sans réponse (ambiguës)           0
+Sans réponse (inconnues)           4
+Origine des lectures         39 392 justes ; 360 fausses
+    chanson.mp3.adn → photo.jpg.adn : 165 lectures
+    photo.jpg.adn → chanson.mp3.adn : 195 lectures
+```
+
+Les échantillons viennent du pool (`--library`) ou de leurs index (`--sample <i7>[+<i5>][=<nom>]`).
+Avec `--truth`, les lectures simulées disent d'où ils viennent, et les attributions fausses se
+comptent : le format, le séquenceur et les mesures sont dans [Bibliothèques
+Illumina](docs/LIBRARY.md).
 
 ### Serveur web
 
@@ -447,6 +528,20 @@ Le test du dépôt PostgreSQL est ignoré par défaut : il lui faut un serveur e
   l'article), colonne par colonne
 - **Limite** : l'index tient sur 47⁴, d'où le corps maximal de 55 Mo
 
+### Bibliothèques Illumina
+
+- **Molécule** : format Nextera — P5, index i5, site de la lecture 1, extrémité mosaïque, insert,
+  extrémité mosaïque complément inversée, site de la lecture 2, index i7, P7 complément inversé ;
+  136 nt d'adaptateurs avec des index de 8 bases
+- **Index** : ceux du kit Nextera (`N501`–`N508`, `N701`–`N712`) ou toute séquence de 4 à 12
+  bases ; deux index d'une même position à trois bases l'un de l'autre au moins, jamais
+  compléments inversés l'un de l'autre
+- **Lectures** : la lecture 1 part du début de l'insert, la lecture 2 de son extrémité mosaïque
+  sur l'autre brin, les index avec P7 et P5 ; la longueur de lecture doit atteindre le plus long
+  insert, manifestes compris
+- **Démultiplexage** : une erreur par index, dans les deux sens de lecture ; à égalité, la paire
+  reste sans réponse ; adaptateurs coupés, lecture 2 remise dans le sens de l'insert
+
 ### Enveloppe
 
 | décalage | taille | contenu |
@@ -473,18 +568,18 @@ cargo test --workspace --locked
 
 | Catégorie | Nombre | Ce qui est vérifié |
 |-----------|:------:|--------------------|
-| Cœur, unitaires | 142 | enveloppe, manifeste, gouttes, brins, fenêtres goldman, brins grass, Reed-Solomon sur GF(256), GF(47) et GF(47²), contraintes, générateur |
+| Cœur, unitaires | 157 | enveloppe, manifeste, gouttes, brins, fenêtres goldman, brins grass, Reed-Solomon sur GF(256), GF(47) et GF(47²), contraintes, générateur, FASTA et FASTQ, bibliothèques Illumina |
 | Aller-retour format | 10 | `encode → FASTA → decode == original` pour les quatre schémas, en-têtes renommés ou perdus, CRLF et minuscules, contraintes strictes |
 | Robustesse | 8 | substitutions corrigées, marge honorée puis refusée au-delà, brins manquants réparés, manifestes abîmés, altérations au hasard : jamais un fichier faux |
 | Propriétés (proptest) | 2 | aller-retour sur entrées au hasard (schéma × type × taille × mélange) et à contraintes aléatoires |
 | Simulation, bout en bout | 12 | encodage → canal d'erreurs → décodage, 12 scénarios de canal |
-| Simulation, unitaires | 9 | modèle du canal, statistiques |
+| Simulation, unitaires | 18 | modèle du canal, statistiques ; séquenceur : lectures appariées, index, sauts d'index, qualités |
 | Stockage | 13 | SQLite et PostgreSQL : lots, transactions, reprise après redémarrage |
-| CLI | 17 | les cinq sous-commandes exécutées comme par un utilisateur, dont deux archives goldman mélangées |
+| CLI | 22 | les sept sous-commandes exécutées comme par un utilisateur, dont deux archives goldman mélangées et un pool de deux échantillons séquencé, démultiplexé et décodé |
 | Serveur web | 38 | pages, API, refus, en-têtes, reprise, hôtes |
 | Exemple du README | 1 | le code montré plus haut, tel quel |
-| Exemple de la bibliothèque | 1 | le doc-test de `adn-core` |
-| **Total** | **253** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
+| Exemple de la bibliothèque | 2 | les doc-tests de `adn-core` : l'archive, et une paire de lectures rangée |
+| **Total** | **283** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
 
 ### Propriétés clés
 
@@ -528,6 +623,10 @@ En grand : 32 Mio s'encodent en 6,9 s avec `fountain` (1,6 Go de mémoire), en 0
 de texte tient en 9 982 oligos une fois compressé par zstd, contre 39 000 pour un Mio d'octets au
 hasard.
 
+La chaîne Illumina ajoute peu : `adn demux` range environ 215 000 paires de lectures par
+seconde, et `adn library` assemble 24 673 molécules en 40 ms —
+[Bibliothèques Illumina](docs/LIBRARY.md#mesures).
+
 ---
 
 ## ⚠️ Limites connues
@@ -556,8 +655,11 @@ hasard.
   mémoire
 - **Le serveur web n'expose ni la marge ni la parité** : passer par la ligne de commande pour un
   canal difficile
-- **Tout n'est pas encore reconstruit** : le code convolutif et Viterbi, le LDPC, l'entrelacement,
-  HEDGES et le format Illumina sont au programme, pas encore dans le code — voir
+- **Bibliothèques Illumina** : les lectures partielles ne s'assemblent pas — la longueur de
+  lecture doit atteindre le plus long insert du pool ; seul le format Nextera est décrit, et la
+  qualité des lectures n'entre pas dans le décodage
+- **Tout n'est pas encore reconstruit** : le code convolutif et Viterbi, le LDPC, l'entrelacement
+  et HEDGES sont au programme, pas encore dans le code — voir
   [la couverture de la littérature](#-couverture-de-la-littérature)
 
 ---
@@ -573,6 +675,9 @@ hasard.
   bloc)
 - ✅ Simulation réaliste (synthèse, séquençage, perte, couverture) branchée sur le décodeur
 - ✅ Matrice de tolérance mesurée : mille tirages, aucun fichier faux
+- ✅ Bibliothèques Illumina : pool multiplexé au format Nextera, séquenceur simulé,
+  démultiplexage à une erreur par index — à 30 % de sauts d'index, chaque échantillon est
+  restitué à l'identique
 - ✅ CLI complète (`encode`, `decode`, `verify`, `simulate`, `visualize`, `--json`)
 - ✅ Serveur web avec suivi de tâches, reprise après redémarrage, base SQLite ou PostgreSQL
 - ✅ CI au vert : format, Clippy, tests (Ubuntu et Windows), MSRV 1.94, PostgreSQL, audit des
@@ -587,8 +692,8 @@ La direction du projet : couvrir, pour de vrai, ce que la littérature a propos�
 
 1. ✅ **Les schémas publiés** — Goldman 2013 (code ternaire) et Grass 2015 (Reed-Solomon sur
    GF(47)), suivis article par article, avec mesure de tolérance.
-2. **Le format des bibliothèques Illumina** — adaptateurs P5/P7, index i5/i7, multiplexage et
-   démultiplexage tolérants aux erreurs.
+2. ✅ **Le format des bibliothèques Illumina** — adaptateurs P5/P7, index i5/i7, multiplexage et
+   démultiplexage tolérants aux erreurs, avec un séquenceur simulé pour les mesurer.
 3. **Les familles de codes correcteurs** — code convolutif et décodage de Viterbi, LDPC à
    propagation de croyances capable de corriger, entrelacement contre les salves d'erreurs.
 4. **Les insertions et suppressions** — le point faible mesuré : HEDGES et codes apparentés.
@@ -630,6 +735,7 @@ git push origin feature/votre-fonction
 
 - [Spécification du format d'archive](docs/FORMAT.md)
 - [Les schémas d'encodage et leur tolérance mesurée](docs/encoding_schemes.md)
+- [Bibliothèques Illumina : molécules, index, lectures, démultiplexage](docs/LIBRARY.md)
 - [Performances mesurées](docs/PERFORMANCE.md)
 - [Guide de production](PRODUCTION_GUIDE.md) · [Référence de l'API web](docs/api_reference.md)
 - [Journal des changements](CHANGELOG.md)

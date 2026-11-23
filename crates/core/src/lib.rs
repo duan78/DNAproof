@@ -18,7 +18,9 @@
 //! assert_eq!(decoded.data, b"donnees");
 //! ```
 //!
-//! Le format est décrit dans `docs/FORMAT.md`.
+//! Le format est décrit dans `docs/FORMAT.md`. Le module [`fasta`] lit et écrit les fichiers de
+//! lectures, en FASTA comme en FASTQ. Le module [`library`] ajoute ce qu'il faut pour faire lire
+//! une archive par un séquenceur Illumina : adaptateurs, index, multiplexage.
 
 pub mod checksum;
 pub mod codec;
@@ -26,6 +28,7 @@ pub mod constraints;
 pub mod envelope;
 pub mod error;
 pub mod fasta;
+pub mod library;
 pub mod rs;
 pub mod rs47;
 pub mod sequence;
@@ -39,4 +42,7 @@ pub use constraints::DnaConstraints;
 pub use envelope::Compression;
 pub use error::{DnaError, Result};
 pub use fasta::Record;
+pub use library::{
+    place, Assignment, Index, InsertReads, Library, Placement, PoolMolecule, Sample,
+};
 pub use verify::{OligoReport, PoolReport};

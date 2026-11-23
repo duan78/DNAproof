@@ -87,7 +87,7 @@ Décode une archive. Requête `multipart/form-data` :
 
 | Champ | Requis | Contenu |
 |-------|--------|---------|
-| `file` | oui | les lectures FASTA ; plusieurs lectures d'une même archive peuvent être copiées dans le fichier |
+| `file` | oui | les lectures, en FASTA ou en FASTQ ; plusieurs lectures d'une même archive peuvent être copiées dans le fichier |
 | `expected_sha256` | non | empreinte que doit avoir le fichier restitué (64 chiffres hexadécimaux) |
 
 Le schéma et la compression sont lus dans l'archive : il n'y a rien à indiquer.

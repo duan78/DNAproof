@@ -11,11 +11,22 @@
 //!
 //! Les lectures sont produites dans un ordre aléatoire, sans information d'appoint : le décodage
 //! doit donc se suffire des séquences.
+//!
+//! Le [`Sequencer`] décrit l'étape en amont, quand les oligos d'une archive sont portés
+//! par des molécules de bibliothèque Illumina, multiplexées : lectures appariées, lectures
+//! d'index, sauts d'index.
+
+mod sequencer;
 
 use adn_core::codec::rng::SeededRng;
 use adn_core::sequence::BASES;
 use adn_core::{DnaError, Result};
 use serde::{Deserialize, Serialize};
+
+pub use sequencer::{
+    read_header, read_id, truth_sample, ReadPair, Sequencer, SequencerConfig, SequencerStats,
+    MAX_PHRED,
+};
 
 /// Taux d'erreur par nucléotide.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -127,6 +138,24 @@ impl ErrorCounts {
     }
 }
 
+impl std::ops::Add for ErrorCounts {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            substitutions: self.substitutions + other.substitutions,
+            insertions: self.insertions + other.insertions,
+            deletions: self.deletions + other.deletions,
+        }
+    }
+}
+
+impl std::ops::AddAssign for ErrorCounts {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
 /// Une lecture simulée.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SimulatedRead {
@@ -154,11 +183,11 @@ pub struct SimulationStats {
     pub copies_max: u32,
 }
 
-const STREAM_DROPOUT: u64 = 0x0000_0000_0000_0021;
-const STREAM_SYNTHESIS: u64 = 0x0000_0000_0000_0022;
-const STREAM_POISSON: u64 = 0x0000_0000_0000_0023;
-const STREAM_SEQUENCING: u64 = 0x0000_0000_0000_0024;
-const STREAM_SHUFFLE: u64 = 0x0000_0000_0000_0025;
+pub(crate) const STREAM_DROPOUT: u64 = 0x0000_0000_0000_0021;
+pub(crate) const STREAM_SYNTHESIS: u64 = 0x0000_0000_0000_0022;
+pub(crate) const STREAM_POISSON: u64 = 0x0000_0000_0000_0023;
+pub(crate) const STREAM_SEQUENCING: u64 = 0x0000_0000_0000_0024;
+pub(crate) const STREAM_SHUFFLE: u64 = 0x0000_0000_0000_0025;
 
 #[inline]
 fn rank_of(base: u8) -> u64 {
@@ -200,7 +229,7 @@ pub fn apply_errors(
 }
 
 /// Nombre de tirages d'une loi de Poisson de moyenne `mean`.
-fn poisson(mean: f64, rng: &mut SeededRng) -> u32 {
+pub(crate) fn poisson(mean: f64, rng: &mut SeededRng) -> u32 {
     if mean <= 0.0 {
         return 0;
     }
@@ -268,9 +297,7 @@ impl DnaChannel {
             } else {
                 (oligo.clone(), ErrorCounts::default())
             };
-            stats.synthesis_errors.substitutions += synthesis_errors.substitutions;
-            stats.synthesis_errors.insertions += synthesis_errors.insertions;
-            stats.synthesis_errors.deletions += synthesis_errors.deletions;
+            stats.synthesis_errors += synthesis_errors;
             let copies = if dropped {
                 0
             } else {
@@ -296,9 +323,7 @@ impl DnaChannel {
                 stats.reads_wrong_length += usize::from(sequence.len() != oligo.len());
                 stats.reads_perfect +=
                     usize::from(errors.total() == 0 && synthesis_errors.total() == 0);
-                stats.sequencing_errors.substitutions += errors.substitutions;
-                stats.sequencing_errors.insertions += errors.insertions;
-                stats.sequencing_errors.deletions += errors.deletions;
+                stats.sequencing_errors += errors;
                 reads.push(SimulatedRead {
                     oligo: index as u32,
                     sequence,

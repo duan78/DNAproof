@@ -531,9 +531,9 @@ plus par symbole.
 
 L'index tient sur 47⁴ = 4 879 681 numéros : 6 843 blocs, soit 4 249 503 brins de données — 55 Mo
 avec la parité par défaut, 81 Mo avec une parité de 6.
-## 10. Fichier FASTA
+## 10. Fichiers FASTA et FASTQ
 
-Une archive se écrit dans un fichier FASTA ordinaire, une séquence repliée à 60 nucléotides par
+Une archive s'écrit dans un fichier FASTA ordinaire, une séquence repliée à 60 nucléotides par
 ligne. **Les en-têtes sont purement informatifs** : le décodage ne les lit pas.
 
 ```
@@ -555,6 +555,15 @@ les écartent et les comptent.
 
 Plusieurs fichiers de lectures peuvent être donnés au décodage : leurs séquences sont
 concaténées.
+
+### FASTQ
+
+Les lectures d'un séquenceur arrivent en FASTQ. Le lecteur le reconnaît à son premier
+caractère utile, un `@`, et lit par blocs de quatre lignes : en-tête, séquence, ligne `+`,
+qualités. La ligne de qualités doit compter un caractère par base ; elle est contrôlée puis
+ignorée, les décodeurs ne s'en servent pas. Les mêmes tolérances s'appliquent aux séquences
+(CRLF, minuscules, blancs) ; un enregistrement incomplet, un en-tête vide ou une ligne `+`
+manquante est refusé, avec son numéro de ligne.
 
 ## 11. Décodage
 
@@ -641,6 +650,19 @@ promettait. Les noms `adaptive`, `base3` et `ultimate` sont refusés avec un mes
 Les noms `goldman` et `grass` désignent désormais les schémas des sections 8 et 9, et
 `goldman2013` et `grass2015` en sont des alias. Pour relire une archive de la version 0.1,
 utiliser le code du commit `09df4f8`.
+
+## 15. Pool de bibliothèque
+
+Hors du format d'archive : un pool de molécules pour séquenceur, écrit par `adn library`,
+est un FASTA à un enregistrement par molécule. Son en-tête dit l'échantillon et ses index :
+
+```
+>sample=<nom> i7=<nom>:<bases> i5=<nom>:<bases>
+```
+
+L'index i5 est facultatif. La séquence est la molécule complète, au format Nextera. Ces
+en-têtes sont lus par `adn simulate --library` et `adn demux --library` ; ils ne servent pas à
+décoder une archive. Le détail est dans [`LIBRARY.md`](LIBRARY.md).
 
 ## Références
 

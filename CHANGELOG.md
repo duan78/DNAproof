@@ -39,6 +39,24 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
 - **`adn simulate`** : dégrade une archive (perte, substitutions, insertions, suppressions,
   couverture) et tente de la relire.
 - **`adn visualize`** : statistiques d'un ensemble de séquences, en tableau, JSON ou HTML.
+- **Bibliothèques Illumina** (`adn_core::library`) : molécules au format Nextera — P5, index i5
+  et i7, extrémité mosaïque, sites d'amorce —, index du kit Nextera (`N501`–`N508`,
+  `N701`–`N712`) ou séquences libres, bibliothèque vérifiée (deux index à trois bases l'un de
+  l'autre au moins, jamais compléments inversés), démultiplexage à une erreur par index dans
+  les deux sens de lecture, coupe des adaptateurs.
+- **`adn library`** : assemble des archives en un pool de molécules, un échantillon par
+  archive.
+- **`adn demux`** : sépare les lectures d'un séquenceur par échantillon (FASTQ ou FASTA),
+  coupe les adaptateurs, remet la lecture 2 dans le sens de l'insert ; `--truth` confronte
+  le rangement à l'origine des lectures simulées.
+- **Séquenceur simulé** (`adn_simulation::Sequencer`) et **`adn simulate --library`** : lectures
+  appariées, lectures d'index, erreurs croissantes le long de la lecture et qualités Phred,
+  sauts d'index, jusqu'au décodage de chaque échantillon.
+- **FASTQ** : lecture (reconnue au `@` initial, qualités contrôlées par leur longueur) et
+  écriture (`adn_core::fasta::FastqWriter`), par la ligne de commande comme par le serveur
+  web.
+- **[`docs/LIBRARY.md`](docs/LIBRARY.md)** : le format, le séquenceur, les commandes et les
+  mesures.
 - **`--json`** sur toutes les commandes.
 - **Empreinte attendue** : `adn decode --expect-sha256` et le champ `expected_sha256` de l'API
   web refusent un fichier d'une autre empreinte.

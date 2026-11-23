@@ -9,7 +9,6 @@ use adn_core::{decode, encode, DecodeOptions, Scheme};
 use adn_simulation::{ChannelConfig, DnaChannel, ErrorRates};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use std::path::Path;
 use std::time::Instant;
 
 /// Résultat d'un tirage.
@@ -29,7 +28,7 @@ struct Trial {
 }
 
 #[derive(Serialize)]
-enum Recovered {
+pub(crate) enum Recovered {
     Exact,
     Echec,
 }
@@ -57,41 +56,46 @@ struct Canal {
 }
 
 #[derive(Serialize)]
-struct Bilan {
-    tirages: usize,
-    recuperes: usize,
-    echecs: usize,
+pub(crate) struct Bilan {
+    pub(crate) tirages: usize,
+    pub(crate) recuperes: usize,
+    pub(crate) echecs: usize,
     /// Toujours zéro : un fichier qui ne porte pas l'empreinte de l'archive n'est jamais rendu.
     /// Le champ le rend visible.
-    faux: usize,
-    duree_totale_s: f64,
+    pub(crate) faux: usize,
+    pub(crate) duree_totale_s: f64,
 }
 
 pub(crate) fn run(
-    input: &Path,
+    spec: &crate::RunSpec<'_>,
     archive: bool,
     codec: &crate::CodecArgs,
-    channel_args: &crate::ChannelArgs,
-    trials: usize,
-    seed: u64,
+    channel: &crate::ChannelArgs,
+    sequencer: &crate::SequencerArgs,
     out: &Printer,
 ) -> Result<()> {
+    let crate::RunSpec {
+        input,
+        trials,
+        seed,
+    } = *spec;
     if trials == 0 {
         bail!("--trials doit être au moins 1");
     }
+    sequencer.check_unused()?;
     let config = ChannelConfig {
         synthesis: ErrorRates::new(
-            channel_args.synthesis_substitution_rate,
-            channel_args.synthesis_insertion_rate,
-            channel_args.synthesis_deletion_rate,
+            channel.synthesis_substitution_rate,
+            channel.synthesis_insertion_rate,
+            channel.synthesis_deletion_rate,
         ),
         sequencing: ErrorRates::new(
-            channel_args.substitution_rate,
-            channel_args.insertion_rate,
-            channel_args.deletion_rate,
+            channel.substitution_rate,
+            channel.insertion_rate,
+            channel.deletion_rate,
         ),
-        dropout: channel_args.dropout,
-        coverage: channel_args.coverage,
+        dropout: channel.dropout,
+        coverage: channel.coverage,
         seed,
     };
     // Valide les paramètres du canal.

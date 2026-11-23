@@ -1,14 +1,31 @@
 //! Commandes de la ligne de commande.
 
 pub mod decode;
+pub mod demux;
 pub mod encode;
+pub mod library;
 pub mod simulate;
+pub mod simulate_library;
 pub mod verify;
 pub mod visualize;
 
 use adn_core::fasta::{self, Record};
 use anyhow::{bail, Context};
 use std::path::{Path, PathBuf};
+
+/// Un index donné par son nom Nextera (`N701`) ou par sa séquence (`TAAGGCGA`).
+pub(crate) fn index(spec: &str) -> anyhow::Result<adn_core::Index> {
+    let spec = spec.trim();
+    match adn_core::Index::nextera(spec) {
+        Some(index) => Ok(index),
+        None => adn_core::Index::new(spec.to_ascii_uppercase(), spec).with_context(|| {
+            format!(
+                "index {spec} : nom Nextera inconnu (N501 à N508, N701 à N712), et séquence \
+                 invalide (attendu : 4 à 12 bases A, C, G, T)"
+            )
+        }),
+    }
+}
 
 /// Lit des fichiers de lectures et refuse nettement les archives de la version 0.1.
 pub(crate) fn read_reads(paths: &[PathBuf]) -> anyhow::Result<Vec<Record>> {

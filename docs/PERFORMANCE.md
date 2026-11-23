@@ -102,6 +102,22 @@ Le contrôle d'intégrité et la compression comptent plus que le codage lui-mê
 criblage — huit candidats en moyenne pour un oligo retenu — et la certification de la marge qui
 font le coût de l'encodage DNA Fountain.
 
+## Bibliothèques Illumina
+
+Avec la ligne de commande, sur des fichiers d'octets au hasard :
+
+| | Taille | Temps |
+|---|---|---|
+| `adn library` : assembler un pool | 4 archives de 64 Kio, un par schéma, 24 673 molécules | 40 ms |
+| `adn simulate --library` : un tirage, du séquenceur au décodage des quatre échantillons | 246 728 paires de lectures | 2,3 s |
+| `adn demux`, échantillons pris du pool | 246 728 paires | 1,15 s |
+| `adn demux`, index déclarés, sans lecture d'index i5 | 246 728 paires | 0,95 s |
+| `adn demux` | 397 278 paires (1 Mio, un échantillon) | 1,84 s |
+
+`adn demux` range environ 215 000 paires de lectures par seconde, écriture des lectures
+comprise. La tolérance de la chaîne complète est mesurée dans
+[Bibliothèques Illumina](LIBRARY.md#mesures).
+
 ## Refaire ces mesures
 
 ```sh

@@ -8,9 +8,9 @@ mod commands;
 mod output;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use commands::{decode, encode, simulate, verify, visualize};
+use commands::{decode, demux, encode, library, simulate, simulate_library, verify, visualize};
 
 #[derive(Parser)]
 #[command(
@@ -77,21 +77,30 @@ enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Simule la dégradation d'une archive, puis tente de la relire
+    /// Simule la dégradation d'une archive, puis tente de la relire ; ou, avec --library, le
+    /// séquençage d'un pool et la restitution de chacun de ses échantillons
     Simulate {
-        /// Fichier à archiver ; ou l'archive elle-même avec --archive
+        /// Fichier à archiver ; ou l'archive elle-même avec --archive ; ou le pool avec --library
         #[arg(short, long)]
         input: PathBuf,
 
         /// L'entrée est une archive FASTA (le fichier d'origine n'est pas nécessaire)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "library")]
         archive: bool,
+
+        /// L'entrée est une bibliothèque de molécules (sortie d'`adn library`) : lectures
+        /// appariées, lectures d'index, démultiplexage, décodage de chaque échantillon
+        #[arg(long)]
+        library: bool,
 
         #[command(flatten)]
         codec: CodecArgs,
 
         #[command(flatten)]
         channel: ChannelArgs,
+
+        #[command(flatten)]
+        sequencer: SequencerArgs,
 
         /// Nombre de tirages
         #[arg(short = 'n', long, default_value_t = 10)]
@@ -100,6 +109,55 @@ enum Command {
         /// Graine du générateur
         #[arg(long, default_value_t = 42)]
         seed: u64,
+    },
+
+    /// Assemble des archives en molécules de bibliothèque Illumina, multiplexées (un pool)
+    Library {
+        /// Un échantillon à assembler, répétable, de la forme ARCHIVE=I7[+I5], ou
+        /// NOM=ARCHIVE=I7[+I5] ; un index est un nom Nextera (N501–N508, N701–N712) ou une
+        /// séquence ; sans nom, celui du fichier d'archive
+        #[arg(long = "sample", value_name = "ARCHIVE=I7[+I5]", required = true)]
+        samples: Vec<library::SampleArg>,
+
+        /// Pool à écrire : un enregistrement FASTA par molécule
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+
+    /// Sépare les lectures d'un séquenceur par échantillon et coupe les adaptateurs
+    Demux {
+        /// Lectures 1 (FASTQ ou FASTA)
+        #[arg(long)]
+        r1: PathBuf,
+
+        /// Lectures 2
+        #[arg(long)]
+        r2: PathBuf,
+
+        /// Lectures d'index i7 (I1)
+        #[arg(long)]
+        i7: PathBuf,
+
+        /// Lectures d'index i5 (I2), pour une bibliothèque à deux index
+        #[arg(long)]
+        i5: Option<PathBuf>,
+
+        /// Bibliothèque du pool (sortie d'`adn library`) : en donne les échantillons et leurs noms
+        #[arg(long)]
+        library: Option<PathBuf>,
+
+        /// Un échantillon connu par ses index, répétable, de la forme I7[+I5], ou I7[+I5]=NOM
+        #[arg(long = "sample", value_name = "I7[+I5][=NOM]")]
+        samples: Vec<demux::DemuxSampleArg>,
+
+        /// Dossier où écrire les lectures de chaque échantillon (NOM.fasta)
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Les en-têtes portent l'échantillon d'origine (lectures d'`adn simulate --library`) :
+        /// confronter le rangement à l'origine, et compter les fausses attributions
+        #[arg(long)]
+        truth: bool,
     },
 
     /// Statistiques d'un ensemble de séquences (table, JSON ou HTML)
@@ -317,6 +375,75 @@ struct ChannelArgs {
     coverage: f64,
 }
 
+/// Ce que reçoit une simulation : son entrée, ses tirages.
+pub(crate) struct RunSpec<'a> {
+    pub input: &'a Path,
+    pub trials: usize,
+    pub seed: u64,
+}
+
+/// Paramètres du séquenceur, pour `simulate --library`.
+#[derive(clap::Args)]
+pub struct SequencerArgs {
+    /// Longueur des lectures 1 et 2, en bases
+    #[arg(long, default_value_t = 300, value_name = "BASES")]
+    pub read_length: usize,
+
+    /// Longueur des lectures d'index ; par défaut celle des index de la bibliothèque
+    #[arg(long)]
+    pub index_read_length: Option<usize>,
+
+    /// Taux de substitution du séquençage des lectures d'index
+    #[arg(long, default_value_t = 0.001, value_name = "TAUX")]
+    pub index_substitution_rate: f64,
+
+    /// Fraction des paires de lectures dont les index sont ceux d'une autre molécule du pool
+    #[arg(long, default_value_t = 0.0, value_name = "0-1")]
+    pub index_hopping: f64,
+
+    /// Écrire les lectures du premier tirage en FASTQ dans ce dossier (R1, R2, I1, I2)
+    #[arg(long)]
+    pub reads: Option<PathBuf>,
+}
+
+impl SequencerArgs {
+    /// Sans `--library`, ces paramètres n'ont pas d'effet : refuser ceux qui sont donnés.
+    fn check_unused(&self) -> anyhow::Result<()> {
+        let defaults = Self {
+            read_length: 300,
+            index_read_length: None,
+            index_substitution_rate: 0.001,
+            index_hopping: 0.0,
+            reads: None,
+        };
+        let given = [
+            (self.read_length != 300, "--read-length"),
+            (self.index_read_length.is_some(), "--index-read-length"),
+            (
+                self.index_substitution_rate != 0.001,
+                "--index-substitution-rate",
+            ),
+            (self.index_hopping != 0.0, "--index-hopping"),
+            (self.reads.is_some(), "--reads"),
+        ];
+        let given: Vec<&str> = given
+            .into_iter()
+            .filter(|(set, _)| *set)
+            .map(|(_, name)| name)
+            .collect();
+        if given.is_empty() {
+            let _ = defaults;
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "{} s'applique{} au séquençage d'une bibliothèque : ajouter --library",
+                given.join(", "),
+                if given.len() == 1 { "" } else { "nt" }
+            )
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let out = output::Printer::new(cli.json);
@@ -340,11 +467,47 @@ fn main() -> anyhow::Result<()> {
         Command::Simulate {
             input,
             archive,
+            library,
             codec,
             channel,
+            sequencer,
             trials,
             seed,
-        } => simulate::run(&input, archive, &codec, &channel, trials, seed, &out),
+        } => {
+            let spec = RunSpec {
+                input: &input,
+                trials,
+                seed,
+            };
+            if library {
+                simulate_library::run(&spec, &channel, &sequencer, &out)
+            } else {
+                simulate::run(&spec, archive, &codec, &channel, &sequencer, &out)
+            }
+        }
+        Command::Library { samples, output } => library::run(&samples, &output, &out),
+        Command::Demux {
+            r1,
+            r2,
+            i7,
+            i5,
+            library,
+            samples,
+            output,
+            truth,
+        } => demux::run(
+            &demux::DemuxArgs {
+                r1_path: &r1,
+                r2_path: &r2,
+                i7_path: &i7,
+                i5_path: i5.as_deref(),
+                library_path: library.as_deref(),
+                samples: &samples,
+                output: &output,
+                truth,
+            },
+            &out,
+        ),
         Command::Visualize {
             input,
             format,

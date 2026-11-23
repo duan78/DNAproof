@@ -276,6 +276,10 @@ adn simulate --archive --input archive.fasta \
     --substitution-rate 0.01 --coverage 20 --trials 10
 ```
 
+Avec `--library`, `simulate` part d'un pool de bibliothèque et passe par le séquenceur :
+`adn library` assemble le pool, puis `adn simulate --library --input pool.fasta`. Les mesures
+de la chaîne complète sont dans [Bibliothèques Illumina](LIBRARY.md#mesures).
+
 Sans `--archive`, `simulate` encode le fichier avec les options données, puis le dégrade.
 `--synthesis-substitution-rate`, `--insertion-rate`, `--deletion-rate` et `--dropout` règlent le
 canal ; `--seed` rend un tirage reproductible.
