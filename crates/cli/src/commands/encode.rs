@@ -41,6 +41,7 @@ pub(crate) fn run(
     )
     .with_context(|| format!("impossible d'écrire {}", archive.display()))?;
 
+    let manifest_length = encoded.oligos[0].len();
     let droplets_per_unit = stats.data_oligos as f64 / f64::from(stats.units);
     let redundancy = match options.scheme {
         Scheme::Fountain => format!(
@@ -52,8 +53,20 @@ pub(crate) fn run(
             adn_core::codec::strands::OUTER_PARITY,
             adn_core::codec::strands::OUTER_DATA
         ),
+        Scheme::Goldman => "recouvrement ×4 : fenêtres de 100 nt décalées de 25".to_string(),
+        Scheme::Grass => format!(
+            "parité interne de {} symboles ; {} brins de parité par bloc de {}",
+            options.grass.parity,
+            adn_core::codec::grass::BLOCK_PARITY,
+            adn_core::codec::grass::BLOCK
+        ),
     };
     let sha256 = adn_core::checksum::hex(&stats.sha256);
+    let lengths = if manifest_length == oligo_length {
+        format!("de {oligo_length} nt chacun")
+    } else {
+        format!("de {oligo_length} nt, manifestes de {manifest_length} nt")
+    };
 
     let report = serde_json::json!({
         "input": input,
@@ -93,11 +106,10 @@ pub(crate) fn run(
             .add(
                 "Oligos",
                 format!(
-                    "{} au total : {} de données et {} manifestes, de {} nt chacun",
+                    "{} au total : {} de données et {} manifestes, {lengths}",
                     thousands(encoded.oligos.len() as u64),
                     thousands(stats.data_oligos as u64),
                     thousands(stats.manifest_copies as u64),
-                    oligo_length
                 ),
             )
             .add("Nucléotides", thousands(stats.nucleotides))

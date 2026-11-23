@@ -16,11 +16,14 @@ pub struct DnaConstraints {
     pub max_homopolymer: usize,
 }
 
+/// Bornes de GC par défaut, celles de l'article DNA Fountain (45 % à 55 %).
+pub const DEFAULT_GC: (f64, f64) = (0.45, 0.55);
+
 impl Default for DnaConstraints {
     fn default() -> Self {
         Self {
-            gc_min: 0.45,
-            gc_max: 0.55,
+            gc_min: DEFAULT_GC.0,
+            gc_max: DEFAULT_GC.1,
             max_homopolymer: 3,
         }
     }
@@ -63,6 +66,16 @@ impl DnaConstraints {
             ));
         }
         Ok(())
+    }
+
+    /// Vrai si les bornes de GC sont celles par défaut.
+    pub fn gc_is_default(&self) -> bool {
+        self.gc_min == DEFAULT_GC.0 && self.gc_max == DEFAULT_GC.1
+    }
+
+    /// Vrai si les bornes de GC ne contraignent rien (de 0 à 1).
+    pub fn gc_is_free(&self) -> bool {
+        self.gc_min == 0.0 && self.gc_max == 1.0
     }
 
     /// Indique si la séquence satisfait les deux contraintes.
@@ -175,6 +188,36 @@ impl DnaConstraints {
         }
     }
 
+    /// Probabilité qu'une séquence aléatoire de `length` nucléotides respecte la seule contrainte
+    /// de GC (sans limite sur `length` : au-delà de mille nucléotides, le calcul déborde).
+    ///
+    /// Sert quand la contrainte sur les suites est tenue par construction, comme par les
+    /// trimères du schéma grass.
+    pub fn gc_pass_probability(&self, length: usize) -> f64 {
+        if length == 0 {
+            return 1.0;
+        }
+        let low = (self.gc_min * length as f64).ceil() as usize;
+        let high = (self.gc_max * length as f64).floor() as usize;
+        // Poids binomiaux, déjà ramenés à 2^-length : poids(g) = C(length, g) / 2^length.
+        let mut weight = 0.5f64.powi(length as i32);
+        let mut total = 0.0;
+        for gc in 0..=length {
+            if gc > 0 {
+                weight *= (length - gc + 1) as f64 / gc as f64;
+            }
+            if (low..=high).contains(&gc) {
+                total += weight;
+            }
+        }
+        total
+    }
+
+    /// Probabilité qu'aucun de `space` candidats indépendants ne respecte les contraintes.
+    pub fn all_fail_probability(&self, length: usize, space: u64) -> f64 {
+        (1.0 - self.pass_probability(length)).powf(space as f64)
+    }
+
     /// Message d'erreur pour des contraintes qu'un oligo de `length` nucléotides ne peut satisfaire.
     pub fn too_strict_message(&self, length: usize) -> String {
         let p = self.pass_probability(length);
@@ -200,6 +243,10 @@ mod tests {
         assert!((c.gc_min - 0.45).abs() < 1e-12);
         assert!((c.gc_max - 0.55).abs() < 1e-12);
         assert_eq!(c.max_homopolymer, 3);
+        assert!(c.gc_is_default() && !c.gc_is_free());
+        let free = DnaConstraints::new(0.0, 1.0, 3);
+        assert!(free.gc_is_free() && !free.gc_is_default());
+        assert!(!DnaConstraints::new(0.40, 0.60, 3).gc_is_default());
     }
 
     #[test]
@@ -259,6 +306,26 @@ mod tests {
         let loose = DnaConstraints::new(0.0, 1.0, 1000);
         // La somme flottante vaut 1 à un chiffre près : 40 essais, ou 41 par excès.
         assert!(matches!(loose.search_limit(152, 1 << 16), Some(40..=41)));
+        // Avec 47 candidats seulement (les nonces du schéma grass), le risque par brin dépend de
+        // la probabilité de passage : une séquence aléatoire de 117 nt en a une sur cinq, une
+        // suite où seule la contrainte de GC compte, deux sur trois.
+        let iid = defaults.pass_probability(117);
+        assert!((iid - 0.2).abs() < 0.03, "{iid}");
+        assert!((defaults.all_fail_probability(117, 47) - (1.0 - iid).powi(47)).abs() < 1e-9);
+        let gc_only = defaults.gc_pass_probability(117);
+        // S'accorde avec le modèle complet quand les suites ne sont pas limitées.
+        let free = DnaConstraints::new(0.45, 0.55, 1000);
+        assert!(
+            (free.pass_probability(117) - gc_only).abs() < 1e-9,
+            "{gc_only}"
+        );
+        assert!((0.70..0.76).contains(&gc_only), "{gc_only}");
+        // Avec 47 candidats, le risque par brin devient infime.
+        assert!((1.0 - gc_only).powi(47) < 1e-16);
+        assert_eq!(defaults.gc_pass_probability(0), 1.0);
+        assert!((free.pass_probability(60) - free.gc_pass_probability(60)).abs() < 1e-9);
+        assert!((DnaConstraints::new(0.0, 1.0, 3).gc_pass_probability(300) - 1.0).abs() < 1e-9);
+        assert_eq!(defaults.all_fail_probability(152, 0), 1.0);
     }
 
     #[test]

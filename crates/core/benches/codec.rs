@@ -10,6 +10,9 @@ use adn_core::codec::lt::LayoutSampler;
 use adn_core::codec::rng::SeededRng;
 use adn_core::codec::soliton::RobustSoliton;
 use adn_core::rs::RsCode;
+use adn_core::rs47::gf2209::Gf2209;
+use adn_core::rs47::gf47::Gf47;
+use adn_core::rs47::{Field, Rs2209Code, Rs47Code};
 use adn_core::{
     checksum, decode, encode, envelope, DecodeOptions, DnaConstraints, EncodeOptions, Scheme,
 };
@@ -32,10 +35,18 @@ type Scenario = (f64, usize);
 ///   portent une erreur ; trois lectures par oligo laissent presque toujours une lecture propre.
 /// - Un brin codé corrige deux octets erronés : à 0,5 % par nucléotide, 7 % des brins deviennent
 ///   illisibles, ce que le code externe répare (il en tolère 14 % par bloc).
+/// - Le schéma goldman n'a pas de code interne : chaque base est lue dans quatre brins, et une
+///   erreur dans l'index d'un brin le fait perdre. Trois lectures par brin donnent douze voix
+///   à chaque base, et l'emportent à 0,1 %.
+/// - Le schéma grass, par défaut, corrige sept symboles erronés par brin (vingt et une bases) :
+///   à 0,5 % par nucléotide, un brin sur deux mille est irrécupérable, et le code externe le
+///   répare.
 fn scenario(scheme: Scheme) -> Scenario {
     match scheme {
         Scheme::Fountain => (0.001, 3),
         Scheme::Strands => (0.005, 1),
+        Scheme::Goldman => (0.001, 3),
+        Scheme::Grass => (0.005, 1),
     }
 }
 
@@ -177,6 +188,62 @@ fn bench_parts(c: &mut Criterion) {
         b.iter(|| {
             let mut block = falsified.clone();
             black_box(code.correct(&mut block).unwrap())
+        })
+    });
+
+    // Reed-Solomon sur GF(47), le code interne d'un brin grass (39 symboles, 14 de parité), et
+    // la correction de trois symboles faux, puis de quatre effacements.
+    let code47 = Rs47Code::new(39, 25).expect("code interne grass");
+    let data47: Vec<Gf47> = random_bytes(code47.data_len(), 11)
+        .into_iter()
+        .map(|byte| Gf47::new(byte % 47))
+        .collect();
+    let intact47 = code47.encode(&data47).unwrap();
+    let mut falsified47 = intact47.clone();
+    for position in [3, 12, 30] {
+        falsified47[position] = falsified47[position].add(Gf47::new(7));
+    }
+    group.bench_function("reed-solomon-47/encoder_25+14", |b| {
+        b.iter(|| black_box(code47.encode(&data47).unwrap().len()))
+    });
+    group.bench_function("reed-solomon-47/corriger_3_symboles", |b| {
+        b.iter(|| {
+            let mut block = falsified47.clone();
+            black_box(code47.correct(&mut block, &[]).unwrap())
+        })
+    });
+    let mut erased47 = intact47;
+    for position in [0, 1, 2, 3] {
+        erased47[position] = Gf47::new(0);
+    }
+    group.bench_function("reed-solomon-47/4_effacements", |b| {
+        b.iter(|| {
+            let mut block = erased47.clone();
+            black_box(code47.correct(&mut block, &[0, 1, 2, 3]).unwrap())
+        })
+    });
+
+    // Reed-Solomon sur GF(47²), le code externe d'un bloc grass (713 symboles, 92 de parité) :
+    // parité d'une colonne, puis rétablissement de 70 effacements partagés par les colonnes.
+    let code = Rs2209Code::new(713, 621).expect("code externe grass");
+    let column: Vec<Gf2209> = random_bytes(2 * 713, 13)
+        .chunks(2)
+        .map(|pair| Gf2209 {
+            a: pair[0] % 47,
+            b: pair[1] % 47,
+        })
+        .collect();
+    let data = &column[..621];
+    group.bench_function("reed-solomon-2209/parite_621+92", |b| {
+        b.iter(|| black_box(code.encode(data).unwrap().len()))
+    });
+    let missing: Vec<usize> = (600..670).collect();
+    let solver = code.solver(&missing).unwrap();
+    let intact = code.encode(data).unwrap();
+    group.bench_function("reed-solomon-2209/resoudre_70_effacements", |b| {
+        b.iter(|| {
+            let mut block = intact.clone();
+            black_box(solver.restore(&mut block).unwrap())
         })
     });
 

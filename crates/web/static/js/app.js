@@ -39,7 +39,20 @@ window.ADN = (function () {
     const KIND = { encode: "Encodage", decode: "Décodage" };
     const STATE = { queued: "en attente", running: "en cours", complete: "terminée", failed: "échouée" };
     const COMPRESSION = { None: "aucune", Lz4: "LZ4", Zstd: "zstd" };
-    const SCHEME = { fountain: "DNA Fountain", strands: "brins codés" };
+    const SCHEME = {
+        fountain: "DNA Fountain",
+        strands: "brins codés",
+        goldman: "Goldman et al., 2013",
+        grass: "Grass et al., 2015",
+    };
+    const SCHEME_HELP = {
+        fountain: "Sans adresse, marge de perte réglable : le schéma de l'article de référence.",
+        strands: "Brins adressés, deux niveaux de Reed-Solomon : le plus économe pour les petits fichiers.",
+        goldman: "Code ternaire de Huffman, jamais deux bases identiques de suite, chaque base lue dans quatre brins. " +
+            "Environ 2 Mo au plus, GC non garanti par brin.",
+        grass: "Reed-Solomon sur le corps à 47 éléments, un symbole par groupe de trois bases : le plus robuste aux substitutions, " +
+            "le moins dense.",
+    };
 
     function el(tag, className, text) {
         const node = document.createElement(tag);
@@ -180,6 +193,8 @@ window.ADN = (function () {
             const fountain = scheme.value === "fountain";
             marginField.hidden = !fountain;
             if (fountain) describeMargin();
+            const help = document.getElementById("scheme-help");
+            if (help) help.textContent = SCHEME_HELP[scheme.value] || "";
         };
         slider.addEventListener("input", describeMargin);
         scheme.addEventListener("change", followScheme);

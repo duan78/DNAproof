@@ -14,15 +14,26 @@ du processeur et de la mémoire.
 
 | | 64 Kio | 256 Kio | 1 Mio |
 |---|---|---|---|
-| Encodage `fountain` (marge 1,1) | 32 ms | 70 ms | 187 ms |
-| Encodage `strands` | 33 ms | 34 ms | 41 ms |
-| Décodage `fountain`, archive intacte | 3,8 ms | 13,7 ms | 63 ms |
-| Décodage `strands`, archive intacte | 2,8 ms | 9,0 ms | 31 ms |
-| Décodage `fountain`, 0,1 % de substitution, 3 lectures par oligo | 7,0 ms | 26 ms | 113 ms |
-| Décodage `strands`, 0,5 % de substitution | 4,7 ms | 12 ms | 45 ms |
+| Encodage `fountain` (marge 1,1) | 40 ms | 80 ms | 215 ms |
+| Encodage `strands` | 39 ms | 39 ms | 45 ms |
+| Encodage `goldman` | 31 ms | 47 ms | 114 ms |
+| Encodage `grass` | 68 ms | 103 ms | 267 ms |
+| Décodage `fountain`, archive intacte | 4,3 ms | 13 ms | 65 ms |
+| Décodage `strands`, archive intacte | 3,0 ms | 10 ms | 31 ms |
+| Décodage `goldman`, archive intacte | 19 ms | 76 ms | 292 ms |
+| Décodage `grass`, archive intacte | 11 ms | 23 ms | 75 ms |
+| Décodage `fountain`, 0,1 % de substitution, 3 lectures par oligo | 7,4 ms | 25 ms | 113 ms |
+| Décodage `strands`, 0,5 % de substitution | 5,3 ms | 14 ms | 46 ms |
+| Décodage `goldman`, 0,1 % de substitution, 3 lectures par brin | 45 ms | 179 ms | 693 ms |
+| Décodage `grass`, 0,5 % de substitution | 14 ms | 33 ms | 113 ms |
 
 Les archives abîmées se décodent toujours : le scénario d'erreurs est choisi pour rester
 décodable, et la mesure s'arrête sinon.
+
+`goldman` produit quatre fois plus de brins que les autres pour un même fichier — un Mio donne
+212 000 brins — et le scénario retenu y va de trois lectures par brin : 636 000 lectures à
+décoder, soit environ 1 µs chacune. `grass` écrit chaque brin en symboles de GF(47) puis le
+protège par un Reed-Solomon et un criblage : son encodage est le plus lent après DNA Fountain.
 
 ## Grandes tailles
 
@@ -57,7 +68,8 @@ Chaque décodage redonne le fichier d'origine, à l'octet près.
   tient en 9 982 oligos une fois compressé par zstd, contre 39 000 pour un Mio d'octets au
   hasard.
 - **Un fichier incompressible approche la limite théorique du format** : 1,41 bit par nucléotide
-  avec DNA Fountain à marge 1,1, pour 2 bits par nucléotide possibles.
+  avec DNA Fountain à marge 1,1, pour 2 bits par nucléotide possibles. `goldman` en est loin
+  (0,34 bit par nucléotide) : son recouvrement quadruple est le prix du schéma publié.
 
 ## Les briques
 
@@ -65,17 +77,26 @@ Prises isolément, sur un mébioctet sauf mention :
 
 | Brique | Temps |
 |---|---|
-| Empreinte SHA-256 | 0,45 ms |
-| CRC-32 | 1,7 ms |
-| Compression zstd (octets au hasard : elle ne rapporte rien) | 3,2 ms |
-| Compression zstd (texte) | 2,4 ms |
-| Compression LZ4 (texte) | 1,9 ms |
-| Décompression zstd (texte) | 2,1 ms |
-| Reed-Solomon : parité de 223 octets, 32 de parité | 3,9 µs |
-| Reed-Solomon : corriger 4 octets dans un bloc de 255 | 43 µs |
-| Structure d'une goutte (32 768 blocs) | 0,22 µs |
-| Test des contraintes biochimiques d'un oligo de 152 nt | 0,12 µs |
-| Probabilité exacte qu'un oligo au hasard respecte les contraintes | 0,4 ms |
+| Empreinte SHA-256 | 0,46 ms |
+| CRC-32 | 1,8 ms |
+| Compression zstd (octets au hasard : elle ne rapporte rien) | 3,5 ms |
+| Compression zstd (texte) | 2,9 ms |
+| Compression LZ4 (texte) | 2,2 ms |
+| Décompression zstd (texte) | 2,4 ms |
+| Reed-Solomon GF(256) : parité de 223 octets, 32 de parité | 4,8 µs |
+| Reed-Solomon GF(256) : corriger 4 octets dans un bloc de 255 | 47 µs |
+| Reed-Solomon GF(47) : parité d'un brin `grass` (25 symboles, 14 de parité) | 0,57 µs |
+| Reed-Solomon GF(47) : corriger 3 symboles dans un brin | 19 µs |
+| Reed-Solomon GF(47) : rétablir 4 effacements dans un brin | 13 µs |
+| Reed-Solomon GF(47²) : parité d'une colonne d'un bloc `grass` (621 symboles, 92 de parité) | 169 µs |
+| Reed-Solomon GF(47²) : résoudre 70 effacements d'une colonne | 141 µs |
+| Structure d'une goutte (32 768 blocs) | 0,25 µs |
+| Test des contraintes biochimiques d'un oligo de 152 nt | 0,13 µs |
+| Probabilité exacte qu'un oligo au hasard respecte les contraintes | 0,42 ms |
+
+Un bloc `grass` compte dix colonnes : quand il lui manque des brins, la préparation du
+rétablissement (141 µs, pour toutes les colonnes) domine, et chaque colonne revient ensuite à
+une trentaine de microsecondes.
 
 Le contrôle d'intégrité et la compression comptent plus que le codage lui-même : c'est le
 criblage — huit candidats en moyenne pour un oligo retenu — et la certification de la marge qui

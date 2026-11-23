@@ -839,10 +839,16 @@ mod tests {
 
         let refused = |fields: Vec<(String, String)>| encode_options(&fields).unwrap_err().status();
         assert_eq!(
-            refused(vec![field("scheme", "goldman")]),
+            refused(vec![field("scheme", "ultimate")]),
             StatusCode::BAD_REQUEST,
             "un schéma retiré est refusé, pas ignoré"
         );
+        // Les deux schémas de la littérature sont proposés, avec leurs paramètres par défaut.
+        for name in ["goldman", "grass"] {
+            let options = encode_options(&[field("scheme", name)]).unwrap();
+            assert_eq!(options.scheme.name(), name);
+            assert_eq!(options, EncodeOptions::for_scheme(options.scheme));
+        }
         assert_eq!(
             refused(vec![field("scheme", "inconnu")]),
             StatusCode::BAD_REQUEST

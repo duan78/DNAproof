@@ -13,11 +13,14 @@ pub(crate) fn run(
 ) -> Result<()> {
     let constraints = limits.constraints()?;
     let records = crate::commands::read_reads(&[input.to_path_buf()])?;
-    let pool = adn_core::verify::pool_report(&records, &constraints);
     let decoded = decode(
         crate::commands::sequences(&records),
         &DecodeOptions::default(),
     );
+    // Le schéma goldman ne garantit pas le GC de ses brins : `verify` ne le lui reproche pas.
+    let scheme = decoded.as_ref().ok().map(|decoded| decoded.scheme);
+    let gc_guaranteed = scheme.is_none_or(adn_core::Scheme::constrains_gc);
+    let pool = adn_core::verify::pool_report_of_scheme(&records, &constraints, scheme);
 
     let (verdict, sha256, written) = match (&decoded, output) {
         (Ok(decoded), Some(path)) => {
@@ -55,6 +58,7 @@ pub(crate) fn run(
         "gc_max": pool.gc_max,
         "max_homopolymer": pool.max_homopolymer,
         "compliant": pool.compliant,
+        "gc_guaranteed": gc_guaranteed,
         "constraints": {
             "gc_min": constraints.gc_min,
             "gc_max": constraints.gc_max,
@@ -92,15 +96,26 @@ pub(crate) fn run(
             )
             .add(
                 "Contraintes",
-                format!(
-                    "{}/{} séquences respectent GC {:.0}–{:.0} % et suites ≤ {} (la plus longue : {})",
-                    thousands(pool.compliant as u64),
-                    thousands(pool.oligos as u64),
-                    constraints.gc_min * 100.0,
-                    constraints.gc_max * 100.0,
-                    constraints.max_homopolymer,
-                    pool.max_homopolymer
-                ),
+                if gc_guaranteed {
+                    format!(
+                        "{}/{} séquences respectent GC {:.0}–{:.0} % et suites ≤ {} (la plus longue : {})",
+                        thousands(pool.compliant as u64),
+                        thousands(pool.oligos as u64),
+                        constraints.gc_min * 100.0,
+                        constraints.gc_max * 100.0,
+                        constraints.max_homopolymer,
+                        pool.max_homopolymer
+                    )
+                } else {
+                    // Le schéma goldman ne règle pas le GC de ses brins.
+                    format!(
+                        "{}/{} séquences respectent suites ≤ {} (la plus longue : {}) ; GC non garanti par le schéma goldman",
+                        thousands(pool.compliant as u64),
+                        thousands(pool.oligos as u64),
+                        constraints.max_homopolymer,
+                        pool.max_homopolymer
+                    )
+                },
             )
             .add("Archive", verdict);
         if let Ok(decoded) = &decoded {

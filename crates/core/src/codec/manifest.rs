@@ -10,12 +10,12 @@
 //! | décalage | taille | contenu |
 //! |----------|--------|---------|
 //! | 0        | 1      | version du format (2) |
-//! | 1        | 1      | schéma : 1 = DNA Fountain, 2 = brins codés |
-//! | 2        | 1      | octets de parité Reed-Solomon de chaque oligo |
+//! | 1        | 1      | schéma : 1 = DNA Fountain, 2 = brins codés, 3 = goldman, 4 = grass |
+//! | 2        | 1      | octets (fountain, strands) ou symboles (grass) de parité Reed-Solomon de chaque oligo |
 //! | 3        | 1      | compression de l'enveloppe |
 //! | 4        | 8      | longueur de l'enveloppe (octets, petit-boutiste) |
-//! | 12       | 4      | nombre de blocs (DNA Fountain), 0 sinon |
-//! | 16       | 4      | `c` de la distribution soliton (f32, petit-boutiste) |
+//! | 12       | 4      | nombre de blocs (DNA Fountain) ou de fenêtres (goldman), 0 sinon |
+//! | 16       | 4      | `c` de la distribution soliton (f32, petit-boutiste) ; identifiant de fichier du schéma goldman (un octet) |
 //! | 20       | 4      | `δ` de la distribution soliton (f32, petit-boutiste) |
 //! | 24       | 4      | CRC-32 des 24 premiers octets |
 //!
@@ -52,6 +52,8 @@ const MASK_STREAM: u64 = 0x0000_0000_0000_0010;
 pub enum SchemeId {
     Fountain = 1,
     Strands = 2,
+    Goldman = 3,
+    Grass = 4,
 }
 
 impl SchemeId {
@@ -59,6 +61,8 @@ impl SchemeId {
         match code {
             1 => Some(SchemeId::Fountain),
             2 => Some(SchemeId::Strands),
+            3 => Some(SchemeId::Goldman),
+            4 => Some(SchemeId::Grass),
             _ => None,
         }
     }
@@ -74,6 +78,9 @@ pub struct Manifest {
     pub chunks: u32,
     pub c: f32,
     pub delta: f32,
+    /// Identifiant de fichier du schéma goldman (0 à 8) ; rangé dans le premier octet de `c`,
+    /// qui vaut alors 0.
+    pub file_id: u8,
 }
 
 /// Bilan de la recherche du manifeste dans un ensemble de lectures.
@@ -96,7 +103,15 @@ pub fn encode(manifest: &Manifest) -> [u8; MANIFEST_LEN] {
     bytes[3] = manifest.compression.code();
     bytes[4..12].copy_from_slice(&manifest.body_len.to_le_bytes());
     bytes[12..16].copy_from_slice(&manifest.chunks.to_le_bytes());
-    bytes[16..20].copy_from_slice(&manifest.c.to_le_bytes());
+    // `c` n'a de sens que pour DNA Fountain : son premier octet porte l'identifiant de fichier
+    // du schéma goldman.
+    match manifest.scheme {
+        SchemeId::Goldman => {
+            bytes[16] = manifest.file_id;
+            bytes[17..20].fill(0);
+        }
+        _ => bytes[16..20].copy_from_slice(&manifest.c.to_le_bytes()),
+    }
     bytes[20..24].copy_from_slice(&manifest.delta.to_le_bytes());
     let crc = crc32(&bytes[..24]);
     bytes[24..28].copy_from_slice(&crc.to_le_bytes());
@@ -128,14 +143,22 @@ pub fn decode(bytes: &[u8]) -> Result<Manifest> {
     let compression = Compression::from_code(bytes[3]).ok_or_else(|| {
         DnaError::UnsupportedFormat(format!("compression de manifeste inconnue: {}", bytes[3]))
     })?;
+    let (c, file_id) = match scheme {
+        SchemeId::Goldman => (0.0, bytes[16]),
+        _ => (
+            f32::from_le_bytes(bytes[16..20].try_into().expect("4 octets")),
+            0,
+        ),
+    };
     Ok(Manifest {
         scheme,
         rs_parity: bytes[2],
         compression,
         body_len: u64::from_le_bytes(bytes[4..12].try_into().expect("8 octets")),
         chunks: u32::from_le_bytes(bytes[12..16].try_into().expect("4 octets")),
-        c: f32::from_le_bytes(bytes[16..20].try_into().expect("4 octets")),
+        c,
         delta: f32::from_le_bytes(bytes[20..24].try_into().expect("4 octets")),
+        file_id,
     })
 }
 
@@ -204,6 +227,11 @@ pub fn oligo(
     Err(DnaError::Encoding(
         "aucun oligo manifeste ne satisfait les contraintes: elles sont trop strictes".to_string(),
     ))
+}
+
+/// Longueur d'un oligo manifeste dont la parité Reed-Solomon est `rs_parity` octets.
+pub fn oligo_length(rs_parity: u8) -> usize {
+    (CODEWORD_LEN + usize::from(rs_parity)) * 4
 }
 
 /// Étiquette en ADN, pour la reconnaissance rapide.
@@ -369,6 +397,7 @@ pub fn find(reads: Vec<Vec<u8>>) -> Result<(Manifest, Vec<Vec<u8>>, ManifestStat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::goldman;
     use crate::sequence::BASES;
 
     fn sample() -> Manifest {
@@ -380,6 +409,7 @@ mod tests {
             chunks: 2_188,
             c: 0.025,
             delta: 0.001,
+            file_id: 0,
         }
     }
 
@@ -453,6 +483,7 @@ mod tests {
                     chunks,
                     c: 0.0,
                     delta: 0.0,
+                    file_id: 0,
                 };
                 let dna = oligo(&manifest, &rs, &constraints, 0).unwrap();
                 assert_eq!(dna.len(), oligo_len);
@@ -460,6 +491,39 @@ mod tests {
                 assert_eq!(parse_oligo(&dna, &rs).unwrap(), manifest);
             }
         }
+    }
+
+    #[test]
+    fn the_file_id_of_the_goldman_scheme_travels_in_the_manifest() {
+        let constraints = DnaConstraints::default();
+        for file_id in 0..=8u8 {
+            let manifest = Manifest {
+                scheme: SchemeId::Goldman,
+                rs_parity: 2,
+                compression: Compression::None,
+                body_len: 3_000,
+                chunks: 647,
+                c: 0.0,
+                delta: 0.0,
+                file_id,
+            };
+            assert_eq!(decode(&encode(&manifest)).unwrap(), manifest);
+            let rs = RsCode::new(2).unwrap();
+            let dna = oligo(&manifest, &rs, &constraints, 0).unwrap();
+            assert!(constraints.satisfied(&dna));
+            assert_eq!(parse_oligo(&dna, &rs).unwrap(), manifest);
+        }
+        // Un identifiant hors limite se transporte tel quel : c'est l'encodage qui le refuse.
+        let manifest = decode(&encode(&Manifest {
+            scheme: SchemeId::Goldman,
+            file_id: 9,
+            ..sample()
+        }))
+        .unwrap();
+        assert_eq!(manifest.file_id, 9);
+        assert_eq!(manifest.c, 0.0);
+        assert!(goldman::GoldmanParams { file_id: 9 }.validate().is_err());
+        assert_eq!(decode(&encode(&sample())).unwrap(), sample());
     }
 
     #[test]

@@ -16,7 +16,8 @@ lisible par les versions à venir. L'algorithme pseudo-aléatoire en fait partie
    paramètres de codage sont portés par des oligos « manifestes », au début de l'archive.
 3. **Les oligos respectent les contraintes biochimiques.** Par défaut : 45 à 55 % de GC, et
    jamais plus de trois bases identiques de suite. Un candidat qui ne les respecte pas est
-   écarté.
+   écarté. Une exception, fidèle à son article : le schéma goldman garantit l'absence de bases
+   répétées, mais pas la teneur en GC de ses brins (50 % en moyenne).
 
 ## 2. Vue d'ensemble
 
@@ -33,9 +34,10 @@ oligos manifestes ──┘
 ```
 
 À l'encodage, le fichier est d'abord enveloppé ([section 4](#4-enveloppe)). L'enveloppe, ou
-*corps*, est répartie dans des oligos selon un schéma : [DNA Fountain](#6-schéma-dna-fountain)
-ou [brins codés](#7-schéma-brins-codés). Enfin, 12 à 64 oligos manifestes
-([section 5](#5-manifeste)) sont placés en tête.
+*corps*, est répartie dans des oligos selon un schéma : [DNA Fountain](#6-schéma-dna-fountain),
+[brins codés](#7-schéma-brins-codés), [goldman](#8-schéma-goldman) ou
+[grass](#9-schéma-grass). Enfin, 12 à 64 oligos manifestes ([section 5](#5-manifeste)) sont
+placés en tête.
 
 Au décodage, l'ordre est inverse : reconnaître le manifeste, reconstituer le corps selon son
 schéma, puis vérifier et rouvrir l'enveloppe.
@@ -52,7 +54,10 @@ schéma, puis vérifier et rouvrir l'enveloppe.
   x⁸ + x⁴ + x³ + x² + 1 (`0x11D`). Un bloc codé s'écrit `données || parité`, avec *e* octets de
   parité, et compte 255 octets au plus. Il corrige jusqu'à ⌊*e*/2⌋ octets erronés, ou *e*
   effacements dont les positions sont connues.
-- **Générateur pseudo-aléatoire** : voir la [section 10](#10-générateur-pseudo-aléatoire). Tous
+- **Trits et symboles de GF(47)** : les schémas goldman et grass n'écrivent pas deux bits par
+  nucléotide. L'un écrit un trit (chiffre de 0 à 2) par base, l'autre un symbole (de 0 à 46) par
+  groupe de trois bases. Leurs conventions sont données dans leur section.
+- **Générateur pseudo-aléatoire** : voir la [section 12](#12-générateur-pseudo-aléatoire). Tous
   les masques et tous les tirages en dérivent.
 
 ## 4. Enveloppe
@@ -84,18 +89,21 @@ Un fichier vide est une enveloppe de 60 octets ; il occupe quand même un bloc.
 
 ## 5. Manifeste
 
-Un oligo manifeste a la même longueur que les oligos de données du même schéma :
+Un oligo manifeste est toujours écrit en deux bits par nucléotide :
 
 | étiquette `ADNF`, 4 octets | nonce, 4 octets | manifeste masqué, 28 octets | parité Reed-Solomon |
 |---------------------------|-----------------|------------------------------|---------------------|
 
 Avec DNA Fountain et sa parité par défaut, cela fait 36 + 2 = 38 octets, soit 152 nt ; avec les
-brins codés, 36 + 4 = 40 octets, soit 160 nt. Le nombre d'octets de parité est celui du schéma.
+brins codés, 36 + 4 = 40 octets, soit 160 nt ; avec grass et sa parité par défaut, 36 + 14 = 50
+octets, soit 200 nt ; avec goldman, 152 nt. Le nombre d'octets de parité est celui du schéma
+(deux pour goldman, qui n'en a pas). Les manifestes des deux derniers schémas sont donc plus
+longs que leurs brins, qui portent autre chose que deux bits par nucléotide.
 
 - **Étiquette** : les quatre octets ASCII `ADNF`, en clair, soit les 16 premiers nucléotides
   `CAACCACACATGCACG`. Elle permet de reconnaître un oligo manifeste parmi les lectures.
 - **Nonce** : un numéro de série, de 4 octets en petit-boutiste, transmis sous une forme
-  dispersée par [`scramble_u32`](#10-générateur-pseudo-aléatoire).
+  dispersée par [`scramble_u32`](#12-générateur-pseudo-aléatoire).
 - **Manifeste masqué** : le manifeste ci-dessous, dont chaque octet est combiné par OU exclusif
   avec un flux pseudo-aléatoire dérivé du nonce transmis (flux `0x10`). Le masquage évite
   qu'un contenu très structuré — des octets nuls — ne donne en ADN de longues suites de A,
@@ -108,13 +116,13 @@ Le manifeste compte 28 octets :
 | décalage | taille | contenu |
 |----------|--------|---------|
 | 0        | 1      | version du format (`2`) |
-| 1        | 1      | schéma : `1` = DNA Fountain, `2` = brins codés |
-| 2        | 1      | octets de parité Reed-Solomon de chaque oligo du schéma |
+| 1        | 1      | schéma : `1` = DNA Fountain, `2` = brins codés, `3` = goldman, `4` = grass |
+| 2        | 1      | parité Reed-Solomon de chaque oligo : en octets (DNA Fountain, brins codés), en symboles (grass), `2` pour goldman (ses manifestes) |
 | 3        | 1      | compression de l'enveloppe |
 | 4        | 8      | longueur de l'enveloppe, en octets (petit-boutiste) |
-| 12       | 4      | nombre de blocs (DNA Fountain), `0` sinon |
-| 16       | 4      | `c` de la distribution soliton (flottant 32 bits, petit-boutiste) |
-| 20       | 4      | `δ` de la distribution soliton (flottant 32 bits, petit-boutiste) |
+| 12       | 4      | nombre de blocs (DNA Fountain) ou de fenêtres (goldman), `0` sinon |
+| 16       | 4      | `c` de la distribution soliton (flottant 32 bits, petit-boutiste) ; pour goldman, l'identifiant de fichier dans le premier octet, le reste à zéro |
+| 20       | 4      | `δ` de la distribution soliton (flottant 32 bits, petit-boutiste), `0` sinon |
 | 24       | 4      | CRC-32 des 24 premiers octets |
 
 `c` et `δ` sont arrondis en flottants 32 bits avant l'encodage : l'encodeur travaille avec ces
@@ -155,7 +163,7 @@ Par défaut la parité compte 2 octets, comme dans l'article : l'oligo fait 38 o
 1. Le corps est complété par des octets nuls jusqu'à un multiple de 32 octets, puis coupé en
    *K* blocs de 32 octets. *K* vaut au moins 1.
 2. Les gouttes sont numérotées `0, 1, 2…`. La **graine** d'une goutte est son numéro passé dans
-   la bijection [`scramble_u32`](#10-générateur-pseudo-aléatoire), inscrite en gros-boutiste.
+   la bijection [`scramble_u32`](#12-générateur-pseudo-aléatoire), inscrite en gros-boutiste.
 3. Le **degré** *d* de la goutte est tiré de la distribution soliton robuste avec le flux `1`.
 4. Les *d* blocs qu'elle mélange sont tirés sans remise par l'algorithme de Floyd, avec le flux
    `2`, et rangés par index croissant.
@@ -270,7 +278,7 @@ Un brin fait 40 octets, soit 160 nt.
   transmis. La parité est calculée avant masquage.
 - **Nonce** : les nonces sont essayés à partir de `0`, et le premier qui donne un brin conforme
   aux contraintes est retenu. Il est transmis sous une forme dispersée par
-  [`scramble_u24`](#10-générateur-pseudo-aléatoire), en petit-boutiste. Les 24 bits offrent plus
+  [`scramble_u24`](#12-générateur-pseudo-aléatoire), en petit-boutiste. Les 24 bits offrent plus
   de 16 millions de candidats par brin.
 
 ### Code externe
@@ -311,7 +319,219 @@ répare, s'il en a la capacité.
 L'index tient sur 24 bits : une archive compte moins de 2²⁴ brins, données et parité
 confondues. Le corps peut ainsi atteindre environ 440 Mo (420 Mio).
 
-## 8. Fichier FASTA
+## 8. Schéma goldman
+
+Goldman et al. (2013) : les octets deviennent des trits, chaque trit choisit une base différente
+de la précédente, et l'ADN est relu par des fenêtres qui se recouvrent — chaque base du message
+est lue quatre fois, dans quatre brins. La méthode est celle de l'information complémentaire de
+l'article ; deux adaptations sont signalées.
+
+### Brin
+
+| repère, 1 nt | message, 100 nt | index, 15 nt | repère, 1 nt |
+|--------------|-----------------|--------------|--------------|
+
+Un brin fait 117 nt. Il ne contient jamais deux bases identiques de suite.
+
+### Message ternaire
+
+1. **Octets en trits.** Deux codes préfixe ternaires sont possibles, annoncés par un premier
+   octet (le *mode*), lui-même écrit avec le code fixe :
+   - `0` : le **code fixe**, pour tout le corps — les octets 0 à 235 s'écrivent en 5 trits, les
+     octets 236 à 255 en 6 ;
+   - `1` : le **code de Huffman de l'archive** — ses 256 longueurs (un octet chacune, de 0 pour
+     un octet absent à 80 au plus) suivent le mode, écrites avec le code fixe, puis le corps est
+     écrit avec ce code.
+
+   Le code de Huffman est celui de l'algorithme de Huffman sur les comptes d'octets du corps, en
+   base 3 (trois nœuds fusionnés à la fois, une feuille de poids nul ajoutée quand il le faut).
+   Dans les deux cas le code est **canonique** : les symboles sont rangés par longueur puis par
+   valeur, et le premier code de longueur *L* vaut `(premier code de L − 1 + nombre de codes de
+   L − 1) × 3`. Un code de *L* trits s'écrit poids fort en tête. Le code de Huffman n'est retenu
+   que si, table comprise (1 285 trits), il donne un filet plus court que le code fixe. Un mot de
+   6 trits du code fixe n'appartient à aucun octet : il signale une lecture fausse.
+2. **Longueur et bourrage.** Le filet des octets (*S₁*) est suivi de zéros (*S₃*), puis de la
+   longueur de *S₁* sur 20 trits, poids fort en tête (*S₂*) — soit *S₄ = S₁ ‖ S₃ ‖ S₂*, de
+   longueur multiple de 25 et d'au moins 100.
+3. **Trits en bases.** Le premier trit part de la ligne `A` ; chacun choisit l'une des trois
+   bases différentes de la précédente :
+
+   | précédente | trit 0 | trit 1 | trit 2 |
+   |------------|--------|--------|--------|
+   | A          | C      | G      | T      |
+   | C          | G      | T      | A      |
+   | G          | T      | A      | C      |
+   | T          | A      | C      | G      |
+
+### Fenêtres
+
+L'ADN obtenu (*S₅*, *N* bases) est entouré de 75 nt de bourrage de chaque côté : à gauche la
+suite `CGA` répétée 25 fois, à droite la suite des trits nuls qui suit la dernière base. Chaque
+position du message est ainsi couverte par quatre fenêtres, la première et la dernière
+comprises (adaptation : l'article n'a pas de bourrage, et ses extrémités ne sont couvertes qu'une
+à trois fois).
+
+- La fenêtre *i* est `bourré[25·i … 25·i + 100)` : il y en a `N/25 + 3`, numérotées à partir de
+  0. Le manifeste en porte le nombre.
+- Une fenêtre **impaire** est complémentée en sens inverse.
+- L'**index** de 15 trits suit le message, converti par la même table à partir de sa dernière
+  base : l'identifiant de fichier (2 trits), l'adresse de la fenêtre (12 trits, poids fort en
+  tête), puis un trit de parité `P`. Celui-ci est la somme, modulo 3, du premier trit de
+  l'identifiant et des trits d'adresse de rang pair dans l'écriture (le premier trit compte) :
+  `P = ID₁ + i₃₁ + i₃₃ + i₃₅ + i₃₇ + i₃₉ + i₃₁₁`. L'identifiant de fichier vaut
+  `identifiant / 3` puis `identifiant mod 3` ; il va de 0 à 8 et sépare plusieurs archives
+  mélangées dans un même tube.
+- Les deux **bases de repère** encadrent le tout : `A` ou `T` en tête, `C` ou `G` en fin,
+  différentes de la base voisine. Quand le choix est libre, la tête vaut `A` si le bit 0 de
+  `scramble_u32(i)` est nul et `T` sinon ; la fin vaut `C` si le bit 1 est nul et `G` sinon. Un
+  même fichier donne donc toujours les mêmes brins.
+
+### Lecture d'un brin
+
+1. Seules les lectures de 117 nt sont retenues.
+2. **Sens.** Un brin commence par `A` ou `T` et finit par `C` ou `G` ; lu dans l'autre sens, il
+   commence par `G` ou `C` et finit par `T` ou `A`. Si aucune des deux règles ne s'applique, les
+   deux sens sont essayés : l'index tranche.
+3. **Répétitions.** Deux bases identiques de suite sont impossibles : l'erreur est sur l'une des
+   deux, et les deux positions sont écartées du vote. La première base du message l'est aussi si
+   elle répète la base de repère.
+4. **Index.** L'identifiant doit être celui du manifeste, l'adresse inférieure au nombre de
+   fenêtres, et la parité exacte. Toute substitution dans l'index est détectée : les trits qu'elle
+   change sont deux voisins, dont l'un au moins est couvert par la parité.
+5. La fenêtre impaire est remise dans le sens du message.
+
+### Décodage
+
+Chaque position de l'ADN encodé reçoit une voix par lecture qui la couvre. La base qui rassemble
+le plus de voix l'emporte ; une égalité, ou une position sans voix, arrête le décodage. L'ADN
+est ensuite relu en trits, la longueur et le bourrage contrôlés, et le message décodé.
+
+Le schéma n'a pas de code correcteur : sa robustesse vient du recouvrement. Il demande donc de la
+couverture, et une erreur dans l'index d'un brin le fait perdre. Il ne règle pas non plus la
+teneur en GC de ses brins (50 % en moyenne) : l'encodage n'admet que les bornes de GC par défaut,
+ou des bornes ouvertes de 0 à 1.
+
+### Taille maximale
+
+L'adresse tient sur 12 trits : 531 441 fenêtres au plus, soit un ADN encodé de 13 285 950 nt et
+un corps d'environ 2,6 Mo avec le code fixe.
+
+## 9. Schéma grass
+
+Grass et al. (2015) : l'information est portée par des symboles du corps à 47 éléments, corrigés
+par du Reed-Solomon entrelacé par blocs de 713 brins × 39 caractères, et chaque symbole s'écrit en
+trois nucléotides, choisis pour qu'aucune suite de plus de trois bases identiques n'apparaisse.
+L'adressage logique (l'index) et la forme du code externe sont des ajouts du format v2 : l'article
+adressait chaque brin par ses amorces.
+
+### Trimères
+
+Parmi les 64 trimères possibles, 47 sont retenus, dans cet ordre (le symbole est leur rang) :
+
+1. les 36 trimères sans deux bases adjacentes égales, par ordre lexicographique `A < C < G < T`
+   (symboles 0 à 35) ;
+2. 11 des 12 trimères terminés par un doublet, dans le même ordre ; `CAA` est écarté, pour que le
+   jeu reste équilibré en GC (symboles 36 à 46).
+
+Deux trimères quelconques mis bout à bout ne comptent jamais plus de trois bases identiques. Les
+17 trimères écartés (les homopolymères, les trimères à doublet initial, et `CAA`) n'apparaissent
+pas dans un brin conçu : le décodeur y voit un effacement.
+
+### Symboles et octets
+
+Un groupe de *P* symboles porte *B* octets, *B* étant le plus grand nombre tel que
+`256^B ≤ 47^P` : les octets, poids fort en tête, sont écrits en base 47, poids fort en tête.
+
+| Parité interne *R* | Symboles de charge *P* | Octets par brin *B* |
+|--------------------|------------------------|---------------------|
+| 30                 | 4                      | 2                   |
+| 20                 | 14                     | 9                   |
+| 14 (défaut)        | 20                     | 13                  |
+| 10                 | 24                     | 16                  |
+| 6                  | 28                     | 19                  |
+| 4                  | 30                     | 20                  |
+| 2                  | 32                     | 22                  |
+
+### Brin
+
+| index, 4 symboles | nonce, 1 symbole | charge utile, P symboles | parité interne, 39 − 5 − P symboles |
+|-------------------|------------------|--------------------------|-------------------------------------|
+
+Un brin fait 39 symboles, soit 117 nt.
+
+- **Index** : le numéro du brin en base 47, 4 chiffres poids fort en tête. Sur le fil, chaque
+  chiffre est masqué par un ajout modulo 47 : `23, 7, 41, 15`. Sans ce masque fixe, tous les
+  brins commenceraient par les mêmes trimères.
+- **Nonce** : de 0 à 46, en clair.
+- **Mot de code** : `index ‖ nonce ‖ charge utile`, auquel s'ajoutent `R` symboles de parité. Le
+  code est un Reed-Solomon de longueur 39 et de dimension `5 + P` sur GF(47). Il corrige jusqu'à
+  `R/2` symboles erronés par lecture, ou `R` effacements.
+- **Masque** : le nonce, la charge utile et la parité (les 35 derniers symboles) sont masqués par
+  le flux `0x14`, dérivé du nonce : chaque symbole devient `(symbole + tirage) mod 47`, les
+  tirages étant les entiers de Lemire dans `[0, 47)`. La parité est calculée avant masquage.
+- **Nonce** : essayés à partir de `0`, le premier qui donne un brin conforme aux contraintes est
+  retenu. Il y en a 47 : l'encodage refuse d'emblée des contraintes dont le risque cumulé, sur
+  l'archive, qu'aucun nonce ne convienne dépasse un millionième (une fenêtre de GC plus étroite
+  que quelques pourcents, par exemple).
+
+### Les deux corps
+
+- **GF(47)** : les entiers modulo 47. Le générateur du groupe multiplicatif est 5.
+- **GF(47²)** : les polynômes `a + b·x` à coefficients dans GF(47), pris modulo `x² − 5` (5
+  n'est pas un carré modulo 47). L'élément `a` de GF(47) y est `a + 0·x`. Un générateur du
+  groupe multiplicatif (2 208 éléments) est `x + 4` : le premier `x + c` dont les puissances
+  1 104, 736 et 96 ne valent pas 1.
+
+### Reed-Solomon d'évaluation
+
+Sur un corps, un message est un polynôme de degré inférieur à *k*, et le mot de code ses valeurs
+aux points `α⁰, α¹, … αⁿ⁻¹` (α est le générateur). Les *k* premières valeurs sont les données, les
+suivantes la parité. Le code corrige tout motif de `2 · erreurs + effacements ≤ n − k`. Le
+décodage suit Gao : interpolation rationnelle par algorithme d'Euclide étendu, les effacements
+étant les points que l'interpolation ignore. Quand un même jeu d'effacements sert à plusieurs
+colonnes, elles sont rétablies par interpolation directe, et le décodage complet ne prend le
+relais que si une valeur conservée est fausse.
+
+### Blocs et code externe
+
+Un code de Reed-Solomon sur GF(47) ne dépasse pas 46 symboles : le code externe travaille sur
+GF(47²), en prenant les symboles de charge utile deux par deux — c'est pourquoi la parité interne
+est paire. Avec la parité par défaut, un brin porte 10 symboles de GF(47²).
+
+Les brins sont groupés par blocs de 713, comme dans l'article (713 = 23 × 31) : les positions 0 à
+620 sont des données, les positions 621 à 712 de la parité externe. Le numéro d'un brin vaut
+`713 × rang du bloc + position`. Les places que le dernier bloc n'occupe pas comptent pour zéro.
+
+Le corps est complété par des octets nuls, coupé en brins de *B* octets, puis écrit en symboles.
+Pour chaque colonne de GF(47²) d'un bloc, la parité est celle d'un Reed-Solomon (713, 621),
+calculée sur les valeurs de cette colonne dans les 621 brins de données. Le code externe
+répare jusqu'à 92 brins manquants par bloc, soit 13 % ; colonne par colonne, il corrige tout
+motif tel que `2 · erreurs + effacements ≤ 92`.
+
+### Lecture d'un brin
+
+1. Seules les lectures de 117 nt sont retenues ; chacune donne 39 symboles, un trimère écarté
+   valant effacement.
+2. **Nonce.** Si le nonce lu ne donne pas un mot de code qui le confirme — il est erroné, ou son
+   trimère a été écarté —, les autres nonces sont essayés.
+3. L'index, lu dans le mot de code corrigé, doit être dans l'archive.
+4. Les lectures d'un même index doivent s'accorder sur la charge utile ; à égalité ou à la
+   minorité, le brin est écarté et le code externe le répare, s'il en a la capacité.
+
+### Paramètres
+
+| Paramètre | Défaut | Rôle |
+|-----------|--------|------|
+| `parity`  | `14`   | symboles de parité interne par brin, pair, de 2 à 30 : un brin résiste à la moitié de symboles erronés, et sa charge utile diminue d'autant |
+
+Le manifeste porte la parité interne dans son champ de parité ; l'oligo manifeste fait 4 nt de
+plus par symbole.
+
+### Taille maximale
+
+L'index tient sur 47⁴ = 4 879 681 numéros : 6 843 blocs, soit 4 249 503 brins de données — 55 Mo
+avec la parité par défaut, 81 Mo avec une parité de 6.
+## 10. Fichier FASTA
 
 Une archive se écrit dans un fichier FASTA ordinaire, une séquence repliée à 60 nucléotides par
 ligne. **Les en-têtes sont purement informatifs** : le décodage ne les lit pas.
@@ -326,7 +546,7 @@ CAACCACACATGCACGTAAAGCAAGAGCCGGAAGTTATACACTGACGCTCCTAACGTAAT
 
 - Les manifestes viennent en tête : `adn-<schéma>-v2 manifest=<rang>`.
 - Les oligos de données suivent : `adn-<schéma>-v2 oligo=<rang>`.
-- `<schéma>` vaut `fountain` ou `strands`.
+- `<schéma>` vaut `fountain`, `strands`, `goldman` ou `grass`.
 
 La lecture tolère les fins de ligne CRLF, les lignes repliées, les minuscules, les lignes vides
 et les lignes de commentaire commençant par `;`. Elle refuse les chiffres et la ponctuation
@@ -336,17 +556,18 @@ les écartent et les comptent.
 Plusieurs fichiers de lectures peuvent être donnés au décodage : leurs séquences sont
 concaténées.
 
-## 9. Décodage
+## 11. Décodage
 
 1. **Normalisation.** Majuscules et blancs tolérés ; tout autre caractère écarte la lecture.
 2. **Manifeste.** Il donne le schéma et les paramètres de l'archive
    ([section 5](#5-manifeste)).
-3. **Corps**, selon le schéma ([6](#6-schéma-dna-fountain) ou [7](#7-schéma-brins-codés)).
+3. **Corps**, selon le schéma ([6](#6-schéma-dna-fountain), [7](#7-schéma-brins-codés),
+   [8](#8-schéma-goldman) ou [9](#9-schéma-grass)).
 4. **Enveloppe.** CRC-32, décompression, puis comparaison de l'empreinte SHA-256.
 
 Un schéma attendu peut être imposé ; une archive d'un autre schéma est alors refusée.
 
-## 10. Générateur pseudo-aléatoire
+## 12. Générateur pseudo-aléatoire
 
 Le décodeur recalcule la structure des gouttes en rejouant les tirages de l'encodeur.
 L'algorithme fait donc partie du format : il est figé, et il ne doit jamais changer.
@@ -374,9 +595,10 @@ Deux usages distincts ne partagent jamais le même numéro de flux :
 | `0x11` | tirages de perte de la certification |
 | `0x12` | masque d'un brin codé |
 | `0x13` | masque de la charge utile d'une goutte |
+| `0x14` | masque des symboles d'un brin grass (nonce, charge utile, parité) |
 
-**`scramble_u32`** disperse un compteur sur 32 bits, pour les graines et les nonces de
-manifeste :
+**`scramble_u32`** disperse un compteur sur 32 bits, pour les graines, les nonces de manifeste
+et le choix des bases de repère des brins goldman :
 
 ```
 x ^= x >> 16 ;  x *= 0x7FEB352D ;
@@ -399,30 +621,38 @@ Les deux bijections donnent à un compteur une apparence aléatoire : un compteu
 s'écrirait en ADN comme de longues suites de A, rejetées par le criblage. L'implémentation de
 référence est le fichier `crates/core/src/codec/rng.rs`.
 
-## 11. Limites récapitulatives
+## 13. Limites récapitulatives
 
-| | DNA Fountain | Brins codés |
-|---|---|---|
-| Oligo | 152 nt (par défaut) | 160 nt |
-| Corps maximal | ≈ 137 Gio | ≈ 420 Mio |
-| Sans ordre | oui | non : les brins sont adressés |
-| Perte aléatoire supportée | `1 − 1/r` des oligos, par construction (`r` = marge) | 32 brins manquants sur 255, soit 12,5 % d'un bloc |
-| Substitutions | dépend de la parité : avec 2 octets, une seule erreur par lecture est corrigée | 2 octets erronés par brin |
-| Limite pratique | vitesse d'encodage | taille |
+| | DNA Fountain | Brins codés | goldman | grass |
+|---|---|---|---|---|
+| Oligo | 152 nt (par défaut) | 160 nt | 117 nt | 117 nt |
+| Corps maximal | ≈ 137 Gio | ≈ 420 Mio | ≈ 2,6 Mo | ≈ 55 Mo (parité 14) |
+| Sans ordre | oui | non : les brins sont adressés | non : les brins sont adressés | non : les brins sont adressés |
+| Perte aléatoire supportée | `1 − 1/r` des oligos, par construction (`r` = marge) | 32 brins manquants sur 255, soit 12,5 % d'un bloc | chaque base doit rester dans l'un de ses quatre brins : environ 2 % de brins perdus | 92 brins manquants sur 713, soit 13 % d'un bloc |
+| Substitutions | dépend de la parité : avec 2 octets, une seule erreur par lecture est corrigée | 2 octets erronés par brin | quatre lectures par base, sans code correcteur | 7 symboles (21 nt) erronés par lecture, avec la parité par défaut |
+| GC | 45 à 55 % garanti | 45 à 55 % garanti | non garanti (50 % en moyenne) | 45 à 55 % garanti |
+| Limite pratique | vitesse d'encodage | taille | taille ; couverture nécessaire | densité |
 
-## 12. Version 1
+## 14. Version 1
 
 Les archives produites par la version 0.1 ne sont plus lues : leurs en-têtes portent la marque
 `|scheme:`, et les schémas qu'elles annonçaient ne mettaient pas en œuvre ce que leur nom
-promettait. Les noms `goldman`, `goldman2013`, `grass2015`, `adaptive`, `base3` et `ultimate`
-sont refusés avec un message explicite. Pour relire une telle archive, utiliser le code du
-commit `09df4f8`.
+promettait. Les noms `adaptive`, `base3` et `ultimate` sont refusés avec un message explicite.
+Les noms `goldman` et `grass` désignent désormais les schémas des sections 8 et 9, et
+`goldman2013` et `grass2015` en sont des alias. Pour relire une archive de la version 0.1,
+utiliser le code du commit `09df4f8`.
 
 ## Références
 
 - Erlich Y., Zielinski D. — *DNA Fountain enables a robust and efficient storage architecture*,
   Science 355(6328):950–952, 2017.
 - Luby M. — *LT codes*, FOCS 2002.
+- Goldman N., Bertone P., Chen S., Dessimoz C., Leong E. M., Sipos B., Birney E. — *Towards
+  practical, high-capacity, low-maintenance information storage in synthesised DNA*, Nature
+  494:77–80, 2013 ; et son information complémentaire, *Method for Encoding and Decoding
+  Arbitrary Computer Files in DNA Fragments*.
 - Grass R. N., Heckel R., Puddu M., Paunescu D., Stark W. J. — *Robust Chemical Preservation of
   Digital Information on DNA in Silica with Error-Correcting Codes*, Angewandte Chemie
   International Edition 54:2552–2555, 2015.
+- Gao S. — *A new algorithm for decoding Reed-Solomon codes*, Communications, Information and
+  Network Security, 2003 (actes de CISS 2002).

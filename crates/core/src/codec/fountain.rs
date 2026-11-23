@@ -692,6 +692,7 @@ mod tests {
             chunks: chunks_for(body.len()).unwrap(),
             c: params.effective_c(chunks_for(body.len()).unwrap()) as f32,
             delta: params.delta as f32,
+            file_id: 0,
         }
     }
 

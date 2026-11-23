@@ -18,7 +18,10 @@
         <select name="scheme" id="scheme">
             <option value="fountain">DNA Fountain (Erlich et Zielinski, 2017) — recommandé</option>
             <option value="strands">Brins codés, Reed-Solomon interne et externe</option>
+            <option value="goldman">Goldman et al., 2013 — code ternaire, fenêtres recouvrantes</option>
+            <option value="grass">Grass et al., 2015 — Reed-Solomon sur GF(47), symboles en trimères</option>
         </select>
+        <span class="muted" id="scheme-help"></span>
 
         <label for="compression">Compression</label>
         <select name="compression" id="compression">

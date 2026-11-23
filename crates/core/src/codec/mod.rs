@@ -8,6 +8,8 @@
 //! Aucun fichier n'est rendu si son empreinte SHA-256 n'est pas vérifiée.
 
 pub mod fountain;
+pub mod goldman;
+pub mod grass;
 pub mod lt;
 pub mod manifest;
 pub mod rng;
@@ -20,19 +22,17 @@ use crate::envelope::{self, Compression};
 use crate::error::{DnaError, Result};
 
 /// Noms des schémas retirés, qui ne mettaient pas en œuvre ce que leur nom annonçait.
-pub const RETIRED_SCHEMES: [&str; 6] = [
-    "goldman",
-    "goldman2013",
-    "grass2015",
-    "adaptive",
-    "base3",
-    "ultimate",
-];
+pub const RETIRED_SCHEMES: [&str; 3] = ["adaptive", "base3", "ultimate"];
 
 /// Nombre minimal d'oligos manifestes dans une archive.
 const MANIFEST_COPIES_MIN: usize = 12;
 /// Nombre maximal d'oligos manifestes dans une archive.
 const MANIFEST_COPIES_MAX: usize = 64;
+/// Parité des oligos manifestes d'une archive goldman (2 octets : 152 nt).
+const GOLDMAN_MANIFEST_PARITY: u8 = 2;
+
+/// Noms de tous les schémas, pour les messages d'erreur.
+const SCHEME_NAMES: &str = "fountain, strands, goldman, grass";
 
 /// Schéma de codage du corps d'une archive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -42,17 +42,28 @@ pub enum Scheme {
     Fountain,
     /// Brins codés, à deux niveaux de Reed-Solomon.
     Strands,
+    /// Code de Huffman ternaire, sans base répétée, fenêtres recouvrantes (Goldman et al., 2013).
+    Goldman,
+    /// Reed-Solomon sur GF(47), un symbole par trimère (Grass et al., 2015).
+    Grass,
 }
 
 impl Scheme {
     /// Tous les schémas.
-    pub const ALL: [Scheme; 2] = [Scheme::Fountain, Scheme::Strands];
+    pub const ALL: [Scheme; 4] = [
+        Scheme::Fountain,
+        Scheme::Strands,
+        Scheme::Goldman,
+        Scheme::Grass,
+    ];
 
     /// Nom utilisé en ligne de commande et dans l'API.
     pub fn name(self) -> &'static str {
         match self {
             Scheme::Fountain => "fountain",
             Scheme::Strands => "strands",
+            Scheme::Goldman => "goldman",
+            Scheme::Grass => "grass",
         }
     }
 
@@ -61,7 +72,17 @@ impl Scheme {
         match self {
             Scheme::Fountain => "DNA Fountain (Erlich et Zielinski, 2017)",
             Scheme::Strands => "Brins codés (Reed-Solomon interne et externe)",
+            Scheme::Goldman => "Goldman et al., 2013 (code ternaire sans base répétée)",
+            Scheme::Grass => "Grass et al., 2015 (Reed-Solomon sur GF(47), symboles en trimères)",
         }
+    }
+
+    /// Vrai si le schéma garantit, brin par brin, les bornes de GC des contraintes.
+    ///
+    /// Le schéma goldman ne le peut pas, pas plus que l'article : sa table de conversion est une
+    /// bijection, sans marge de manœuvre.
+    pub fn constrains_gc(self) -> bool {
+        self != Scheme::Goldman
     }
 
     /// Retrouve un schéma par son nom. Les alias historiques sont acceptés.
@@ -71,6 +92,8 @@ impl Scheme {
                 Some(Scheme::Fountain)
             }
             "strands" | "reed_solomon" | "rs" => Some(Scheme::Strands),
+            "goldman" | "goldman2013" | "goldman_2013" => Some(Scheme::Goldman),
+            "grass" | "grass2015" | "grass_2015" => Some(Scheme::Grass),
             _ => None,
         }
     }
@@ -82,13 +105,13 @@ pub fn parse_scheme(name: &str) -> Result<Scheme> {
     if RETIRED_SCHEMES.contains(&key.as_str()) {
         return Err(DnaError::UnsupportedFormat(format!(
             "le schéma « {} » a été retiré : il ne mettait pas en œuvre ce que son nom \
-             annonçait. Schémas disponibles : fountain, strands.",
+             annonçait. Schémas disponibles : {SCHEME_NAMES}.",
             name.trim()
         )));
     }
     Scheme::from_name(name).ok_or_else(|| {
         DnaError::InvalidConfig(format!(
-            "schéma « {} » inconnu. Schémas disponibles : fountain, strands.",
+            "schéma « {} » inconnu. Schémas disponibles : {SCHEME_NAMES}.",
             name.trim()
         ))
     })
@@ -106,6 +129,10 @@ pub struct EncodeOptions {
     pub compression: Compression,
     /// Paramètres du schéma DNA Fountain. La redondance ne s'applique qu'à ce schéma.
     pub fountain: fountain::FountainParams,
+    /// Paramètres du schéma goldman.
+    pub goldman: goldman::GoldmanParams,
+    /// Paramètres du schéma grass.
+    pub grass: grass::GrassParams,
     /// Contraintes biochimiques que doit respecter chaque oligo.
     pub constraints: DnaConstraints,
 }
@@ -116,6 +143,8 @@ impl Default for EncodeOptions {
             scheme: Scheme::Fountain,
             compression: Compression::Auto,
             fountain: fountain::FountainParams::default(),
+            goldman: goldman::GoldmanParams::default(),
+            grass: grass::GrassParams::default(),
             constraints: DnaConstraints::default(),
         }
     }
@@ -130,12 +159,14 @@ impl EncodeOptions {
         }
     }
 
-    /// Longueur des oligos que ces options produisent, en nucléotides. Elle dépend de la parité
-    /// des oligos DNA Fountain : 4 nucléotides de plus par octet.
+    /// Longueur des oligos de données que ces options produisent, en nucléotides. Elle dépend de
+    /// la parité des oligos DNA Fountain : 4 nucléotides de plus par octet.
     pub fn oligo_length(&self) -> usize {
         match self.scheme {
             Scheme::Fountain => self.fountain.oligo_len(),
             Scheme::Strands => strands::STRAND_LEN,
+            Scheme::Goldman => goldman::STRAND_LEN,
+            Scheme::Grass => grass::STRAND_LEN,
         }
     }
 
@@ -145,6 +176,29 @@ impl EncodeOptions {
         match self.scheme {
             Scheme::Fountain => self.fountain.validate(),
             Scheme::Strands => Ok(()),
+            Scheme::Goldman => {
+                self.goldman.validate()?;
+                if !self.constraints.gc_is_default() && !self.constraints.gc_is_free() {
+                    return Err(DnaError::InvalidConfig(
+                        "le schéma goldman ne règle pas la teneur en GC de ses oligos (50 % en \
+                         moyenne, comme dans l'article) : laisser les bornes de GC par défaut, \
+                         ou les ouvrir de 0 à 1"
+                            .to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            Scheme::Grass => {
+                self.grass.validate()?;
+                if self.constraints.max_homopolymer < 3 {
+                    return Err(DnaError::InvalidConfig(
+                        "le schéma grass garantit des suites d'au plus 3 bases (les trimères de \
+                         l'article) : --max-homopolymer doit valoir 3 ou plus"
+                            .to_string(),
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -263,6 +317,7 @@ pub fn encode(data: &[u8], options: &EncodeOptions) -> Result<Encoded> {
                 chunks,
                 c: params.effective_c(chunks) as f32,
                 delta: params.delta as f32,
+                file_id: 0,
             };
             let (oligos, stats) =
                 fountain::encode(&body, &manifest, &params, &options.constraints)?;
@@ -277,9 +332,49 @@ pub fn encode(data: &[u8], options: &EncodeOptions) -> Result<Encoded> {
                 chunks: 0,
                 c: 0.0,
                 delta: 0.0,
+                file_id: 0,
             };
             let (oligos, stats) = strands::encode(&body, &options.constraints)?;
             (manifest, oligos, stats.data_strands, stats.nonces_tried)
+        }
+        Scheme::Goldman => {
+            let (oligos, stats) = goldman::encode(&body, &options.goldman)?;
+            let manifest = manifest::Manifest {
+                scheme: manifest::SchemeId::Goldman,
+                rs_parity: GOLDMAN_MANIFEST_PARITY,
+                compression,
+                body_len,
+                chunks: stats.segments,
+                c: 0.0,
+                delta: 0.0,
+                file_id: options.goldman.file_id,
+            };
+            // Pas de criblage : la conversion des trits en bases est une bijection, sans
+            // candidat de rechange.
+            (manifest, oligos, stats.segments, 0)
+        }
+        Scheme::Grass => {
+            let parity = u8::try_from(options.grass.parity)
+                .map_err(|_| DnaError::InvalidConfig("parité interne trop grande".to_string()))?;
+            let (oligos, stats) = grass::encode(&body, &options.grass, &options.constraints)?;
+            // La parité du manifeste est celle des brins : l'oligo manifeste fait 4 nt de plus
+            // par symbole de parité.
+            let manifest = manifest::Manifest {
+                scheme: manifest::SchemeId::Grass,
+                rs_parity: parity,
+                compression,
+                body_len,
+                chunks: 0,
+                c: 0.0,
+                delta: 0.0,
+                file_id: 0,
+            };
+            (
+                manifest,
+                oligos,
+                stats.data_strands as u32,
+                stats.nonces_tried,
+            )
         }
     };
 
@@ -380,6 +475,8 @@ where
     let scheme = match manifest.scheme {
         manifest::SchemeId::Fountain => Scheme::Fountain,
         manifest::SchemeId::Strands => Scheme::Strands,
+        manifest::SchemeId::Goldman => Scheme::Goldman,
+        manifest::SchemeId::Grass => Scheme::Grass,
     };
     if options.scheme.is_some_and(|forced| forced != scheme) {
         return Err(DnaError::UnsupportedFormat(format!(
@@ -404,6 +501,26 @@ where
         }
         Scheme::Strands => {
             let (body, inner) = strands::decode(&data_reads, body_len)?;
+            stats.corrected = inner.corrected;
+            stats.uncorrectable = inner.uncorrectable;
+            stats.units_used = inner.strands;
+            stats.contested = inner.contested;
+            stats.blocks_repaired = inner.blocks_repaired;
+            stats.strands_repaired = inner.strands_repaired;
+            (body, inner.reads_used)
+        }
+        Scheme::Goldman => {
+            let layout = goldman::SegmentLayout::from_manifest(manifest.chunks, manifest.body_len)?;
+            let (body, inner) = goldman::decode(&data_reads, &layout, manifest.file_id)?;
+            stats.corrected = inner.corrected;
+            stats.uncorrectable = inner.uncorrectable;
+            stats.units_used = inner.segments;
+            stats.contested = inner.contested;
+            (body, inner.reads_used)
+        }
+        Scheme::Grass => {
+            let (body, inner) =
+                grass::decode(&data_reads, body_len, usize::from(manifest.rs_parity))?;
             stats.corrected = inner.corrected;
             stats.uncorrectable = inner.uncorrectable;
             stats.units_used = inner.strands;
@@ -443,18 +560,37 @@ mod tests {
     }
 
     #[test]
-    fn decodes_from_bare_sequences_in_any_order_for_both_schemes() {
+    fn decodes_from_bare_sequences_in_any_order_for_every_scheme() {
         for scheme in Scheme::ALL {
             let data = b"donnees a archiver, sans aucune information exterieure. ".repeat(400);
-            let encoded = encode(&data, &EncodeOptions::for_scheme(scheme)).unwrap();
+            let options = EncodeOptions::for_scheme(scheme);
+            let encoded = encode(&data, &options).unwrap();
             assert_eq!(
                 encoded.stats.data_oligos + encoded.stats.manifest_copies,
                 encoded.oligos.len()
             );
             let constraints = DnaConstraints::default();
-            for oligo in &encoded.oligos {
-                assert_eq!(oligo.len(), oligo_length(scheme));
-                constraints.check(oligo).unwrap();
+            let copies = encoded.stats.manifest_copies;
+            // La parité d'un oligo manifeste suit celle du schéma.
+            let manifest_parity = match scheme {
+                Scheme::Fountain => options.fountain.rs_parity as u8,
+                Scheme::Strands => strands::INNER_PARITY as u8,
+                Scheme::Goldman => GOLDMAN_MANIFEST_PARITY,
+                Scheme::Grass => options.grass.parity as u8,
+            };
+            for (rank, oligo) in encoded.oligos.iter().enumerate() {
+                // Les manifestes sont en 2 bits par nucléotide ; les brins des deux derniers
+                // schémas portent autre chose (un trit ou un symbole de GF(47) par groupe).
+                let expected = if rank < copies {
+                    manifest::oligo_length(manifest_parity)
+                } else {
+                    oligo_length(scheme)
+                };
+                assert_eq!(oligo.len(), expected);
+                // Le schéma goldman ne garantit pas le GC de ses brins (50 % en moyenne).
+                if rank < copies || scheme.constrains_gc() {
+                    constraints.check(oligo).unwrap();
+                }
             }
 
             // Lectures nues, en ordre inverse, en minuscules, avec des blancs : uniquement des
@@ -576,6 +712,7 @@ mod tests {
             chunks,
             c: params.effective_c(chunks) as f32,
             delta: DEFAULT_DELTA as f32,
+            file_id: 0,
         };
         let rs = RsCode::new(fountain::DEFAULT_RS_PARITY).unwrap();
 
@@ -648,13 +785,21 @@ mod tests {
         }
         assert_eq!(Scheme::from_name("EZ2017"), Some(Scheme::Fountain));
         assert_eq!(Scheme::from_name("rs"), Some(Scheme::Strands));
-        assert!(Scheme::from_name("goldman").is_none());
+        assert_eq!(Scheme::from_name("Goldman2013"), Some(Scheme::Goldman));
+        assert_eq!(parse_scheme("goldman_2013").unwrap(), Scheme::Goldman);
+        assert_eq!(Scheme::from_name("Grass2015"), Some(Scheme::Grass));
+        assert!(Scheme::from_name("ultimate").is_none());
         for retired in RETIRED_SCHEMES {
             let err = parse_scheme(retired).unwrap_err();
             assert!(matches!(err, DnaError::UnsupportedFormat(_)));
+            assert!(err.to_string().contains(SCHEME_NAMES), "{err}");
         }
         let err = parse_scheme("choucroute").unwrap_err();
         assert!(matches!(err, DnaError::InvalidConfig(_)));
+        assert!(err.to_string().contains(SCHEME_NAMES), "{err}");
+        for scheme in Scheme::ALL {
+            assert!(scheme.constrains_gc() == (scheme != Scheme::Goldman));
+        }
     }
 
     #[test]
@@ -675,5 +820,102 @@ mod tests {
         options = EncodeOptions::for_scheme(Scheme::Strands);
         options.fountain.redundancy = 0.2; // sans effet pour ce schéma
         assert!(encode(b"x", &options).is_ok());
+        // Le schéma goldman n'a pas de prise sur le GC : des bornes particulières sont refusées,
+        // les bornes par défaut ou ouvertes sont admises.
+        options = EncodeOptions::for_scheme(Scheme::Goldman);
+        assert!(encode(b"x", &options).is_ok());
+        options.constraints = DnaConstraints::new(0.40, 0.60, 3);
+        assert!(matches!(
+            encode(b"x", &options),
+            Err(DnaError::InvalidConfig(_))
+        ));
+        options.constraints = DnaConstraints::new(0.0, 1.0, 3);
+        assert!(encode(b"x", &options).is_ok());
+        options.goldman.file_id = 9;
+        assert!(matches!(
+            encode(b"x", &options),
+            Err(DnaError::InvalidConfig(_))
+        ));
+        // Le schéma grass garantit des suites d'au plus 3 bases : pas moins.
+        options = EncodeOptions::for_scheme(Scheme::Grass);
+        assert!(encode(b"x", &options).is_ok());
+        options.constraints.max_homopolymer = 2;
+        assert!(matches!(
+            encode(b"x", &options),
+            Err(DnaError::InvalidConfig(_))
+        ));
+        options.constraints.max_homopolymer = 3;
+        options.grass.parity = 1;
+        assert!(matches!(
+            encode(b"x", &options),
+            Err(DnaError::InvalidConfig(_))
+        ));
+        options.grass.parity = 30;
+        assert!(encode(b"x", &options).is_ok());
+    }
+
+    /// Abîme une archive goldman par des substitutions tirées au hasard dans chaque lecture.
+    fn damaged_goldman_reads(archive: &Encoded, rate: f64, seed: u64) -> Vec<Vec<u8>> {
+        let mut rng = rng::SeededRng::new(seed, 19);
+        archive
+            .oligos
+            .iter()
+            .map(|oligo| {
+                oligo
+                    .iter()
+                    .map(|&base| {
+                        if rng.next_f64() < rate {
+                            crate::sequence::BASES[rng.below(4) as usize]
+                        } else {
+                            base
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_damaged_goldman_archive_never_yields_a_false_file() {
+        let data = pseudo_random(3_000, 23);
+        let options = EncodeOptions::for_scheme(Scheme::Goldman);
+        let archive = encode(&data, &options).unwrap();
+        assert_eq!(archive.stats.units, archive.stats.data_oligos as u32);
+        // À couverture 1, chaque base du message a quatre lectures : le vote traverse 0,1 % de
+        // substitutions par base. Au-delà, les lectures dont l'index est atteint sont perdues,
+        // et une égalité peut rester : l'échec est annoncé, jamais un fichier faux.
+        let recovered = (0..20u64)
+            .filter(|&seed| {
+                decode(
+                    damaged_goldman_reads(&archive, 0.001, seed),
+                    &DecodeOptions::default(),
+                )
+                .is_ok()
+            })
+            .count();
+        assert!(recovered >= 18, "{recovered} récupérations sur 20");
+
+        for rate in [0.002, 0.005, 0.01, 0.03, 0.08] {
+            let mut failures = Vec::new();
+            for seed in 0..20u64 {
+                let reads = damaged_goldman_reads(&archive, rate, seed);
+                match decode(&reads, &DecodeOptions::default()) {
+                    // L'empreinte SHA-256 de l'enveloppe ne laisse rien passer d'autre.
+                    Ok(decoded) => assert_eq!(decoded.data, data, "taux {rate}, graine {seed}"),
+                    Err(DnaError::InsufficientData(_)) | Err(DnaError::Integrity(_)) => {
+                        failures.push(seed)
+                    }
+                    // À ce taux, les manifestes eux-mêmes deviennent illisibles.
+                    Err(error @ DnaError::UnsupportedFormat(_)) if rate >= 0.08 => {
+                        assert!(error.to_string().contains("manifeste"), "{error}");
+                        failures.push(seed);
+                    }
+                    Err(error) => panic!("taux {rate}, graine {seed} : {error}"),
+                }
+            }
+            if rate >= 0.01 {
+                assert!(!failures.is_empty(), "taux {rate} : aucun échec annoncé");
+            }
+        }
     }
 }

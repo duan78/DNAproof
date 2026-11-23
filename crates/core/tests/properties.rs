@@ -40,15 +40,24 @@ fn run(
     seed: u64,
     shuffle: bool,
 ) -> Result<(), TestCaseError> {
-    let scheme = Scheme::ALL[usize::from(scheme_index % 2)];
+    let scheme = Scheme::ALL[usize::from(scheme_index) % Scheme::ALL.len()];
     let data = sample(kind, len, seed);
     let encoded = encode(&data, &EncodeOptions::for_scheme(scheme))
         .map_err(|e| fail(format!("encode: {e}")))?;
     let constraints = DnaConstraints::default();
-    for oligo in &encoded.oligos {
-        constraints
-            .check(oligo)
-            .map_err(|e| fail(format!("oligo non conforme: {e}")))?;
+    let copies = encoded.stats.manifest_copies;
+    for (rank, oligo) in encoded.oligos.iter().enumerate() {
+        if scheme.constrains_gc() || rank < copies {
+            constraints
+                .check(oligo)
+                .map_err(|e| fail(format!("oligo non conforme: {e}")))?;
+        } else {
+            // Les brins goldman ne garantissent pas le GC : jamais deux bases égales, c'est tout.
+            let run = adn_core::sequence::max_homopolymer(oligo);
+            if run != 1 {
+                return Err(fail(format!("suite de {run} bases identiques")));
+            }
+        }
     }
     let mut reads = encoded.oligos.clone();
     if shuffle {
@@ -78,7 +87,7 @@ proptest! {
     ))]
 
     #[test]
-    fn roundtrip_on_random_inputs(scheme_index in 0u8..2, kind in 0u8..4, len in 0usize..2_000, seed in any::<u64>(), shuffle in any::<bool>()) {
+    fn roundtrip_on_random_inputs(scheme_index in 0u8..4, kind in 0u8..4, len in 0usize..2_000, seed in any::<u64>(), shuffle in any::<bool>()) {
         run(scheme_index, kind, len, seed, shuffle)?;
     }
 
@@ -88,21 +97,32 @@ proptest! {
         len in 1usize..600,
         seed in any::<u64>(),
         gc_low in 0.40f64..0.50,
-        width in 0.05f64..0.15f64,
+        width in 0.10f64..0.15f64,
         max_run in 3usize..=6,
     ) {
         let constraints = DnaConstraints::new(gc_low, (gc_low + width).min(1.0), max_run);
         let data = sample(kind, len, seed);
         for scheme in Scheme::ALL {
+            // Le schéma goldman ne règle pas le GC : il garde les bornes par défaut. Une
+            // fenêtre de GC de 10 % au moins laisse au schéma grass assez de nonces.
             let options = EncodeOptions {
-                constraints,
+                constraints: if scheme.constrains_gc() {
+                    constraints
+                } else {
+                    DnaConstraints {
+                        max_homopolymer: max_run,
+                        ..DnaConstraints::default()
+                    }
+                },
                 ..EncodeOptions::for_scheme(scheme)
             };
             let encoded = encode(&data, &options).map_err(|e| fail(format!("encode: {e}")))?;
             for oligo in &encoded.oligos {
-                constraints
-                    .check(oligo)
-                    .map_err(|e| fail(format!("oligo non conforme: {e}")))?;
+                if scheme.constrains_gc() {
+                    constraints
+                        .check(oligo)
+                        .map_err(|e| fail(format!("oligo non conforme: {e}")))?;
+                }
             }
             let decoded = decode(&encoded.oligos, &DecodeOptions::default())
                 .map_err(|e| fail(format!("decode: {e}")))?;

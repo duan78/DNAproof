@@ -1,4 +1,4 @@
-//! Tests d'intégration : aller-retour complet par des fichiers FASTA, pour les deux schémas.
+//! Tests d'intégration : aller-retour complet par des fichiers FASTA, pour les quatre schémas.
 //!
 //! Ces tests reprennent les scénarios de l'audit : en-têtes remplacés par ceux d'un séquenceur,
 //! ordre des lectures mélangé, fins de ligne CRLF, minuscules, lignes vides.
@@ -91,7 +91,7 @@ fn sequences(records: &[fasta::Record]) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn roundtrip_through_fasta_for_both_schemes_and_many_inputs() {
+fn roundtrip_through_fasta_for_every_scheme_and_many_inputs() {
     let constraints = DnaConstraints::default();
     for scheme in Scheme::ALL {
         for kind in 0..4 {
@@ -100,8 +100,14 @@ fn roundtrip_through_fasta_for_both_schemes_and_many_inputs() {
                 let encoded = encode(&data, &EncodeOptions::for_scheme(scheme)).unwrap();
                 let records = write_read(&with_headers(&encoded.oligos, scheme));
                 assert_eq!(records.len(), encoded.oligos.len());
-                for record in &records {
-                    constraints.check(&record.sequence).unwrap();
+                for (rank, record) in records.iter().enumerate() {
+                    if scheme.constrains_gc() || rank < encoded.stats.manifest_copies {
+                        constraints.check(&record.sequence).unwrap();
+                    } else {
+                        // Les brins goldman ne garantissent pas le GC, mais jamais deux bases
+                        // égales.
+                        assert_eq!(adn_core::sequence::max_homopolymer(&record.sequence), 1);
+                    }
                 }
                 let decoded = decode(sequences(&records), &DecodeOptions::default()).unwrap();
                 assert_eq!(decoded.data, data, "{scheme:?} kind={kind} len={len}");
@@ -201,10 +207,12 @@ fn stats_describe_the_archive_honestly() {
         assert_eq!(stats.nucleotides, nucleotides);
         let expected = 100_000.0 * 8.0 / nucleotides as f64;
         assert!((stats.bits_per_nucleotide - expected).abs() < 1e-9);
-        // Densité physique : toujours inférieure à 2 bits par nucléotide.
+        // Densité physique : toujours inférieure à 2 bits par nucléotide, et supérieure au
+        // tiers : le recouvrement quadruple de goldman est le plus coûteux.
         assert!(
-            stats.bits_per_nucleotide > 0.5 && stats.bits_per_nucleotide < 2.0,
-            "{scheme:?}"
+            stats.bits_per_nucleotide > 0.3 && stats.bits_per_nucleotide < 2.0,
+            "{scheme:?} : {}",
+            stats.bits_per_nucleotide
         );
     }
 }
@@ -235,22 +243,37 @@ fn legacy_v1_archives_are_recognized_and_refused() {
 }
 
 #[test]
-fn strict_constraints_are_honoured_by_both_schemes() {
-    // Suites d'au plus deux bases : une séquence aléatoire sur 12 500 suffit. Les deux schémas
-    // trouvent leurs candidats, et rien ne sort qui ne respecte pas les contraintes.
-    let constraints = DnaConstraints::new(0.45, 0.55, 2);
+fn strict_constraints_are_honoured_by_every_scheme() {
+    // Suites d'au plus deux bases : une séquence aléatoire sur 12 500 suffit. Les schémas
+    // trouvent leurs candidats, et rien ne sort qui ne respecte pas les contraintes. Le schéma
+    // grass, lui, ne promet que trois bases (ses trimères) : deux lui sont refusées.
     let data = sample(0, 300);
     for scheme in Scheme::ALL {
         let options = EncodeOptions {
-            constraints,
+            constraints: DnaConstraints::new(0.45, 0.55, 2),
             ..EncodeOptions::for_scheme(scheme)
         };
+        if scheme == Scheme::Grass {
+            let err = encode(&data, &options).unwrap_err();
+            assert!(matches!(err, adn_core::DnaError::InvalidConfig(_)), "{err}");
+            continue;
+        }
         let encoded = encode(&data, &options).unwrap();
         for oligo in &encoded.oligos {
-            constraints.check(oligo).unwrap();
+            constraints_of(scheme).check(oligo).unwrap();
         }
         let decoded = decode(&encoded.oligos, &DecodeOptions::default()).unwrap();
         assert_eq!(decoded.data, data, "{scheme:?}");
+    }
+}
+
+/// Contraintes qui s'appliquent aux oligos d'un schéma : les mêmes pour tous, hors le GC du
+/// schéma goldman, qu'il ne règle pas.
+fn constraints_of(scheme: Scheme) -> DnaConstraints {
+    if scheme.constrains_gc() {
+        DnaConstraints::new(0.45, 0.55, 2)
+    } else {
+        DnaConstraints::new(0.0, 1.0, 2)
     }
 }
 
@@ -265,8 +288,18 @@ fn unsatisfiable_constraints_are_refused_up_front() {
             ..EncodeOptions::for_scheme(scheme)
         };
         let err = encode(b"x", &options).unwrap_err();
-        assert!(matches!(err, adn_core::DnaError::Encoding(_)), "{err}");
-        assert!(err.to_string().contains("trop strictes"), "{err}");
+        // Le schéma goldman ne règle pas le GC : des bornes particulières lui sont refusées.
+        let expected = match scheme {
+            Scheme::Goldman => adn_core::DnaError::InvalidConfig(String::new()),
+            _ => adn_core::DnaError::Encoding(String::new()),
+        };
+        assert!(
+            std::mem::discriminant(&err) == std::mem::discriminant(&expected),
+            "{scheme:?} : {err}"
+        );
+        if scheme != Scheme::Goldman {
+            assert!(err.to_string().contains("trop strictes"), "{err}");
+        }
     }
     assert!(started.elapsed().as_secs() < 5);
 }
@@ -274,10 +307,24 @@ fn unsatisfiable_constraints_are_refused_up_front() {
 #[test]
 fn every_oligo_has_the_length_of_its_scheme() {
     for scheme in Scheme::ALL {
-        let encoded = encode(b"x", &EncodeOptions::for_scheme(scheme)).unwrap();
-        let expected = adn_core::codec::oligo_length(scheme);
-        assert!(encoded.oligos.iter().all(|oligo| oligo.len() == expected));
-        assert_eq!(encoded.stats.manifest_copies, 12);
+        let options = EncodeOptions::for_scheme(scheme);
+        let encoded = encode(b"x", &options).unwrap();
+        // Les brins de données ont la longueur du schéma ; les manifestes, celle d'un oligo en
+        // 2 bits par nucléotide, avec la parité du schéma.
+        let copies = encoded.stats.manifest_copies;
+        assert_eq!(copies, 12);
+        assert!(encoded.oligos[copies..]
+            .iter()
+            .all(|oligo| oligo.len() == options.oligo_length()));
+        let manifest_parity = match scheme {
+            Scheme::Fountain => options.fountain.rs_parity as u8,
+            Scheme::Strands => 4,
+            Scheme::Goldman => 2,
+            Scheme::Grass => options.grass.parity as u8,
+        };
+        assert!(encoded.oligos[..copies]
+            .iter()
+            .all(|oligo| oligo.len() == (36 + usize::from(manifest_parity)) * 4));
     }
 }
 

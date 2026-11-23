@@ -65,7 +65,7 @@ Encode un fichier. Requête `multipart/form-data` :
 | Champ | Requis | Contenu |
 |-------|--------|---------|
 | `file` | oui | le fichier à archiver ; un seul par requête |
-| `scheme` | non | `fountain` (défaut) ou `strands` |
+| `scheme` | non | `fountain` (défaut), `strands`, `goldman` ou `grass` |
 | `compression` | non | `auto` (défaut), `none`, `lz4` ou `zstd` |
 | `redundancy` | non | marge de perte de DNA Fountain : un nombre de 1 à 100, `1.1` par défaut |
 
@@ -143,7 +143,7 @@ L'état du serveur :
   "started_at": "2026-11-23T15:04:46.1722536Z",
   "uptime_seconds": 33.4869678,
   "limits": {"upload_bytes": 26214400, "concurrent_jobs": 2, "retention_minutes": 1440},
-  "schemes": ["fountain", "strands"],
+  "schemes": ["fountain", "strands", "goldman", "grass"],
   "jobs": {"queued": 0, "running": 0, "complete": 2, "failed": 0},
   "database": {"enabled": true, "archives": 1, "oligos": 127}
 }
@@ -191,7 +191,7 @@ aucun manifeste lisible, empreinte inattendue, corps incohérent…
 |-------|---------|
 | `scheme`, `compression` | tels qu'ils ont été appliqués |
 | `original_bytes`, `body_bytes` | taille du fichier d'origine, puis de l'enveloppe (compressée ou non) |
-| `units` | blocs (DNA Fountain) ou brins de données (`strands`) |
+| `units` | blocs (DNA Fountain), fenêtres (`goldman`) ou brins de données (`strands`, `grass`) |
 | `oligos`, `data_oligos`, `manifest_copies` | nombre d'oligos, au total, de données et de manifestes |
 | `oligo_length_nt` | longueur d'un oligo |
 | `nucleotides` | total |
@@ -213,8 +213,8 @@ aucun manifeste lisible, empreinte inattendue, corps incohérent…
 | `manifest_candidates`, `manifest_agreeing` | lectures ressemblant à un manifeste, et manifestes identiques retenus |
 | `corrected`, `uncorrectable` | lectures corrigées par la parité, lectures irrécupérables |
 | `units_used` | gouttes ou brins utilisés |
-| `contested` | lectures en désaccord sur un même brin (`strands`) |
-| `blocks_repaired`, `strands_repaired` | blocs et brins rétablis par le code externe (`strands`) |
+| `contested` | lectures en désaccord sur un même brin (`strands`, `grass`), ou bases du message mises à égalité (`goldman`) |
+| `blocks_repaired`, `strands_repaired` | blocs et brins rétablis par le code externe (`strands`, `grass`) |
 | `retried_without_corrected_reads` | le second passage, sans les lectures corrigées, a été nécessaire (DNA Fountain) |
 | `file_bytes`, `decode_seconds` | taille du fichier, durée |
 

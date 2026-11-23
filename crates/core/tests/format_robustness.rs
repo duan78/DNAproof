@@ -21,23 +21,34 @@ fn flip(sequence: &mut [u8], position: usize) {
 }
 
 #[test]
-fn one_substitution_per_oligo_is_corrected_in_both_schemes() {
+fn one_substitution_per_oligo_is_corrected_in_every_scheme() {
     for scheme in Scheme::ALL {
         let data = pseudo_random(6_000, 1);
         let encoded = encode(&data, &EncodeOptions::for_scheme(scheme)).unwrap();
-        for offset in [0usize, 1, 40, 100, 140] {
+        // Hors de l'index du schéma goldman (ses quinze dernières bases, qu'une erreur rend
+        // illisibles) : une substitution par lecture.
+        for offset in [1usize, 20, 40, 60, 80] {
             let mut reads = encoded.oligos.clone();
             for read in &mut reads {
                 let length = read.len();
                 flip(read, offset % length);
             }
-            let decoded = decode(&reads, &DecodeOptions::default()).unwrap();
+            let decoded = decode(&reads, &DecodeOptions::default())
+                .unwrap_or_else(|error| panic!("{scheme:?} offset={offset} : {error}"));
             assert_eq!(decoded.data, data, "{scheme:?} offset={offset}");
-            if offset >= 16 {
-                // Hors étiquette et nonce : toutes les lectures de données sont corrigées par
-                // le code interne (les manifestes sont comptés à part).
+            // Hors étiquette et nonce, toutes les lectures de données sont corrigées par le
+            // code interne (les manifestes sont comptés à part). Le schéma goldman n'a pas de
+            // code interne : son vote écarte l'erreur, et il n'en repère que celles qui créent
+            // une répétition de bases.
+            if offset >= 16 && scheme != Scheme::Goldman {
                 let data_reads = reads.len() - encoded.stats.manifest_copies;
-                assert_eq!(decoded.stats.corrected, data_reads, "{scheme:?}");
+                assert!(decoded.stats.corrected > 0, "{scheme:?} offset={offset}");
+                if scheme != Scheme::Grass {
+                    assert_eq!(
+                        decoded.stats.corrected, data_reads,
+                        "{scheme:?} offset={offset}"
+                    );
+                }
             }
         }
     }

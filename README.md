@@ -71,8 +71,8 @@ rassembler dans une seule boîte à outils — et dire où chacune en est.
 |---------|--------|--------|:------:|
 | Encodage | DNA Fountain : gouttes LT sans adresse, criblage | Erlich et Zielinski, 2017 | ✅ livré |
 | Encodage | Brins codés : index dans l'ADN, deux niveaux de Reed-Solomon | architecture de Grass et al., 2015 | ✅ livré |
-| Encodage | Code ternaire sans répétition, parité XOR | Goldman et al., 2013 | 📋 planifié |
-| Encodage | Reed-Solomon sur le corps à 47 éléments | Grass et al., 2015 | 📋 planifié |
+| Encodage | Code ternaire de Huffman, jamais deux bases identiques, fenêtres recouvrantes | Goldman et al., 2013 | ✅ livré |
+| Encodage | Reed-Solomon sur le corps à 47 éléments, un symbole par trimère | Grass et al., 2015 | ✅ livré |
 | Encodage | Code à hash, résistant aux insertions et suppressions (HEDGES) | Press et al., 2020 | 📋 planifié |
 | Codes correcteurs | Reed-Solomon GF(256), interne et externe | — | ✅ livré |
 | Codes correcteurs | Code LT, marge de perte certifiée | Luby, 2002 | ✅ livré |
@@ -100,7 +100,8 @@ rassembler dans une seule boîte à outils — et dire où chacune en est.
    FASTA, ni nom de fichier, ni paramètre extérieur. Le schéma, la compression et les paramètres
    de codage sont portés par des oligos « manifestes ».
 3. **Les oligos respectent les contraintes biochimiques.** Par défaut 45 à 55 % de GC, et jamais
-   plus de trois bases identiques de suite.
+   plus de trois bases identiques de suite. Une exception, fidèle à son article : le schéma
+   `goldman` garantit l'absence de bases répétées, pas la teneur en GC de ses brins.
 
 ### Les schémas d'encodage
 
@@ -108,26 +109,29 @@ rassembler dans une seule boîte à outils — et dire où chacune en est.
 |--------|------|:------:|
 | DNA Fountain — `fountain` | gouttes sans adresse, réglables par la marge de perte | ✅ livré |
 | Brins codés — `strands` | brins adressés, protégés par deux niveaux de Reed-Solomon | ✅ livré |
-| Goldman 2013 | code ternaire, base toujours différente de la précédente, parité XOR | 📋 planifié |
-| Grass 2015 | Reed-Solomon sur le corps à 47 éléments, un symbole par groupe de bases | 📋 planifié |
+| Goldman 2013 — `goldman` | code ternaire de Huffman, jamais deux bases identiques de suite, chaque base lue dans quatre brins | ✅ livré |
+| Grass 2015 — `grass` | Reed-Solomon sur le corps à 47 éléments, un symbole par groupe de trois bases | ✅ livré |
 | HEDGES — Press et al., 2020 | code à hash, résistant aux insertions et aux suppressions | 📋 planifié |
 
-Les deux schémas livrés, comparés :
+Les quatre schémas, comparés :
 
-| | `fountain` — DNA Fountain | `strands` — brins codés |
-|---|---|---|
-| Principe | gouttes sans ordre ni adresse : l'archive se reconstitue à partir de n'importe quelles lectures | brins adressés, protégés par deux niveaux de Reed-Solomon |
-| Oligo | 152 nt | 160 nt |
-| Redondance | réglable : la *marge de perte* `r` garantit la lecture après la perte aléatoire de `1 − 1/r` des oligos | 32 brins de parité par bloc de 223 |
-| Limite du format | ≈ 137 Gio | ≈ 420 Mio |
-| Densité (fichier incompressible) | 1,41 bit/nt (marge 1,1) ; 1,04 (marge 1,5) | 1,31 bit/nt |
-| Encodage de 1 Mio | 0,19 s | 0,04 s |
-| Bien pour | les archives qui doivent traverser des pertes ; les très gros fichiers | les petits fichiers ; un encodage rapide |
+| | `fountain` — DNA Fountain | `strands` — brins codés | `goldman` — Goldman 2013 | `grass` — Grass 2015 |
+|---|---|---|---|---|
+| Principe | gouttes sans ordre ni adresse : l'archive se reconstitue à partir de n'importe quelles lectures | brins adressés, protégés par deux niveaux de Reed-Solomon | un trit par base, jamais deux bases identiques ; chaque base du message lue dans quatre brins, et votée | symboles de GF(47) écrits en trois bases, protégés par deux niveaux de Reed-Solomon |
+| Oligo | 152 nt | 160 nt | 117 nt | 117 nt |
+| Redondance | réglable : la *marge de perte* `r` garantit la lecture après la perte aléatoire de `1 − 1/r` des oligos | 32 brins de parité par bloc de 223 | recouvrement ×4 | 14 symboles de parité par brin ; 92 brins de parité par bloc de 713 |
+| Limite du format | ≈ 137 Gio | ≈ 420 Mio | ≈ 2,6 Mo | ≈ 55 Mo |
+| Densité (fichier incompressible) | 1,41 bit/nt (marge 1,1) ; 1,04 (marge 1,5) | 1,31 bit/nt | 0,34 bit/nt | 0,77 bit/nt ; 1,12 (parité 6) |
+| Traverse (mesuré) | 10 % de perte à marge 1,1 | 2 % de substitution | 2 % de substitution à couverture 20 ; 5 % de perte | 5 % de substitution à couverture 3 ; 10 % de perte |
+| Encodage de 1 Mio | 0,22 s | 0,05 s | 0,11 s | 0,27 s |
+| Bien pour | les archives qui doivent traverser des pertes ; les très gros fichiers | les petits fichiers ; un encodage rapide | le schéma de l'article, tel quel ; plusieurs archives dans un même tube | un canal à substitutions denses |
 
 **Comment choisir.** `fountain` est le schéma par défaut : c'est celui de l'article de référence,
 et sa marge de perte se règle. En dessous de quelques centaines de kilooctets, `strands` produit
 beaucoup moins d'oligos : un fichier de 75 octets donne 49 brins, contre 141 oligos avec
-`fountain`. Au-delà de 420 Mio, seul `fountain` convient.
+`fountain`. Au-delà de 420 Mio, seul `fountain` convient. `goldman` et `grass` sont les schémas
+des articles, pour qui les veut tels quels : le premier n'a pas de code correcteur et demande de
+la couverture ; le second est le plus résistant aux substitutions, et le moins dense.
 
 ### Corrections d'erreurs
 
@@ -137,18 +141,23 @@ beaucoup moins d'oligos : un fichier de 75 octets donne 49 brins, contre 141 oli
 | Code LT + épluchage | entre les oligos `fountain` | la marge de perte déclarée, certifiée à l'encodage | ✅ livré, mesuré |
 | Reed-Solomon interne | chaque brin `strands` (4 octets) | 2 octets erronés | ✅ livré, mesuré |
 | Reed-Solomon externe | chaque bloc de 255 brins `strands` (32 brins de parité) | tout motif `2 × erreurs + brins manquants ≤ 32` | ✅ livré, mesuré |
-| Code concaténé | `strands` : Reed-Solomon interne sous Reed-Solomon externe | les deux codes à la fois | ✅ livré |
+| Vote par base | entre les quatre brins `goldman` qui couvrent chaque base du message | jusqu'à trois lectures fausses sur quatre, par base | ✅ livré, mesuré |
+| Reed-Solomon sur GF(47) | chaque brin `grass` (14 symboles de parité par défaut) | 7 symboles erronés, ou 14 effacements — un trimère hors du jeu des 47 en est un | ✅ livré, mesuré |
+| Reed-Solomon sur GF(47²) | chaque bloc de 713 brins `grass` (92 brins de parité) | tout motif `2 × erreurs + brins manquants ≤ 92` | ✅ livré, mesuré |
+| Code concaténé | `strands` et `grass` : un code interne par brin sous un code externe par bloc | les deux codes à la fois | ✅ livré |
 | Code convolutif + Viterbi | code interne (K = 7, rendement ½), décodage par treillis | erreurs dispersées, avec des décisions souples | 📋 planifié |
 | LDPC | code externe à rendement élevé, propagation de croyances | une fraction d'erreurs aléatoires proche de la capacité du canal | 📋 planifié |
 | Entrelacement | avant Reed-Solomon | transforme une salve en erreurs dispersées | 📋 planifié |
 
-Les mesures de tolérance (670 tirages de simulation, erreurs réelles injectées) sont dans
+Les mesures de tolérance (mille tirages de simulation, erreurs réelles injectées) sont dans
 [les schémas d'encodage](docs/encoding_schemes.md#tolérance-aux-erreurs).
 
 ### Traitement des données
 
 - **Compression** : zstd s'il rapporte, sinon aucune (LZ4 au choix) ; le choix est inscrit dans
   l'archive, le décodeur n'a rien à deviner
+- **Code de Huffman ternaire** (`goldman`) : construit à partir des octets du fichier et porté par
+  l'archive ; sans autre compression, il met 1,32 Mio de texte dans 141 000 brins
 - **Manifeste** : 12 à 64 oligos porteurs des paramètres, votés à la majorité entre lectures
 - **Criblage biochimique** : chaque oligo produit respecte les contraintes, sans exception
 - **Marge certifiée** : l'encodeur tient un décodeur à jour et ne livre l'archive que si elle reste
@@ -188,7 +197,8 @@ Les mesures de tolérance (670 tirages de simulation, erreurs réelles injectée
 ```
 DNAproof/
 ├── crates/
-│   ├── core/         # format v2, schémas fountain et strands, enveloppe, FASTA, vérification
+│   ├── core/         # format v2, quatre schémas (fountain, strands, goldman, grass),
+│   │                 # Reed-Solomon sur GF(256), GF(47) et GF(47²), enveloppe, FASTA
 │   ├── cli/          # ligne de commande (clap)
 │   ├── web/          # serveur local (actix-web + tera), tâches, téléchargements
 │   ├── storage/      # miroir des archives : SQLite ou PostgreSQL (sqlx)
@@ -239,11 +249,20 @@ Fichier d'entrée
 ajoutées jusqu'à ce que l'archive survive à 256 tirages de perte aléatoire au niveau de la marge
 demandée.
 
+Les deux schémas des articles ont leur propre chemin, à partir de la même enveloppe :
+
+- `goldman` écrit les octets en trits (code de Huffman ternaire), puis en bases sans répétition ;
+  il relit l'ADN par fenêtres de 100 nt décalées de 25 et en fait un brin indexé de 117 nt par
+  fenêtre.
+- `grass` écrit les octets en symboles de GF(47), les protège par un Reed-Solomon sur GF(47)
+  brin par brin, puis par un Reed-Solomon sur GF(47²) bloc par bloc de 713 brins, et pose chaque
+  symbole en trois bases.
+
 ### Pipeline de décodage (en sens inverse)
 
 ```
 Lectures FASTA → normalisation (majuscules, blancs) → manifeste (vote entre lectures)
-→ corps selon le schéma (épluchage LT, ou code interne puis externe)
+→ corps selon le schéma (épluchage LT ; code interne puis externe ; vote entre fenêtres recouvrantes)
 → contrôle CRC-32 → décompression → contrôle SHA-256 → fichier original
 ```
 
@@ -293,9 +312,10 @@ Les options principales :
 
 | Option | Rôle |
 |--------|------|
-| `-a, --algorithm <fountain\|strands>` | schéma d'encodage (`fountain` par défaut) |
+| `-a, --algorithm <fountain\|strands\|goldman\|grass>` | schéma d'encodage (`fountain` par défaut) |
 | `-r, --redundancy <r>` | marge de perte de DNA Fountain (`1.1` par défaut) |
-| `--rs-parity <1-32>` | octets de parité par oligo, pour DNA Fountain (`2`) : à relever devant des erreurs de synthèse |
+| `--rs-parity <1-32>` | octets de parité Reed-Solomon par oligo pour DNA Fountain (`2`), ou symboles par brin pour `grass` (`14`, nombre pair de 2 à 30) : à relever devant des erreurs de synthèse |
+| `--file-id <0-8>` | identifiant de fichier pour `goldman` : sépare plusieurs archives mélangées dans un même tube |
 | `-c, --compression <auto\|none\|lz4\|zstd>` | compression du fichier avant encodage |
 | `--gc-min`, `--gc-max`, `--max-homopolymer` | contraintes biochimiques (0.45, 0.55, 3) |
 | `--json` | sortie en JSON, pour un script |
@@ -403,6 +423,30 @@ Le test du dépôt PostgreSQL est ignoré par défaut : il lui faut un serveur e
   correction de chaque bloc (un brin faux compte comme deux brins manquants)
 - **Limite** : l'index tient sur 24 bits, d'où le corps maximal de 420 Mio
 
+### Goldman et al., 2013
+
+- **Brin** : une base de repère, 100 nt de message, un index de 15 trits (identifiant de fichier,
+  adresse, trit de parité), une seconde base de repère = 117 nt ; jamais deux bases identiques
+- **Code ternaire** : Huffman construit sur les octets du fichier, porté par l'archive ; à défaut,
+  code fixe de 5 ou 6 trits
+- **Fenêtres** : l'ADN est relu par fenêtres de 100 nt décalées de 25 ; chaque base du message
+  apparaît dans quatre brins, une fenêtre sur deux est prise en sens inverse
+- **Décodage** : une voix par brin qui couvre une base ; une répétition de bases, impossible dans
+  un brin conçu, écarte la lecture du vote à cet endroit
+- **Limite** : l'adresse tient sur 12 trits, d'où le corps maximal de 2,6 Mo ; pas de code
+  correcteur, donc pas de GC garanti par brin, et une couverture nécessaire
+
+### Grass et al., 2015
+
+- **Brin** : index de 4 symboles + nonce + charge utile de 20 symboles + parité interne de
+  14 symboles = 39 symboles de GF(47), soit 117 nt (un trimère par symbole)
+- **Trimères** : 47 des 64 trimères possibles, choisis pour qu'aucune suite de plus de trois
+  bases identiques n'apparaisse ; un trimère hors du jeu est un effacement
+- **Code interne** : Reed-Solomon sur GF(47) par brin, corrige 7 symboles erronés par lecture
+- **Code externe** : Reed-Solomon sur GF(47²), 92 brins de parité par bloc de 713 (le bloc de
+  l'article), colonne par colonne
+- **Limite** : l'index tient sur 47⁴, d'où le corps maximal de 55 Mo
+
 ### Enveloppe
 
 | décalage | taille | contenu |
@@ -429,25 +473,25 @@ cargo test --workspace --locked
 
 | Catégorie | Nombre | Ce qui est vérifié |
 |-----------|:------:|--------------------|
-| Cœur, unitaires | 102 | enveloppe, manifeste, gouttes, brins, Reed-Solomon, contraintes, générateur |
-| Aller-retour format | 10 | `encode → FASTA → decode == original` pour les deux schémas, en-têtes renommés ou perdus, CRLF et minuscules, contraintes strictes |
+| Cœur, unitaires | 142 | enveloppe, manifeste, gouttes, brins, fenêtres goldman, brins grass, Reed-Solomon sur GF(256), GF(47) et GF(47²), contraintes, générateur |
+| Aller-retour format | 10 | `encode → FASTA → decode == original` pour les quatre schémas, en-têtes renommés ou perdus, CRLF et minuscules, contraintes strictes |
 | Robustesse | 8 | substitutions corrigées, marge honorée puis refusée au-delà, brins manquants réparés, manifestes abîmés, altérations au hasard : jamais un fichier faux |
 | Propriétés (proptest) | 2 | aller-retour sur entrées au hasard (schéma × type × taille × mélange) et à contraintes aléatoires |
 | Simulation, bout en bout | 12 | encodage → canal d'erreurs → décodage, 12 scénarios de canal |
 | Simulation, unitaires | 9 | modèle du canal, statistiques |
 | Stockage | 13 | SQLite et PostgreSQL : lots, transactions, reprise après redémarrage |
-| CLI | 16 | les cinq sous-commandes exécutées comme par un utilisateur |
+| CLI | 17 | les cinq sous-commandes exécutées comme par un utilisateur, dont deux archives goldman mélangées |
 | Serveur web | 38 | pages, API, refus, en-têtes, reprise, hôtes |
 | Exemple du README | 1 | le code montré plus haut, tel quel |
 | Exemple de la bibliothèque | 1 | le doc-test de `adn-core` |
-| **Total** | **212** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
+| **Total** | **253** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
 
 ### Propriétés clés
 
 - **Tous les aller-retours sont stricts** : `assert_eq!(original, decoded)` — aucun raccourci du
   genre « vérifier que ce n'est pas vide »
 - **Les contraintes sont vérifiées oligo par oligo**, pas échantillonnées
-- **Un fichier faux n'a jamais été produit** : sur les 670 tirages de la matrice de tolérance et
+- **Un fichier faux n'a jamais été produit** : sur les mille tirages de la matrice de tolérance et
   les tests d'altération au hasard, chaque contenu reconstitué était exact, et chaque archive trop
   abîmée a été refusée avec un message
 - **Le canal de simulation est branché sur le décodeur** : les tests de bout en bout vérifient la
@@ -463,12 +507,21 @@ Fichiers incompressibles — le détail, les grandes tailles et la mémoire dans
 
 | | 64 Kio | 256 Kio | 1 Mio |
 |---|---|---|---|
-| Encodage `fountain` (marge 1,1) | 32 ms | 70 ms | 187 ms |
-| Encodage `strands` | 33 ms | 34 ms | 41 ms |
-| Décodage `fountain`, archive intacte | 3,8 ms | 13,7 ms | 63 ms |
-| Décodage `strands`, archive intacte | 2,8 ms | 9,0 ms | 31 ms |
-| Décodage `fountain`, 0,1 % de substitution, 3 lectures par oligo | 7,0 ms | 26 ms | 113 ms |
-| Décodage `strands`, 0,5 % de substitution | 4,7 ms | 12 ms | 45 ms |
+| Encodage `fountain` (marge 1,1) | 40 ms | 80 ms | 215 ms |
+| Encodage `strands` | 39 ms | 39 ms | 45 ms |
+| Encodage `goldman` | 31 ms | 47 ms | 114 ms |
+| Encodage `grass` | 68 ms | 103 ms | 267 ms |
+| Décodage `fountain`, archive intacte | 4,3 ms | 13 ms | 65 ms |
+| Décodage `strands`, archive intacte | 3,0 ms | 10 ms | 31 ms |
+| Décodage `goldman`, archive intacte | 19 ms | 76 ms | 292 ms |
+| Décodage `grass`, archive intacte | 11 ms | 23 ms | 75 ms |
+| Décodage `fountain`, 0,1 % de substitution, 3 lectures par oligo | 7,4 ms | 25 ms | 113 ms |
+| Décodage `strands`, 0,5 % de substitution | 5,3 ms | 14 ms | 46 ms |
+| Décodage `goldman`, 0,1 % de substitution, 3 lectures par brin | 45 ms | 179 ms | 693 ms |
+| Décodage `grass`, 0,5 % de substitution | 14 ms | 33 ms | 113 ms |
+
+Le schéma `goldman` produit quatre fois plus de brins que les autres pour un même fichier, et
+ses lectures y vont de trois : c'est le nombre de lectures qui fait son coût.
 
 En grand : 32 Mio s'encodent en 6,9 s avec `fountain` (1,6 Go de mémoire), en 0,9 s avec
 `strands` (0,4 Go). Sur un fichier texte, la compression compte davantage que le schéma : 1,32 Mio
@@ -486,21 +539,26 @@ hasard.
 - **Erreurs de lecture** : avec sa parité par défaut (deux octets), DNA Fountain ne corrige qu'une
   erreur par oligo : dès 0,1 % de substitution par nucléotide, il faut plusieurs lectures par
   oligo, et une vingtaine à 1 %. `strands` corrige deux octets par brin, et jusqu'à 32 brins
-  manquants sur 255
+  manquants sur 255. `grass` va le plus loin : 5 % de substitution, à couverture 3
+- **Le schéma `goldman` n'a pas de code correcteur** : chaque base doit être lue dans l'un de ses
+  quatre brins, et une erreur dans l'index d'un brin le fait perdre. Il demande une couverture de
+  5, et ne garantit pas la teneur en GC de ses brins
 - **Insertions et suppressions** : une lecture qui change de longueur est écartée. À 0,5 %
   d'insertion et de suppression, `fountain` ne s'en tire qu'à marge large, et pas à tous les
-  coups ; `strands` jamais
+  coups ; `strands`, `goldman` et `grass` jamais
 - **Erreurs de synthèse** : portées par toutes les lectures d'un oligo, elles ne se compensent
-  pas : il faut plus de parité par oligo (`--rs-parity 8`)
+  pas : il faut plus de parité par oligo (`--rs-parity 8`). `grass` les traverse jusqu'à 1 % ;
+  `goldman` les perd dès qu'elles touchent un index
 - **Petits fichiers** : DNA Fountain leur donne beaucoup de redondance (141 oligos pour 75
-  octets) ; `strands` est bien plus économe
-- **Fichiers de plus de 420 Mio** : seul `fountain` convient, et l'encodage demande environ
-  cinquante fois la taille du fichier en mémoire
+  octets), et `grass` un bloc entier de parité (103 brins) ; `strands` est le plus économe
+- **Taille** : `goldman` s'arrête à 2,6 Mo, `grass` à 55 Mo, `strands` à 420 Mio ; au-delà, seul
+  `fountain` convient, et son encodage demande environ cinquante fois la taille du fichier en
+  mémoire
 - **Le serveur web n'expose ni la marge ni la parité** : passer par la ligne de commande pour un
   canal difficile
-- **Tout n'est pas encore reconstruit** : Goldman 2013, Grass 2015, le code convolutif et Viterbi,
-  le LDPC, l'entrelacement et le format Illumina sont au programme, pas encore dans le code —
-  voir [la couverture de la littérature](#-couverture-de-la-littérature)
+- **Tout n'est pas encore reconstruit** : le code convolutif et Viterbi, le LDPC, l'entrelacement,
+  HEDGES et le format Illumina sont au programme, pas encore dans le code — voir
+  [la couverture de la littérature](#-couverture-de-la-littérature)
 
 ---
 
@@ -509,11 +567,12 @@ hasard.
 ### État actuel : v0.2.0
 
 - ✅ Format v2 autosuffisant : manifeste embarqué, empreinte SHA-256 vérifiée à chaque décodage
-- ✅ Deux schémas (`fountain`, `strands`) à aller-retour strict, contraintes biochimiques garanties
+- ✅ Quatre schémas (`fountain`, `strands`, `goldman`, `grass`) à aller-retour strict, dont les
+  deux schémas pionniers de la littérature, suivis article par article
 - ✅ Marge de perte certifiée à l'encodage ; décodeurs durcis (vote par goutte, code externe par
   bloc)
 - ✅ Simulation réaliste (synthèse, séquençage, perte, couverture) branchée sur le décodeur
-- ✅ Matrice de tolérance mesurée : 670 tirages, aucun fichier faux
+- ✅ Matrice de tolérance mesurée : mille tirages, aucun fichier faux
 - ✅ CLI complète (`encode`, `decode`, `verify`, `simulate`, `visualize`, `--json`)
 - ✅ Serveur web avec suivi de tâches, reprise après redémarrage, base SQLite ou PostgreSQL
 - ✅ CI au vert : format, Clippy, tests (Ubuntu et Windows), MSRV 1.94, PostgreSQL, audit des
@@ -526,8 +585,8 @@ hasard.
 
 La direction du projet : couvrir, pour de vrai, ce que la littérature a proposé de meilleur.
 
-1. **Les schémas publiés** — Goldman 2013 (code ternaire) et Grass 2015 (Reed-Solomon sur
-   GF(47)), conformes aux articles, avec mesure de tolérance.
+1. ✅ **Les schémas publiés** — Goldman 2013 (code ternaire) et Grass 2015 (Reed-Solomon sur
+   GF(47)), suivis article par article, avec mesure de tolérance.
 2. **Le format des bibliothèques Illumina** — adaptateurs P5/P7, index i5/i7, multiplexage et
    démultiplexage tolérants aux erreurs.
 3. **Les familles de codes correcteurs** — code convolutif et décodage de Viterbi, LDPC à
@@ -583,7 +642,7 @@ git push origin feature/votre-fonction
 - Grass R. N., Heckel R., Puddu M., Paunescu D., Stark W. J. — *Robust Chemical Preservation of
   Digital Information on DNA in Silica with Error-Correcting Codes*, Angewandte Chemie
   International Edition 54:2552–2555, 2015.
-  [doi:10.1002/anie.201411578](https://onlinelibrary.wiley.com/doi/10.1002/anie.201411578)
+  [doi:10.1002/anie.201411378](https://onlinelibrary.wiley.com/doi/10.1002/anie.201411378)
 - Goldman N. et al. — *Towards practical, high-capacity, low-maintenance information storage in
   synthesised DNA*, Nature 494:77–80, 2013.
   [doi:10.1038/nature11875](https://www.nature.com/articles/nature11875)

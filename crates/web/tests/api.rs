@@ -437,7 +437,10 @@ async fn a_file_round_trips_through_the_server() {
     assert_eq!(stats["jobs"]["complete"], 2);
     assert_eq!(stats["limits"]["upload_bytes"], 25 * 1024 * 1024);
     assert_eq!(stats["database"]["enabled"], false);
-    assert_eq!(stats["schemes"], json!(["fountain", "strands"]));
+    assert_eq!(
+        stats["schemes"],
+        json!(["fountain", "strands", "goldman", "grass"])
+    );
 
     let health = get(&app, "/health").await;
     assert_eq!(health.status, StatusCode::OK);
@@ -483,6 +486,36 @@ async fn encoding_options_are_honoured() {
     assert_eq!(job["stats"]["compression"], "Lz4");
     assert_eq!(job["stats"]["oligo_length_nt"], 152);
 
+    // Les deux schémas de la littérature : brins de 117 nt, relus après téléchargement.
+    for scheme in ["goldman", "grass"] {
+        let id = encode(
+            &app,
+            "lire.txt",
+            &b"litterature".repeat(40),
+            &[("scheme", scheme)],
+        )
+        .await;
+        let job = finished(&app, &id).await;
+        assert_eq!(job["status"], "complete", "{job}");
+        assert_eq!(job["stats"]["scheme"], scheme);
+        assert_eq!(job["stats"]["oligo_length_nt"], 117);
+        let archive = get(&app, &format!("/download/fasta/{id}")).await;
+        assert_eq!(archive.status, StatusCode::OK, "{scheme}");
+        let form = Form::new().file("file", "lire.txt.fasta", archive.body.as_ref());
+        let accepted = post(&app, "/api/decode", form).await;
+        assert_eq!(
+            accepted.status,
+            StatusCode::ACCEPTED,
+            "{scheme} : {}",
+            accepted.text()
+        );
+        let decode_id = accepted.json()["job_id"].as_str().unwrap().to_string();
+        let decoded = finished(&app, &decode_id).await;
+        assert_eq!(decoded["status"], "complete", "{decoded}");
+        assert_eq!(decoded["sha256"], job["sha256"], "{scheme}");
+        assert_eq!(decoded["stats"]["scheme"], scheme);
+    }
+
     // Les deux archives se décodent sans que le schéma soit indiqué.
     for (id, content) in [
         (&strands, vec![0u8, 255, 7, 7, 7, 42]),
@@ -521,9 +554,9 @@ async fn bad_requests_are_refused_before_a_job_exists() {
         (
             Form::new()
                 .file("file", "a.txt", b"x")
-                .field("scheme", "goldman"),
+                .field("scheme", "ultimate"),
             StatusCode::BAD_REQUEST,
-            "goldman",
+            "ultimate",
         ),
         (
             Form::new()

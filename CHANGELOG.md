@@ -23,6 +23,18 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
   choisi automatiquement pour les petites archives. Au décodage, les lectures reçues sans erreur
   votent par goutte, et la résolution se fait d'abord avec les seules gouttes certaines : une
   lecture fausse que la parité croit exacte ne peut pas corrompre l'archive.
+- **Schéma `goldman`** (Goldman et al., 2013) : code de Huffman ternaire, jamais deux bases
+  identiques de suite, fenêtres de 100 nt décalées de 25 — chaque base du message est lue dans
+  quatre brins de 117 nt, et le vote la restitue. Brins de 117 nt, environ 2,6 Mo au plus,
+  identifiant de fichier (`--file-id`) pour mélanger plusieurs archives dans un même tube. Comme
+  dans l'article, la teneur en GC n'y est pas garantie par brin.
+- **Schéma `grass`** (Grass et al., 2015) : Reed-Solomon sur le corps à 47 éléments, un symbole
+  par groupe de trois bases choisi pour qu'aucune suite de plus de trois bases n'apparaisse.
+  Brins de 117 nt, parité interne réglable (`--rs-parity`, 14 symboles par défaut : sept symboles
+  erronés par lecture), code externe d'un Reed-Solomon sur GF(47²) par bloc de 713 brins : 92
+  brins de parité pour 621 de données.
+- **Reed-Solomon sur GF(47) et GF(47²)** : code d'évaluation générique, décodage de Gao, et
+  rétablissement des effacements partagés entre plusieurs colonnes.
 - **`adn verify`** : contrôle une archive (contraintes, manifeste, décodabilité) sans rien écrire.
 - **`adn simulate`** : dégrade une archive (perte, substitutions, insertions, suppressions,
   couverture) et tente de la relire.
@@ -48,21 +60,26 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
 - **Version minimale de Rust : 1.94** (précédemment 1.87, non vérifiée). Elle est imposée par
   `sqlx 0.9`, qui corrige une vulnérabilité de la bibliothèque SQLite embarquée.
 - `Cargo.lock` est suivi dans le dépôt ; la construction d'une image s'y tient (`--locked`).
-- Les noms de schéma acceptés sont `fountain` et `strands`.
+- Les noms de schéma acceptés sont `fountain`, `strands`, `goldman` et `grass` (`goldman2013` et
+  `grass2015` sont des alias).
 - La compression automatique utilise zstd (LZ4 reste au choix).
 - La limite d'envoi du serveur web passe de 100 Mio à 25 Mio.
 - Les résultats du serveur web sont conservés 24 heures par défaut (une heure auparavant, et
   seulement au moment d'une nouvelle requête).
+- `--rs-parity` vaut, par défaut, la parité du schéma : deux octets pour DNA Fountain, quatorze
+  symboles pour grass. `adn verify` ne reproche pas au schéma goldman sa teneur en GC.
+
 ### Retiré
 
-- Les schémas `goldman`, `goldman2013`, `grass2015`, `adaptive`, `base3` et `ultimate` : ils
-  n'implémentaient pas ce que leur nom annonçait. Les noms sont refusés avec un message explicite.
-- Les codecs LDPC et convolutif (Viterbi), « Reed-Solomon renforcé avec entrelacement », la
-  compression Huffman et les séquences Illumina. Le LDPC ne corrigeait aucune erreur, le code
-  convolutif n'était jamais testé avec des erreurs injectées, les séquences Illumina étaient
-  fictives ; la compression Huffman est remplacée par zstd et LZ4. Goldman 2013, Grass 2015, le
-  code convolutif, le LDPC, l'entrelacement, HEDGES et le format Illumina sont au programme du
-  projet, pour être reconstruits pour de vrai (voir la feuille de route du README).
+- Les schémas `adaptive`, `base3` et `ultimate`, et les anciens `goldman` et `grass2015` : ils
+  n'implémentaient pas ce que leur nom annonçait. Les schémas `goldman` et `grass` sont réécrits à
+  neuf d'après les articles (voir *Ajouté*) ; les trois autres noms sont refusés avec un message
+  explicite.
+- Les codecs LDPC et convolutif (Viterbi), « Reed-Solomon renforcé avec entrelacement » et les
+  séquences Illumina. Le LDPC ne corrigeait aucune erreur, le code convolutif n'était jamais
+  testé avec des erreurs injectées, les séquences Illumina étaient fictives. Le code convolutif,
+  le LDPC, l'entrelacement, HEDGES et le format Illumina sont au programme du projet, pour être
+  reconstruits pour de vrai (voir la feuille de route du README).
 - La lecture des archives de la version 0.1.
 - `POST /api/encode/stream` : il ne transmettait rien en flux, et contournait les contrôles.
 - CORS : l'API ne se lit que depuis les pages du serveur.

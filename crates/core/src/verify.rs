@@ -60,6 +60,36 @@ pub fn pool_report(records: &[crate::fasta::Record], constraints: &DnaConstraint
     inspect(records, constraints).0
 }
 
+/// Bilan d'un ensemble d'oligos d'un schéma donné.
+///
+/// Le schéma goldman ne garantit pas le GC de ses brins : la contrainte de GC n'y compte pas,
+/// seule celle des suites identiques. Les manifestes, eux, la respectent comme partout.
+pub fn pool_report_of_scheme(
+    records: &[crate::fasta::Record],
+    constraints: &DnaConstraints,
+    scheme: Option<crate::Scheme>,
+) -> PoolReport {
+    // Seul le schéma goldman ne garantit pas le GC de ses brins.
+    if scheme.is_none_or(crate::Scheme::constrains_gc) {
+        return pool_report(records, constraints);
+    }
+    let per_oligo: Vec<OligoReport> = records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            let sequence = &record.sequence;
+            OligoReport {
+                index,
+                length: sequence.len(),
+                gc: gc_content(sequence),
+                max_homopolymer: max_homopolymer(sequence),
+                compliant: max_homopolymer(sequence) <= constraints.max_homopolymer,
+            }
+        })
+        .collect();
+    aggregate(&per_oligo, *constraints)
+}
+
 /// Agrège des statistiques d'oligos déjà calculées. Les longueisses nulles (séquences vides)
 /// comptent comme oligos, mais n'entrent pas dans les bornes de longueur.
 fn aggregate(per_oligo: &[OligoReport], constraints: DnaConstraints) -> PoolReport {

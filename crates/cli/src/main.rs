@@ -132,6 +132,12 @@ enum SchemeArg {
     Fountain,
     /// Brins codés, Reed-Solomon interne et externe
     Strands,
+    /// Code ternaire sans base répétée, fenêtres recouvrantes (Goldman et al., 2013)
+    #[value(alias = "goldman2013", alias = "goldman_2013")]
+    Goldman,
+    /// Reed-Solomon sur GF(47), symboles en trimères (Grass et al., 2015)
+    #[value(alias = "grass2015", alias = "grass_2015")]
+    Grass,
 }
 
 impl SchemeArg {
@@ -139,6 +145,8 @@ impl SchemeArg {
         match self {
             SchemeArg::Fountain => adn_core::Scheme::Fountain,
             SchemeArg::Strands => adn_core::Scheme::Strands,
+            SchemeArg::Goldman => adn_core::Scheme::Goldman,
+            SchemeArg::Grass => adn_core::Scheme::Grass,
         }
     }
 }
@@ -197,11 +205,18 @@ struct CodecArgs {
     #[arg(short, long, default_value_t = 1.1, value_name = ">=1")]
     redundancy: f64,
 
-    /// Octets de parité Reed-Solomon par oligo (DNA Fountain) : un oligo résiste à la moitié
-    /// d'octets erronés, et s'allonge de 4 nt par octet. Utile devant des erreurs de synthèse,
-    /// que toutes les lectures d'un oligo portent à l'identique
-    #[arg(long, default_value_t = 2, value_name = "1-32", value_parser = clap::value_parser!(u8).range(1..=32))]
-    rs_parity: u8,
+    /// Parité Reed-Solomon par oligo : octets pour DNA Fountain (2 par défaut, un oligo résiste
+    /// à la moitié d'octets erronés et s'allonge de 4 nt par octet), symboles pour grass (14 par
+    /// défaut, un nombre pair de 2 à 30 : un brin résiste à la moitié de symboles erronés).
+    /// Utile devant des erreurs de synthèse, que toutes les lectures d'un oligo portent à
+    /// l'identique
+    #[arg(long, value_name = "1-32", value_parser = clap::value_parser!(u8))]
+    rs_parity: Option<u8>,
+
+    /// Identifiant du fichier, de 0 à 8 (goldman) : sépare plusieurs archives mélangées dans un
+    /// même tube, le décodage n'en retient qu'une
+    #[arg(long, value_name = "0-8", value_parser = clap::value_parser!(u8))]
+    file_id: Option<u8>,
 
     /// Compression du fichier avant encodage
     #[arg(short = 'c', long, value_enum, default_value_t = CompressionArg::Auto)]
@@ -213,19 +228,51 @@ struct CodecArgs {
 
 impl CodecArgs {
     fn options(&self) -> anyhow::Result<adn_core::EncodeOptions> {
+        use adn_core::codec::{fountain, goldman, grass};
+        let scheme = self.algorithm.scheme();
+        // La parité défaut est celle du schéma : deux octets pour DNA Fountain, quatorze
+        // symboles pour grass.
+        let (rs_parity, accepted) = match scheme {
+            adn_core::Scheme::Fountain => (
+                self.rs_parity.unwrap_or(fountain::DEFAULT_RS_PARITY as u8),
+                1..=32,
+            ),
+            adn_core::Scheme::Grass => (
+                self.rs_parity.unwrap_or(grass::DEFAULT_PARITY as u8),
+                grass::MIN_PARITY as u8..=grass::MAX_PARITY as u8,
+            ),
+            _ => (0, 0..=0),
+        };
+        if self.rs_parity.is_some() && !accepted.contains(&rs_parity) {
+            anyhow::bail!(
+                "--rs-parity doit valoir de {} à {} pour le schéma {}",
+                accepted.start(),
+                accepted.end(),
+                scheme.name()
+            );
+        }
         let compression = match self.compression {
             CompressionArg::Auto => adn_core::Compression::Auto,
             CompressionArg::None => adn_core::Compression::None,
             CompressionArg::Lz4 => adn_core::Compression::Lz4,
             CompressionArg::Zstd => adn_core::Compression::Zstd,
         };
+        if self.file_id.is_some() && scheme != adn_core::Scheme::Goldman {
+            anyhow::bail!("--file-id ne s'applique qu'au schéma goldman");
+        }
         let options = adn_core::EncodeOptions {
-            scheme: self.algorithm.scheme(),
+            scheme,
             compression,
-            fountain: adn_core::codec::fountain::FountainParams {
+            fountain: fountain::FountainParams {
                 redundancy: self.redundancy,
-                rs_parity: usize::from(self.rs_parity),
+                rs_parity: usize::from(rs_parity),
                 ..adn_core::codec::fountain::FountainParams::default()
+            },
+            goldman: goldman::GoldmanParams {
+                file_id: self.file_id.unwrap_or(0),
+            },
+            grass: grass::GrassParams {
+                parity: usize::from(rs_parity),
             },
             constraints: self.limits.constraints()?,
         };

@@ -84,6 +84,30 @@ pub fn normalize(raw: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Complément d'une base standard (majuscule).
+#[inline]
+pub fn complement(base: u8) -> u8 {
+    match base {
+        b'A' => b'T',
+        b'C' => b'G',
+        b'G' => b'C',
+        _ => b'A',
+    }
+}
+
+/// Complément inversé : la séquence lue de l'autre bout, sur le brin complémentaire.
+pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
+    seq.iter().rev().map(|&base| complement(base)).collect()
+}
+
+/// Complément inversé, en place.
+pub fn reverse_complement_in_place(seq: &mut [u8]) {
+    seq.reverse();
+    for base in seq.iter_mut() {
+        *base = complement(*base);
+    }
+}
+
 /// Convertit des octets en ADN : 2 bits par nucléotide, poids fort en tête.
 pub fn bytes_to_dna(bytes: &[u8], out: &mut Vec<u8>) {
     out.reserve(bytes.len() * 4);
@@ -156,6 +180,22 @@ mod tests {
         assert_eq!(gc_count(b"ACGT"), 2);
         assert_eq!(gc_content(b""), 0.0);
         assert!((gc_content(b"GGCC") - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reverse_complement_reads_the_other_strand() {
+        assert_eq!(reverse_complement(b"ACGTTGCA"), b"TGCAACGT");
+        assert_eq!(reverse_complement(b""), b"");
+        assert_eq!(
+            reverse_complement(&reverse_complement(b"GGATTACA")),
+            b"GGATTACA"
+        );
+        let mut seq = b"ACGT".to_vec();
+        reverse_complement_in_place(&mut seq);
+        assert_eq!(seq, b"ACGT");
+        let mut seq = b"AAG".to_vec();
+        reverse_complement_in_place(&mut seq);
+        assert_eq!(seq, b"CTT");
     }
 
     #[test]
