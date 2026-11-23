@@ -1,18 +1,31 @@
-# Configuration du serveur ADN Storage
+# Configuration du serveur `adn-web`.
+#
+# Toute clé omise prend sa valeur par défaut, et chaque clé se surcharge par une variable
+# d'environnement `ADN_<SECTION>__<CLÉ>` : par exemple `ADN_SERVER__PORT=9000` ou
+# `ADN_DATABASE__ENABLED=true`. Une clé inconnue arrête le démarrage.
+# Les chemins sont relatifs au dossier d'où le serveur est lancé (`crates/web`).
 
 [server]
-host = "127.0.0.1"
+host = "127.0.0.1"           # boucle locale ; "0.0.0.0" pour publier derrière un proxy
+# Noms acceptés en plus de la boucle locale, quand un proxy inverse préserve l'en-tête Host :
+# allowed_hosts = ["adn.example.org"]
 port = 8080
-workers = 4
-upload_limit = 104857600  # 100MB
+workers = 2                  # threads qui servent les requêtes
+upload_limit = 26214400      # 25 Mio, en octets
+max_concurrent_jobs = 2      # encodages et décodages menés de front
+job_retention_minutes = 1440 # durée de conservation des résultats ; 0 pour ne jamais les effacer
+storage_dir = "./uploads"    # dossier des résultats
 static_files = "./static"
 templates = "./templates"
 
 [database]
+# Un miroir des archives, par archive : il permet de retrouver les résultats après un
+# redémarrage. Facultatif : sans lui, les archives ne vivent que sur ce serveur.
 enabled = false
-url = "adn_storage.db"
+type = "sqlite"              # "sqlite" ou "postgres"
+url = "adn_storage.db"       # chemin d'un fichier SQLite, ou URL postgres://utilisateur:mot@hôte/base
 max_connections = 5
 
 [logging]
-level = "info"
-format = "compact"
+level = "info"               # trace, debug, info, warn ou error ; `RUST_LOG` l'emporte
+format = "compact"           # "compact" ou "json"

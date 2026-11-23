@@ -1,73 +1,41 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2 class="text-2xl font-bold text-gray-800 mb-6">📥 Décoder depuis ADN</h2>
+<h2>Décoder une archive</h2>
 
-<p class="text-gray-600 mb-6">Upload a FASTA file containing DNA sequences to decode.</p>
+<form id="form">
+    <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choisir une archive FASTA à décoder">
+        <input type="file" id="file" accept=".fasta,.fa,.fas,.txt" hidden>
+        <span class="dropzone-icon" aria-hidden="true">🧬</span>
+        <span id="file-label">Glissez une archive FASTA ici, ou cliquez pour la choisir</span>
+        <span class="muted">Jusqu'à {{ upload_limit_label }}. Plusieurs lectures d'une même archive peuvent être copiées dans un seul fichier.</span>
+    </div>
 
-<div class="upload-zone rounded-xl p-12 text-center cursor-pointer mb-6">
-    <input type="file" id="fastaInput" accept=".fasta,.fa" class="hidden" />
-    <div class="text-6xl mb-4">🧬</div>
-    <h3 class="text-xl font-bold text-gray-700 mb-2">Upload FASTA File</h3>
-    <p class="text-gray-500">Drag & drop or click to select</p>
+    <fieldset class="options">
+        <legend>Vérification</legend>
+        <label for="expected">Empreinte SHA-256 attendue du fichier (facultatif)</label>
+        <input type="text" id="expected" name="expected_sha256" spellcheck="false" autocomplete="off" placeholder="64 caractères hexadécimaux">
+        <span class="muted">Le schéma et la compression sont lus dans l'archive elle-même. Le fichier n'est rendu que si son empreinte correspond.</span>
+    </fieldset>
+
+    <button type="submit" class="button" id="submit" disabled>Décoder</button>
+</form>
+
+<div class="message" id="message" role="alert" hidden></div>
+
+<div class="progress" id="progress" hidden>
+    <div class="progress-bar" role="progressbar" aria-label="Progression"></div>
+    <p id="stage"></p>
 </div>
 
-<button id="decodeBtn" disabled class="btn-primary w-full py-4 rounded-xl text-white font-bold text-lg disabled:opacity-50">
-    📥 Décoder
-</button>
-
-<div id="decodeResults" class="hidden mt-6">
-    <h3 class="text-xl font-bold text-gray-800 mb-4">✅ Décodage terminé!</h3>
-    <button id="downloadBtn" class="btn-primary w-full py-3 rounded-lg text-white font-medium">
-        💾 Télécharger fichier
-    </button>
-</div>
+<section class="result" id="result" hidden>
+    <h3>Fichier restitué</h3>
+    <dl class="stats" id="stats"></dl>
+    <p class="hash"><span>SHA-256 du fichier, vérifié</span><code id="sha256"></code></p>
+    <a class="button" id="download">Télécharger le fichier</a>
+</section>
 {% endblock %}
 
 {% block scripts %}
-<script>
-const dropZone = document.querySelector('.upload-zone');
-const fastaInput = document.getElementById('fastaInput');
-const decodeBtn = document.getElementById('decodeBtn');
-
-let selectedFile = null;
-
-dropZone.addEventListener('click', () => fastaInput.click());
-
-fastaInput.addEventListener('change', (e) => {
-    if (e.target.files.length) {
-        selectedFile = e.target.files[0];
-        decodeBtn.disabled = false;
-    }
-});
-
-decodeBtn.addEventListener('click', async () => {
-    if (!selectedFile) return;
-    
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    
-    decodeBtn.disabled = true;
-    
-    try {
-        const response = await fetch('/api/decode', {
-            method: 'POST',
-            body: formData
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            document.getElementById('decodeResults').classList.remove('hidden');
-            notificationSystem.success('Décodage terminé', 'Votre fichier a été décodé avec succès');
-        } else {
-            notificationSystem.error('Erreur de décodage', result.error || 'Erreur inconnue');
-        }
-    } catch (error) {
-        notificationSystem.error('Erreur de connexion', error.message);
-    } finally {
-        decodeBtn.disabled = false;
-    }
-});
-</script>
+<script>ADN.initDecode();</script>
 {% endblock %}

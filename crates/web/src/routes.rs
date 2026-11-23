@@ -1,669 +1,768 @@
-//! Routes de l'API web
+//! Pages et API du serveur.
+//!
+//! L'interface et l'API sont servies par la même origine : il n'y a pas de CORS, et aucune
+//! autre page que celle-ci ne peut donc lire les résultats depuis un navigateur.
 
+use actix_files::NamedFile;
 use actix_multipart::Multipart;
-use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
-use chrono::Utc;
+use actix_web::http::{header, StatusCode};
+use actix_web::{delete, get, post, web, HttpResponse, Responder};
+use actix_web::{CustomizeResponder, Either};
+use adn_core::{Compression, EncodeOptions};
 use futures::StreamExt;
-use tracing::{error, info, warn};
+use jiff::Timestamp;
+use serde::Serialize;
+use serde_json::json;
+use std::fmt::Write as _;
+use std::sync::Arc;
+use tracing::{error, warn};
 use uuid::Uuid;
 
-use crate::models::{
-    AppState, DecodeRequest, DecodeResponse, EncodeRequest, EncodeResponse, ErrorResponse,
-    JobStatus, JOB_RETENTION,
-};
+use crate::jobs::{self, JobKind, JobRegistry, JobStatus, Removal};
+use crate::pipeline::{self, DecodeRequest, EncodeRequest, UNNAMED_FILE};
 
-pub mod streaming_routes;
-pub use streaming_routes::api_encode_stream;
+/// Longueur maximale d'un nom de fichier proposé.
+const FILE_NAME_LIMIT: usize = 120;
 
-/// Dossier de stockage des résultats (FASTA encodés, fichiers décodés)
-const UPLOAD_DIR: &str = "uploads";
+/// Taille maximale d'un champ texte du formulaire (schéma, compression…).
+const FIELD_LIMIT: usize = 16 * 1024;
 
-/// Valide qu'un job_id est un UUID bien formé.
-///
-/// Les job_ids sont insérés dans des chemins de fichiers et des en-têtes
-/// HTTP : sans cette validation, un job_id comme `..%2F..%2Fx` permettait
-/// une traversée de chemin (lecture de fichiers arbitraires) ou une
-/// injection d'en-tête (panic du handler via insert_header).
-fn is_valid_job_id(job_id: &str) -> bool {
-    Uuid::parse_str(job_id).is_ok()
+/// Tâches en attente ou en cours admises, par emplacement de travail. Au-delà, le serveur
+/// refuse la requête plutôt que d'accumuler des fichiers en mémoire.
+const QUEUE_PER_WORKER: usize = 8;
+
+/// Limites appliquées par le serveur.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Taille maximale des fichiers acceptés, en octets.
+    pub upload_bytes: usize,
+    /// Tâches menées de front.
+    pub concurrent_jobs: usize,
+    /// Durée de conservation des résultats, en minutes ; `0` pour ne jamais les effacer.
+    pub retention_minutes: u64,
 }
 
-/// Route pour la page d'accueil
+/// État partagé par tous les gestionnaires de requêtes.
+pub struct AppState {
+    pub jobs: Arc<JobRegistry>,
+    pub tera: tera::Tera,
+    pub limits: Limits,
+    pub started: Timestamp,
+}
+
+/// Réponse à une création de tâche.
+#[derive(Serialize)]
+struct Accepted {
+    job_id: String,
+    status: JobStatus,
+    /// Où suivre la tâche.
+    location: String,
+}
+
+// Pages
+// -----
+
 #[get("/")]
-pub async fn index(data: web::Data<AppState>) -> impl Responder {
-    let mut ctx = tera::Context::new();
-    ctx.insert("title", "ADN Data Storage");
-    ctx.insert("version", env!("CARGO_PKG_VERSION"));
-
-    match data.tera.render("index.html", &ctx) {
-        Ok(rendered) => HttpResponse::Ok().content_type("text/html").body(rendered),
-        Err(e) => {
-            error!("Erreur de rendu du template: {}", e);
-            HttpResponse::InternalServerError()
-                .json(ErrorResponse::new("Erreur de rendu".to_string(), 500))
-        }
-    }
+pub async fn index(app: web::Data<AppState>) -> HttpResponse {
+    page(&app, "index.html", "index", "ADN Data Storage")
 }
 
-/// Route pour la page d'encodage
 #[get("/encode")]
-pub async fn encode_page(data: web::Data<AppState>) -> impl Responder {
-    let mut ctx = tera::Context::new();
-    ctx.insert("title", "Encoder en ADN");
-
-    match data.tera.render("encode.html", &ctx) {
-        Ok(rendered) => HttpResponse::Ok().content_type("text/html").body(rendered),
-        Err(e) => {
-            error!("Erreur de rendu du template encode: {}", e);
-            HttpResponse::InternalServerError()
-                .json(ErrorResponse::new("Erreur de rendu".to_string(), 500))
-        }
-    }
+pub async fn encode_page(app: web::Data<AppState>) -> HttpResponse {
+    page(&app, "encode.html", "encode", "Encoder un fichier")
 }
 
-/// Route pour la page de décodage
 #[get("/decode")]
-pub async fn decode_page(data: web::Data<AppState>) -> impl Responder {
-    let mut ctx = tera::Context::new();
-    ctx.insert("title", "Décoder depuis ADN");
+pub async fn decode_page(app: web::Data<AppState>) -> HttpResponse {
+    page(&app, "decode.html", "decode", "Décoder une archive")
+}
 
-    match data.tera.render("decode.html", &ctx) {
-        Ok(rendered) => HttpResponse::Ok().content_type("text/html").body(rendered),
-        Err(e) => {
-            error!("Erreur de rendu du template decode: {}", e);
-            HttpResponse::InternalServerError()
-                .json(ErrorResponse::new("Erreur de rendu".to_string(), 500))
+fn page(app: &AppState, template: &str, name: &str, title: &str) -> HttpResponse {
+    let limit = app.limits.upload_bytes;
+    let retention = app.limits.retention_minutes;
+    let retention_label = if retention == 0 {
+        "jusqu'à leur suppression".to_string()
+    } else {
+        // Une durée ronde s'écrit en heures, le reste en minutes.
+        let (value, unit) = if retention.is_multiple_of(60) {
+            (retention / 60, "heures")
+        } else {
+            (retention, "minutes")
+        };
+        format!("pendant {value} {unit}")
+    };
+    let database_enabled = app.jobs.database().is_some();
+    let redundancy_default = pipeline::default_redundancy();
+    let mut context = tera::Context::new();
+    context.insert("title", title);
+    context.insert("page", name);
+    context.insert("version", env!("CARGO_PKG_VERSION"));
+    context.insert("upload_limit_bytes", &limit);
+    context.insert("upload_limit_label", &human_bytes(limit as u64));
+    context.insert("retention_label", &retention_label);
+    context.insert("database_enabled", &database_enabled);
+    context.insert("redundancy_default", &redundancy_default);
+    context.insert("redundancy_min", &pipeline::MIN_REDUNDANCY);
+    context.insert("redundancy_max", &pipeline::MAX_REDUNDANCY);
+    match app.tera.render(template, &context) {
+        Ok(html) => HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body(html),
+        Err(error) => {
+            error!("Impossible de rendre {template} : {error}");
+            HttpResponse::InternalServerError().json(json!({ "error": "page indisponible" }))
         }
     }
 }
 
-/// Route pour l'API d'encodage
+// Encodage
+// --------
+
 #[post("/api/encode")]
-pub async fn api_encode(
-    data: web::Data<AppState>,
-    mut payload: Multipart,
-    _req: HttpRequest,
-) -> impl Responder {
-    info!("Nouvelle requête d'encodage");
-
-    let job_id = Uuid::new_v4().to_string();
-
-    // Créer un nouveau job (et évacuer les anciens jobs terminés)
-    {
-        let mut jobs = data.jobs.write().await;
-        evict_expired_jobs_with_lock(&mut jobs).await;
-        jobs.insert(job_id.clone(), crate::models::JobState::new(job_id.clone()));
-
-        if let Some(job) = jobs.get_mut(&job_id) {
-            job.status = JobStatus::Processing;
-            job.updated_at = Utc::now();
-        }
-    }
-
-    // Traiter le fichier uploadé AVANT de spawner (Multipart n'est pas Send).
-    // Les champs texte du formulaire (algorithm, redundancy, compression,
-    // chunk_size) alimentent la configuration de l'encodeur.
-    let upload_limit = data.config.server.upload_limit;
-    let mut request = EncodeRequest::default();
-    let mut file_data: Option<Vec<u8>> = None;
-
-    while let Some(item) = payload.next().await {
-        let mut field = match item {
-            Ok(f) => f,
-            Err(e) => {
-                error!("Erreur de champ: {}", e);
-                return HttpResponse::BadRequest()
-                    .json(ErrorResponse::new(format!("Erreur de champ: {}", e), 400));
-            }
-        };
-
-        let Some(content_disposition) = field.content_disposition() else {
-            continue;
-        };
-
-        // Extraire les infos de disposition en owned pour libérer l'emprunt
-        // de `field` avant d'itérer son contenu.
-        let (filename, field_name) = (
-            content_disposition.get_filename().map(str::to_string),
-            content_disposition.get_name().unwrap_or("").to_string(),
-        );
-
-        if let Some(filename) = filename {
-            let mut buf: Vec<u8> = Vec::new();
-            while let Some(chunk_result) = field.next().await {
-                let chunk = match chunk_result {
-                    Ok(d) => d,
-                    Err(e) => {
-                        error!("Erreur de chunk: {}", e);
-                        return HttpResponse::BadRequest()
-                            .json(ErrorResponse::new(format!("Erreur de chunk: {}", e), 400));
-                    }
-                };
-                buf.extend_from_slice(&chunk);
-                if buf.len() > upload_limit {
-                    return HttpResponse::PayloadTooLarge().json(ErrorResponse::new(
-                        format!("Fichier trop volumineux (limite: {} octets)", upload_limit),
-                        413,
-                    ));
-                }
-            }
-            if !filename.is_empty() {
-                file_data = Some(buf);
-            }
-        } else {
-            // Champ texte du formulaire
-            let mut text = String::new();
-            while let Some(chunk_result) = field.next().await {
-                let chunk = match chunk_result {
-                    Ok(d) => d,
-                    Err(e) => {
-                        error!("Erreur de chunk: {}", e);
-                        return HttpResponse::BadRequest()
-                            .json(ErrorResponse::new(format!("Erreur de chunk: {}", e), 400));
-                    }
-                };
-                text.push_str(&String::from_utf8_lossy(&chunk));
-            }
-            match field_name.as_str() {
-                "algorithm" => request.algorithm = Some(text),
-                "redundancy" => request.redundancy = text.trim().parse().ok(),
-                "compression" => {
-                    let enabled = text.trim() == "true" || text.trim() == "on";
-                    request.compression = Some(enabled);
-                }
-                "chunk_size" => request.chunk_size = text.trim().parse().ok(),
-                _ => {}
-            }
-        }
-    }
-
-    let Some(file_data) = file_data.filter(|d| !d.is_empty()) else {
-        return HttpResponse::BadRequest()
-            .json(ErrorResponse::new("Aucun fichier fourni".to_string(), 400));
+pub async fn api_encode(app: web::Data<AppState>, mut payload: Multipart) -> HttpResponse {
+    let upload = match read_upload(&mut payload, app.limits.upload_bytes).await {
+        Ok(upload) => upload,
+        Err(refused) => return refused,
     };
+    if upload.file_name.is_empty() {
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            "aucun fichier reçu : envoyer un champ « file »",
+        );
+    }
+    let options = match encode_options(&upload.fields) {
+        Ok(options) => options,
+        Err(refused) => return refused,
+    };
+    if let Some(refused) = queue_full(&app) {
+        return refused;
+    }
 
-    // Traiter l'encodage en arrière-plan
-    let data_clone = data.clone();
-    let job_id_clone = job_id.clone();
-
-    tokio::spawn(async move {
-        let result = process_encode_data_with_progress(
-            &file_data,
-            &data_clone,
-            job_id_clone.clone(),
-            adn_core::EncoderConfig::from(request),
-        )
-        .await;
-
-        // Mettre à jour le job avec le résultat
-        let mut jobs = data_clone.jobs.write().await;
-        if let Some(job) = jobs.get_mut(&job_id_clone) {
-            match result {
-                Ok(stats) => {
-                    job.status = JobStatus::Complete;
-                    job.progress = Some(1.0); // 100% complete
-                    job.result = Some(crate::models::JobResult {
-                        download_url: Some(format!("/download/fasta/{}", job_id_clone)),
-                        stats: Some(stats),
-                        sequences: None,
-                    });
-                }
-                Err(e) => {
-                    job.status = JobStatus::Failed;
-                    job.error = Some(format!("Erreur d'encodage: {}", e));
-                }
-            }
-            job.updated_at = Utc::now();
-        }
+    let source_name = upload.file_name.clone();
+    let job = app.jobs.submit(JobKind::Encode, Some(source_name.clone()));
+    let request = EncodeRequest {
+        source_name,
+        data: upload.data,
+        options,
+    };
+    jobs::launch(Arc::clone(&app.jobs), &job.id, move |registry, id| {
+        pipeline::encode(registry, id, request)
     });
-
-    HttpResponse::Accepted().json(EncodeResponse {
-        job_id,
-        status: JobStatus::Processing,
-        message: "Encodage en cours".to_string(),
-    })
+    accepted(&job.id)
 }
 
-/// Traite les données d'encodage avec mises à jour de progression
-async fn process_encode_data_with_progress(
-    file_data: &[u8],
-    data: &web::Data<AppState>,
-    job_id: String,
-    encoder_config: adn_core::EncoderConfig,
-) -> Result<crate::models::EncodingStats, String> {
-    // Envoyer la progression initiale
-    if let Some(ref tx) = data.progress_tx {
-        let _ = tx.send(crate::models::ProgressMessage {
-            job_id: job_id.clone(),
-            progress: 0.0,
-        });
-    }
+// Décodage
+// --------
 
-    let encoder = adn_core::Encoder::new(encoder_config)
-        .map_err(|e| format!("Erreur d'initialisation de l'encodeur: {}", e))?;
-
-    // L'encodage est CPU-bound : l'exécuter sur le pool de threads de blocage
-    // pour ne pas geler les workers async du serveur.
-    let encode_start = std::time::Instant::now();
-
-    let sequences = web::block({
-        let file_data = file_data.to_vec();
-        move || encoder.encode(&file_data)
-    })
-    .await
-    .map_err(|e| format!("Erreur d'encodage (blocking): {}", e))?
-    .map_err(|e| format!("Erreur d'encodage: {}", e))?;
-
-    // Envoyer la progression à 90% avant de sauvegarder
-    if let Some(ref tx) = data.progress_tx {
-        let _ = tx.send(crate::models::ProgressMessage {
-            job_id: job_id.clone(),
-            progress: 0.9,
-        });
-    }
-
-    let encoding_time = encode_start.elapsed().as_millis() as u64;
-
-    // Calculer les statistiques
-    let total_length: usize = sequences.iter().map(|s| s.bases.len()).sum();
-    let avg_length = total_length as f64 / sequences.len() as f64;
-
-    let gc_count: usize = sequences
-        .iter()
-        .flat_map(|s| s.bases.iter())
-        .filter(|b| b.is_gc())
-        .count();
-
-    let gc_ratio = gc_count as f64 / total_length as f64;
-    let bits_per_base = (file_data.len() * 8) as f64 / total_length as f64;
-    let compression_ratio = file_data.len() as f64 / total_length as f64;
-
-    // Sauvegarder dans la base de données si activée
-    save_sequences_to_db(data, &sequences).await;
-
-    // Sauvegarder le fichier FASTA
-    save_fasta_file(&sequences, &job_id)
-        .await
-        .map_err(|e| format!("Erreur de sauvegarde FASTA: {}", e))?;
-
-    Ok(crate::models::EncodingStats {
-        sequence_count: sequences.len(),
-        avg_length,
-        gc_ratio,
-        bits_per_base,
-        file_size: file_data.len(),
-        encoded_size: total_length,
-        compression_ratio,
-        encoding_time_ms: encoding_time,
-    })
-}
-
-/// Sauvegarde les séquences en base si la base est configurée et disponible
-async fn save_sequences_to_db(data: &web::Data<AppState>, sequences: &[adn_core::DnaSequence]) {
-    if let Some(db) = &data.database {
-        if let Ok(pool) = db.pool() {
-            let repo = adn_storage::SequenceRepository::new(std::sync::Arc::new(pool.clone()));
-
-            for seq in sequences {
-                if let Err(e) = repo.save_sequence(seq).await {
-                    error!("Erreur de sauvegarde dans la base de données: {}", e);
-                }
-            }
-        } else {
-            error!("Base de données activée mais le pool n'est pas initialisé");
-        }
-    }
-}
-
-/// Éviction inline avec verrou déjà acquis (évite un deadlock de RwLock)
-async fn evict_expired_jobs_with_lock(
-    jobs: &mut std::collections::HashMap<String, crate::models::JobState>,
-) {
-    let now = Utc::now();
-    let expired: Vec<String> = jobs
-        .iter()
-        .filter(|(_, job)| {
-            let finished = matches!(job.status, JobStatus::Complete | JobStatus::Failed);
-            finished && now.signed_duration_since(job.updated_at) > JOB_RETENTION
-        })
-        .map(|(id, _)| id.clone())
-        .collect();
-
-    if expired.is_empty() {
-        return;
-    }
-
-    for id in &expired {
-        jobs.remove(id);
-    }
-
-    // Best-effort : supprimer les fichiers associés
-    for id in &expired {
-        for ext in ["fasta", "decoded"] {
-            let path = std::path::Path::new(UPLOAD_DIR).join(format!("{}.{}", id, ext));
-            if let Err(e) = tokio::fs::remove_file(&path).await {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    warn!("Impossible de supprimer {}: {}", path.display(), e);
-                }
-            }
-        }
-    }
-}
-
-/// Route pour l'API de décodage
 #[post("/api/decode")]
-pub async fn api_decode(data: web::Data<AppState>, mut payload: Multipart) -> impl Responder {
-    info!("Nouvelle requête de décodage");
-
-    let job_id = Uuid::new_v4().to_string();
-
-    // Créer un nouveau job (et évacuer les anciens jobs terminés)
-    {
-        let mut jobs = data.jobs.write().await;
-        evict_expired_jobs_with_lock(&mut jobs).await;
-        jobs.insert(job_id.clone(), crate::models::JobState::new(job_id.clone()));
-
-        if let Some(job) = jobs.get_mut(&job_id) {
-            job.status = JobStatus::Processing;
-            job.updated_at = Utc::now();
-        }
-    }
-
-    // Traiter le fichier uploadé AVANT de spawner (Multipart n'est pas Send)
-    let upload_limit = data.config.server.upload_limit;
-    let mut request = DecodeRequest::default();
-    let mut fasta_data: Option<Vec<u8>> = None;
-
-    while let Some(item) = payload.next().await {
-        let mut field = match item {
-            Ok(f) => f,
-            Err(e) => {
-                error!("Erreur de champ: {}", e);
-                return HttpResponse::BadRequest()
-                    .json(ErrorResponse::new(format!("Erreur de champ: {}", e), 400));
-            }
-        };
-
-        let Some(content_disposition) = field.content_disposition() else {
-            continue;
-        };
-
-        // Extraire les infos de disposition en owned pour libérer l'emprunt
-        // de `field` avant d'itérer son contenu.
-        let (filename, field_name) = (
-            content_disposition.get_filename().map(str::to_string),
-            content_disposition.get_name().unwrap_or("").to_string(),
+pub async fn api_decode(app: web::Data<AppState>, mut payload: Multipart) -> HttpResponse {
+    let upload = match read_upload(&mut payload, app.limits.upload_bytes).await {
+        Ok(upload) => upload,
+        Err(refused) => return refused,
+    };
+    if upload.file_name.is_empty() {
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            "aucune archive reçue : envoyer un champ « file »",
         );
-
-        if let Some(filename) = filename {
-            let mut buf: Vec<u8> = Vec::new();
-            while let Some(chunk_result) = field.next().await {
-                let chunk = match chunk_result {
-                    Ok(d) => d,
-                    Err(e) => {
-                        error!("Erreur de chunk: {}", e);
-                        return HttpResponse::BadRequest()
-                            .json(ErrorResponse::new(format!("Erreur de chunk: {}", e), 400));
-                    }
-                };
-                buf.extend_from_slice(&chunk);
-                if buf.len() > upload_limit {
-                    return HttpResponse::PayloadTooLarge().json(ErrorResponse::new(
-                        format!("Fichier trop volumineux (limite: {} octets)", upload_limit),
-                        413,
-                    ));
-                }
-            }
-            if !filename.is_empty() {
-                fasta_data = Some(buf);
-            }
-        } else {
-            let mut text = String::new();
-            while let Some(chunk_result) = field.next().await {
-                let chunk = match chunk_result {
-                    Ok(d) => d,
-                    Err(e) => {
-                        error!("Erreur de chunk: {}", e);
-                        return HttpResponse::BadRequest()
-                            .json(ErrorResponse::new(format!("Erreur de chunk: {}", e), 400));
-                    }
-                };
-                text.push_str(&String::from_utf8_lossy(&chunk));
-            }
-            if field_name == "auto_decompress" {
-                request.auto_decompress = Some(text.trim() == "true" || text.trim() == "on");
+    }
+    let mut expected_sha256 = None;
+    for (name, value) in &upload.fields {
+        if name.trim() != "expected_sha256" {
+            return refusal(
+                StatusCode::BAD_REQUEST,
+                format!("champ inconnu : « {} »", name.trim()),
+            );
+        }
+        match adn_core::checksum::parse_sha256(value.trim()) {
+            Some(digest) => expected_sha256 = Some(digest),
+            None => {
+                return refusal(
+                    StatusCode::BAD_REQUEST,
+                    "l'empreinte attendue doit compter 64 chiffres hexadécimaux",
+                )
             }
         }
     }
+    if let Some(refused) = queue_full(&app) {
+        return refused;
+    }
 
-    let Some(fasta_data) = fasta_data.filter(|d| !d.is_empty()) else {
-        return HttpResponse::BadRequest()
-            .json(ErrorResponse::new("Aucun fichier fourni".to_string(), 400));
+    let source_name = upload.file_name.clone();
+    let job = app.jobs.submit(JobKind::Decode, Some(source_name.clone()));
+    let request = DecodeRequest {
+        source_name,
+        data: upload.data,
+        expected_sha256,
+    };
+    jobs::launch(Arc::clone(&app.jobs), &job.id, move |registry, id| {
+        pipeline::decode(registry, id, request)
+    });
+    accepted(&job.id)
+}
+
+// Suivi et résultats
+// -------------------
+
+#[get("/api/jobs")]
+pub async fn job_list(app: web::Data<AppState>) -> HttpResponse {
+    HttpResponse::Ok().json(json!({ "jobs": app.jobs.list() }))
+}
+
+#[get("/api/jobs/{id}")]
+pub async fn job_status(app: web::Data<AppState>, id: web::Path<String>) -> HttpResponse {
+    let id = match job_id(&id) {
+        Ok(id) => id,
+        Err(refused) => return refused,
+    };
+    match app.jobs.get(&id) {
+        Some(job) => HttpResponse::Ok().json(job),
+        None => refusal(StatusCode::NOT_FOUND, "tâche inconnue"),
+    }
+}
+
+#[delete("/api/jobs/{id}")]
+pub async fn job_delete(app: web::Data<AppState>, id: web::Path<String>) -> HttpResponse {
+    let id = match job_id(&id) {
+        Ok(id) => id,
+        Err(refused) => return refused,
+    };
+    match app.jobs.remove(&id) {
+        Removal::Unknown => return refusal(StatusCode::NOT_FOUND, "tâche inconnue"),
+        // Rien n'annule une tâche : retirée, elle continuerait et laisserait un résultat orphelin.
+        Removal::Busy => {
+            return refusal(
+                StatusCode::CONFLICT,
+                "cette tâche est en cours : la retirer une fois terminée",
+            )
+        }
+        Removal::Removed => {}
+    }
+    if let Err(message) = app.jobs.forget_archive(&id).await {
+        error!("Archive {id} effacée du disque mais pas de la base : {message}");
+        return refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "résultats effacés du disque, mais pas de la base de données",
+        );
+    }
+    HttpResponse::NoContent().finish()
+}
+
+#[get("/download/fasta/{id}")]
+pub async fn download_fasta(app: web::Data<AppState>, id: web::Path<String>) -> impl Responder {
+    serve_file(&app, &id, JobKind::Encode)
+}
+
+#[get("/download/{id}")]
+pub async fn download_file(app: web::Data<AppState>, id: web::Path<String>) -> impl Responder {
+    serve_file(&app, &id, JobKind::Decode)
+}
+
+/// Ne rend un fichier que pour une tâche réussie : ni les résultats inachevés, ni un fichier
+/// étranger au dossier des résultats, ne peuvent être demandés. Le fichier part en flux.
+fn serve_file(
+    app: &AppState,
+    raw_id: &str,
+    kind: JobKind,
+) -> Either<HttpResponse, CustomizeResponder<NamedFile>> {
+    let (id, file_name) = match download_target(app, raw_id, kind) {
+        Ok(target) => target,
+        Err(refused) => return Either::Left(refused),
+    };
+    let content_type = match kind {
+        JobKind::Encode => "text/plain; charset=utf-8",
+        JobKind::Decode => "application/octet-stream",
+    };
+    let path = app.jobs.result_path(&id, kind);
+    match NamedFile::open(&path) {
+        Ok(file) => Either::Right(
+            file.customize()
+                .insert_header((header::CONTENT_DISPOSITION, attachment(&file_name)))
+                .insert_header((header::CONTENT_TYPE, content_type)),
+        ),
+        Err(error) => {
+            error!("Résultat de {id} introuvable ({}), {error}", path.display());
+            Either::Left(refusal(
+                StatusCode::NOT_FOUND,
+                "le fichier de cette tâche a disparu",
+            ))
+        }
+    }
+}
+
+/// Le nom sous lequel proposer le résultat d'une tâche réussie.
+// Une réponse d'erreur ne voyage qu'une fois, à l'échec : la boxer ne gagnerait rien.
+#[allow(clippy::result_large_err)]
+fn download_target(
+    app: &AppState,
+    raw_id: &str,
+    kind: JobKind,
+) -> Result<(String, String), HttpResponse> {
+    let id = job_id(raw_id)?;
+    match app.jobs.get(&id) {
+        Some(job) if job.kind == kind => {}
+        _ => return Err(refusal(StatusCode::NOT_FOUND, "tâche inconnue")),
+    }
+    if app
+        .jobs
+        .get(&id)
+        .is_some_and(|job| job.status != JobStatus::Complete)
+    {
+        return Err(refusal(
+            StatusCode::NOT_FOUND,
+            "cette tâche n'a rien à télécharger",
+        ));
+    }
+    let file_name = app
+        .jobs
+        .get(&id)
+        .and_then(|job| job.file_name)
+        .unwrap_or_else(|| UNNAMED_FILE.to_string());
+    Ok((id, file_name))
+}
+
+// État du serveur
+// ----------------
+
+#[get("/health")]
+pub async fn health(app: web::Data<AppState>) -> HttpResponse {
+    let mut database = json!({ "enabled": false });
+    let mut healthy = true;
+    if let Some(repository) = app.jobs.database() {
+        match repository.count().await {
+            Ok(_) => database = json!({ "enabled": true, "state": "ok" }),
+            Err(error) => {
+                database =
+                    json!({ "enabled": true, "state": "erreur", "error": error.to_string() });
+                healthy = false;
+            }
+        }
+    }
+    let status = if healthy {
+        actix_web::http::StatusCode::OK
+    } else {
+        actix_web::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    HttpResponse::build(status).json(json!({
+        "status": if healthy { "ok" } else { "dégradé" },
+        "version": env!("CARGO_PKG_VERSION"),
+        "database": database,
+    }))
+}
+
+#[get("/api/stats")]
+pub async fn stats(app: web::Data<AppState>) -> HttpResponse {
+    let mut database = json!({ "enabled": false });
+    if let Some(repository) = app.jobs.database() {
+        database = match repository.inventory().await {
+            Ok(inventory) => json!({
+                "enabled": true,
+                "archives": inventory.archives,
+                "oligos": inventory.oligos,
+            }),
+            Err(error) => json!({ "enabled": true, "error": error.to_string() }),
+        };
+    }
+    HttpResponse::Ok().json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "started_at": app.started.to_string(),
+        "uptime_seconds": (Timestamp::now() - app.started).as_secs_f64(),
+        "limits": {
+            "upload_bytes": app.limits.upload_bytes,
+            "concurrent_jobs": app.limits.concurrent_jobs,
+            "retention_minutes": app.limits.retention_minutes,
+        },
+        "schemes": adn_core::Scheme::ALL,
+        "jobs": app.jobs.counts(),
+        "database": database,
+    }))
+}
+
+// Construction de l'application
+// ------------------------------
+
+/// L'application complète : routes et pages, puis ses intergiciels.
+///
+/// Une macro, parce que le type d'une application (même non enveloppée) ne s'écrit pas :
+/// l'expression s'étend là où elle sert, dans le serveur comme dans les tests.
+///
+/// - `$state` : l'état partagé ([`web::Data<AppState>`]) ;
+/// - `$static_files` : le dossier servi sous `/static` ;
+/// - `$policy` : les hôtes que les requêtes peuvent désigner ([`HostPolicy`]).
+#[macro_export]
+macro_rules! app {
+    ($state:expr, $static_files:expr, $policy:expr) => {{
+        let state = $state;
+        let policy = $policy;
+        ::actix_web::App::new()
+            .app_data(state.clone())
+            // Les extracteurs (dont `Multipart`) ont par défaut une limite de 256 Kio : elle doit
+            // couvrir un fichier accepté et l'enveloppe du formulaire.
+            .app_data(::actix_web::web::PayloadConfig::new(
+                state.limits.upload_bytes.saturating_add(64 * 1024),
+            ))
+            .service($crate::routes::index)
+            .service($crate::routes::encode_page)
+            .service($crate::routes::decode_page)
+            .service($crate::routes::api_encode)
+            .service($crate::routes::api_decode)
+            .service($crate::routes::job_list)
+            .service($crate::routes::job_status)
+            .service($crate::routes::job_delete)
+            .service($crate::routes::download_fasta)
+            .service($crate::routes::download_file)
+            .service($crate::routes::health)
+            .service($crate::routes::stats)
+            // Sans liste de dossier : seuls les fichiers référencés par les pages sont servis.
+            .service(::actix_files::Files::new("/static", $static_files))
+            // Les fichiers restitués sont d'origine inconnue : ils partent en pièce jointe
+            // (voir `attachment`) et ne sont jamais interprétés comme une page de ce site.
+            .wrap(
+                ::actix_web::middleware::DefaultHeaders::new()
+                    .add((::actix_web::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
+                    .add((::actix_web::http::header::X_FRAME_OPTIONS, "DENY"))
+                    .add((::actix_web::http::header::REFERRER_POLICY, "same-origin"))
+                    .add((
+                        ::actix_web::http::header::CONTENT_SECURITY_POLICY,
+                        "frame-ancestors 'none'",
+                    )),
+            )
+            .wrap(::actix_web::middleware::from_fn(move |request, next| {
+                // Chaque requête emporte sa copie : rien de la closure n'est emprunté après coup.
+                $crate::routes::guard_local(request, next, policy.clone())
+            }))
+    }};
+}
+
+/// Noms d'hôtes qu'une requête peut désigner.
+///
+/// Un site tiers peut faire rebinder son domaine vers `127.0.0.1` : le navigateur le traite
+/// alors comme une origine de confiance et lit les réponses du serveur local. Le serveur ne
+/// prête donc aucune prise à cette attaque : il n'accepte que des hôtes qu'on lui a désignés.
+///
+/// - La boucle locale est toujours acceptée.
+/// - Un serveur lié à la boucle locale, sans autre hôte déclaré, n'accepte qu'elle.
+/// - Un serveur publié, sans hôte déclaré, accepte tous les hôtes : c'est le rôle d'un proxy.
+/// - Dès qu'un hôte est déclaré, lui seul (avec la boucle locale) est accepté.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostPolicy {
+    trusted: Vec<String>,
+    loopback_only: bool,
+}
+
+impl HostPolicy {
+    /// Politique d'un serveur lié à `host`, qui accepte en plus les noms de `trusted`.
+    pub fn new(host: &str, trusted: Vec<String>) -> Self {
+        let trusted = trusted
+            .into_iter()
+            .map(|name| name.trim().to_ascii_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect();
+        Self {
+            trusted,
+            loopback_only: crate::is_loopback(host),
+        }
+    }
+
+    /// Serveur d'essai lié à la boucle locale, sans autre hôte déclaré.
+    pub const LOCAL: Self = Self {
+        trusted: Vec::new(),
+        loopback_only: true,
     };
 
-    // Traiter le décodage en arrière-plan
-    let data_clone = data.clone();
-    let job_id_clone = job_id.clone();
+    /// Serveur d'essai publié, sans hôte déclaré.
+    pub const ANY: Self = Self {
+        trusted: Vec::new(),
+        loopback_only: false,
+    };
 
-    tokio::spawn(async move {
-        let result = process_decode_data(
-            &fasta_data,
-            &data_clone,
-            job_id_clone.clone(),
-            adn_core::DecoderConfig::from(request),
-        )
-        .await;
+    /// Vrai si une requête peut désigner `host` : le contenu de l'en-tête `Host`.
+    pub fn accepts(&self, host: &str) -> bool {
+        // `[::1]` ou `[::1]:8080` pour IPv6, `hôte:port` ou `hôte` sinon.
+        let name = match host.find(']') {
+            Some(end) => &host[..=end],
+            None => host.rsplit_once(':').map_or(host, |(name, _)| name),
+        };
+        if crate::is_loopback(name) {
+            return true;
+        }
+        let name = name
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_ascii_lowercase();
+        if self.trusted.is_empty() {
+            return !self.loopback_only;
+        }
+        self.trusted.contains(&name)
+    }
+}
 
-        // Mettre à jour le job avec le résultat
-        let mut jobs = data_clone.jobs.write().await;
-        if let Some(job) = jobs.get_mut(&job_id_clone) {
-            match result {
-                Ok(_) => {
-                    job.status = JobStatus::Complete;
-                    job.result = Some(crate::models::JobResult {
-                        download_url: Some(format!("/download/{}", job_id_clone)),
-                        stats: None,
-                        sequences: None,
-                    });
-                }
-                Err(e) => {
-                    job.status = JobStatus::Failed;
-                    job.error = Some(format!("Erreur de décodage: {}", e));
+/// Intergiciel ajouté par [`app!`](crate::app) : refuse les requêtes dont l'hôte n'est pas
+/// accepté par `policy`.
+pub async fn guard_local(
+    request: actix_web::dev::ServiceRequest,
+    next: actix_web::middleware::Next<actix_web::body::BoxBody>,
+    policy: HostPolicy,
+) -> actix_web::Result<actix_web::dev::ServiceResponse> {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if policy.accepts(host) {
+        return next.call(request).await;
+    }
+    let shown = if host.is_empty() { "absent" } else { host };
+    warn!("Requête refusée : l'hôte demandé est « {shown} »");
+    let refused = HttpResponse::Forbidden().json(json!({ "error": "hôte refusé" }));
+    Ok(request.into_response(refused))
+}
+
+// Formulaires
+// -----------
+
+/// Ce qu'un formulaire multipart apporte.
+struct Upload {
+    file_name: String,
+    data: Vec<u8>,
+    fields: Vec<(String, String)>,
+}
+
+/// Lit un formulaire multipart entier. Il tient en mémoire : la taille des fichiers est bornée
+/// par `limit`.
+async fn read_upload(payload: &mut Multipart, limit: usize) -> Result<Upload, HttpResponse> {
+    let mut upload = Upload {
+        file_name: String::new(),
+        data: Vec::new(),
+        fields: Vec::new(),
+    };
+    let mut files = 0;
+    while let Some(item) = payload.next().await {
+        let mut field = item.map_err(|error| {
+            warn!("Formulaire illisible : {error}");
+            refusal(StatusCode::BAD_REQUEST, "formulaire illisible")
+        })?;
+        let (name, file_name) = {
+            // Les champs d'un formulaire sans en-tête de disposition sont lus comme du texte.
+            let disposition = field.content_disposition();
+            let name = disposition
+                .and_then(|disposition| disposition.get_name())
+                .unwrap_or_default()
+                .to_string();
+            let file_name = disposition
+                .and_then(|disposition| disposition.get_filename())
+                .map(safe_file_name)
+                .unwrap_or_default();
+            (name, file_name)
+        };
+        let is_file = !file_name.is_empty();
+        let cap = if is_file { limit } else { FIELD_LIMIT };
+        let mut data = Vec::new();
+        while let Some(chunk) = field.next().await {
+            let chunk = chunk.map_err(|error| {
+                warn!("Formulaire interrompu : {error}");
+                refusal(StatusCode::BAD_REQUEST, "formulaire interrompu")
+            })?;
+            if data.len() + chunk.len() > cap {
+                return Err(if is_file {
+                    refusal(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        format!(
+                            "fichier trop volumineux : la limite est de {} ({limit} octets)",
+                            human_bytes(limit as u64)
+                        ),
+                    )
+                } else {
+                    refusal(
+                        StatusCode::BAD_REQUEST,
+                        format!("champ « {name} » trop long"),
+                    )
+                });
+            }
+            data.extend_from_slice(&chunk);
+        }
+        if is_file {
+            files += 1;
+            if files > 1 {
+                return Err(refusal(
+                    StatusCode::BAD_REQUEST,
+                    "un seul fichier par requête",
+                ));
+            }
+            upload.file_name = file_name;
+            upload.data = data;
+        } else {
+            upload
+                .fields
+                .push((name, String::from_utf8_lossy(&data).trim().to_string()));
+        }
+    }
+    Ok(upload)
+}
+
+// Une réponse d'erreur ne voyage qu'une fois, à l'échec : la boxer ne gagnerait rien.
+#[allow(clippy::result_large_err)]
+fn encode_options(fields: &[(String, String)]) -> Result<EncodeOptions, HttpResponse> {
+    let mut options = EncodeOptions::default();
+    for (name, value) in fields {
+        let value = value.trim();
+        match name.trim() {
+            // Un champ vide ou absent garde la valeur par défaut.
+            "scheme" if !value.is_empty() => {
+                options.scheme = adn_core::codec::parse_scheme(value)
+                    .map_err(|error| refusal(StatusCode::BAD_REQUEST, error.to_string()))?
+            }
+            "compression" if !value.is_empty() => {
+                options.compression = match value.to_ascii_lowercase().as_str() {
+                    "auto" => Compression::Auto,
+                    "none" => Compression::None,
+                    "lz4" => Compression::Lz4,
+                    "zstd" => Compression::Zstd,
+                    other => {
+                        return Err(refusal(
+                            StatusCode::BAD_REQUEST,
+                            format!("compression inconnue : « {other} » (auto, none, lz4 ou zstd)"),
+                        ))
+                    }
                 }
             }
-            job.updated_at = Utc::now();
+            "redundancy" if !value.is_empty() => {
+                options.fountain.redundancy = value.parse().map_err(|_| {
+                    refusal(
+                        StatusCode::BAD_REQUEST,
+                        format!("la redondance doit être un nombre (reçu « {value} »)"),
+                    )
+                })?
+            }
+            "scheme" | "compression" | "redundancy" => {}
+            other => {
+                return Err(refusal(
+                    StatusCode::BAD_REQUEST,
+                    format!("champ inconnu : « {other} »"),
+                ))
+            }
         }
-    });
-
-    HttpResponse::Accepted().json(DecodeResponse {
-        job_id,
-        status: JobStatus::Processing,
-        message: "Décodage en cours".to_string(),
-    })
-}
-
-/// Traite les données de décodage
-async fn process_decode_data(
-    fasta_data: &[u8],
-    data: &web::Data<AppState>,
-    job_id: String,
-    decoder_config: adn_core::DecoderConfig,
-) -> Result<(), String> {
-    // Parser le fichier FASTA
-    let sequences =
-        parse_fasta(fasta_data).map_err(|e| format!("Erreur de parsing FASTA: {}", e))?;
-
-    if sequences.is_empty() {
-        return Err("Aucune séquence ADN fournie".to_string());
     }
-
-    // Décoder les séquences (CPU-bound → thread de blocage)
-    let decoder = adn_core::Decoder::new(decoder_config);
-    let decoded_data = web::block({
-        let sequences = sequences.clone();
-        move || decoder.decode(&sequences)
-    })
-    .await
-    .map_err(|e| format!("Erreur de décodage (blocking): {}", e))?
-    .map_err(|e| format!("Erreur de décodage: {}", e))?;
-
-    // Sauvegarder le résultat pour téléchargement
-    save_decoded_result(data, &job_id, &decoded_data)
-        .await
-        .map_err(|e| format!("Erreur de sauvegarde du résultat: {}", e))?;
-
-    Ok(())
+    options
+        .validate()
+        .map_err(|error| refusal(StatusCode::BAD_REQUEST, error.to_string()))?;
+    Ok(options)
 }
 
-/// Parse un fichier FASTA
-fn parse_fasta(data: &[u8]) -> Result<Vec<adn_core::DnaSequence>, String> {
-    let content = String::from_utf8_lossy(data);
+/// Refuse une nouvelle tâche si trop d'autres attendent déjà.
+fn queue_full(app: &AppState) -> Option<HttpResponse> {
+    let pending = app.jobs.pending();
+    (pending >= app.limits.concurrent_jobs * QUEUE_PER_WORKER).then(|| {
+        warn!("File pleine : {pending} tâches en attente");
+        refusal(
+            StatusCode::TOO_MANY_REQUESTS,
+            "trop de tâches en attente : réessayer dans un instant",
+        )
+    })
+}
 
-    // Parser chaque enregistrement FASTA via DnaSequence::from_fasta, qui
-    // conserve les métadonnées de l'en-tête (scheme:, seed:, chunk:) —
-    // indispensables au décodeur pour router et reconstruire les droplets.
-    // L'ancien parsing les ignorait (seed=0, scheme inconnu) : le décodage
-    // web échouait systématiquement.
-    content
-        .split('>')
-        .filter(|bloc| !bloc.trim().is_empty())
-        .map(|bloc| {
-            let record = format!(">{}", bloc);
-            adn_core::DnaSequence::from_fasta(&record)
-                .map_err(|e| format!("Enregistrement FASTA invalide: {}", e))
+fn accepted(job_id: &str) -> HttpResponse {
+    HttpResponse::Accepted().json(Accepted {
+        job_id: job_id.to_string(),
+        status: JobStatus::Queued,
+        location: format!("/api/jobs/{job_id}"),
+    })
+}
+
+/// Une réponse refusée, toujours en JSON avec un message.
+fn refusal(status: StatusCode, message: impl Into<String>) -> HttpResponse {
+    let message = message.into();
+    HttpResponse::build(status).json(json!({ "error": message, "code": status.as_u16() }))
+}
+
+// Noms et en-têtes
+// ----------------
+
+/// Nom de fichier proposé par l'utilisateur, rendu inoffensif : sans chemin, sans caractères
+/// de contrôle ni caractères refusés par les systèmes de fichiers. Vide s'il ne reste rien.
+pub fn safe_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let cleaned: String = base
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(character, '"' | '<' | '>' | '|' | '?' | '*' | ':' | ';')
         })
-        .collect()
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').to_string();
+    let cleaned: String = cleaned.chars().take(FILE_NAME_LIMIT).collect();
+    cleaned.trim().trim_matches('.').to_string()
 }
 
-/// Sauvegarde les séquences au format FASTA
-pub(crate) async fn save_fasta_file(
-    sequences: &[adn_core::DnaSequence],
-    job_id: &str,
-) -> Result<(), String> {
-    let upload_dir = std::path::Path::new(UPLOAD_DIR);
-
-    if !upload_dir.exists() {
-        std::fs::create_dir_all(upload_dir)
-            .map_err(|e| format!("Erreur de création du dossier: {}", e))?;
-    }
-
-    let file_path = upload_dir.join(format!("{}.fasta", job_id));
-
-    // Générer le contenu FASTA
-    let fasta_content: String = sequences.iter().map(|seq| seq.to_fasta()).collect();
-
-    tokio::fs::write(&file_path, fasta_content)
-        .await
-        .map_err(|e| format!("Erreur d'écriture du fichier FASTA: {}", e))?;
-
-    Ok(())
+/// Valeur de l'en-tête `Content-Disposition` d'un téléchargement : un nom de repli en ASCII et
+/// le nom exact, encodé pour les navigateurs qui savent le lire (RFC 8187).
+pub fn attachment(file_name: &str) -> String {
+    let name = match safe_file_name(file_name) {
+        name if name.is_empty() => UNNAMED_FILE.to_string(),
+        name => name,
+    };
+    let fallback: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_graphic() && !matches!(character, '"' | '\\') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(
+        "attachment; filename=\"{fallback}\"; filename*=UTF-8''{}",
+        percent_encode(&name)
+    )
 }
 
-/// Sauvegarde le résultat décodé
-async fn save_decoded_result(
-    _data: &web::Data<AppState>,
-    job_id: &str,
-    decoded_data: &[u8],
-) -> Result<(), String> {
-    let upload_dir = std::path::Path::new(UPLOAD_DIR);
-
-    if !upload_dir.exists() {
-        std::fs::create_dir_all(upload_dir)
-            .map_err(|e| format!("Erreur de création du dossier: {}", e))?;
-    }
-
-    let file_path = upload_dir.join(format!("{}.decoded", job_id));
-
-    tokio::fs::write(&file_path, decoded_data)
-        .await
-        .map_err(|e| format!("Erreur d'écriture du fichier: {}", e))?;
-
-    Ok(())
-}
-
-/// Route pour vérifier l'état d'un job
-#[get("/api/jobs/{job_id}")]
-pub async fn job_status(data: web::Data<AppState>, job_id: web::Path<String>) -> impl Responder {
-    if !is_valid_job_id(&job_id) {
-        return HttpResponse::BadRequest().json(ErrorResponse::new(
-            "Identifiant de job invalide".to_string(),
-            400,
-        ));
-    }
-
-    let jobs = data.jobs.read().await;
-
-    match jobs.get(job_id.as_ref()) {
-        Some(job) => HttpResponse::Ok().json(job),
-        None => {
-            HttpResponse::NotFound().json(ErrorResponse::new("Job non trouvé".to_string(), 404))
+/// Encode tout ce qui n'est pas un caractère sans réserve d'une URL (RFC 3986).
+fn percent_encode(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            write!(encoded, "%{byte:02X}").expect("écrire dans une chaîne");
         }
     }
+    encoded
 }
 
-/// Route pour télécharger un résultat
-#[get("/download/{job_id}")]
-pub async fn download_result(
-    _data: web::Data<AppState>,
-    job_id: web::Path<String>,
-) -> impl Responder {
-    // Validation stricte : le job_id est utilisé pour construire un chemin de
-    // fichier (bloque la traversée de répertoire) et injecté dans un en-tête.
-    if !is_valid_job_id(&job_id) {
-        return HttpResponse::BadRequest().json(ErrorResponse::new(
-            "Identifiant de job invalide".to_string(),
-            400,
-        ));
-    }
-
-    let file_path = std::path::Path::new(UPLOAD_DIR).join(format!("{}.decoded", job_id.as_ref()));
-
-    match tokio::fs::read(&file_path).await {
-        Ok(data) => HttpResponse::Ok()
-            .content_type("application/octet-stream")
-            .body(data),
-        Err(_) => {
-            HttpResponse::NotFound().json(ErrorResponse::new("Fichier non trouvé".to_string(), 404))
+/// Identifiant d'une tâche, tel qu'il figure dans l'URL. Il sert à construire un chemin de
+/// fichier : seules les 36 lettres et chiffres d'un UUID sont acceptées.
+// Une réponse d'erreur ne voyage qu'une fois, à l'échec : la boxer ne gagnerait rien.
+#[allow(clippy::result_large_err)]
+fn job_id(raw: &str) -> Result<String, HttpResponse> {
+    match Uuid::parse_str(raw) {
+        Ok(uuid) if raw.len() == 36 && uuid.to_string().eq_ignore_ascii_case(raw) => {
+            Ok(uuid.to_string())
         }
-    }
-}
-
-/// Route pour télécharger un fichier FASTA
-#[get("/download/fasta/{job_id}")]
-pub async fn download_fasta(job_id: web::Path<String>) -> impl Responder {
-    if !is_valid_job_id(&job_id) {
-        return HttpResponse::BadRequest().json(ErrorResponse::new(
-            "Identifiant de job invalide".to_string(),
-            400,
-        ));
-    }
-
-    // job_id validé comme UUID : safe pour un en-tête Content-Disposition
-    let file_path = std::path::Path::new(UPLOAD_DIR).join(format!("{}.fasta", job_id.as_ref()));
-
-    match tokio::fs::read(&file_path).await {
-        Ok(data) => HttpResponse::Ok()
-            .content_type("text/x-fasta")
-            .insert_header((
-                "Content-Disposition",
-                format!("attachment; filename=\"{}.fasta\"", job_id.as_ref()),
-            ))
-            .body(data),
-        Err(_) => HttpResponse::NotFound().json(ErrorResponse::new(
-            "Fichier FASTA non trouvé".to_string(),
-            404,
+        _ => Err(refusal(
+            StatusCode::BAD_REQUEST,
+            "identifiant de tâche invalide",
         )),
     }
 }
 
-/// Route pour la santé de l'API
-#[get("/health")]
-pub async fn health_check() -> impl Responder {
-    HttpResponse::Ok().json(serde_json::json!({
-        "status": "healthy",
-        "timestamp": Utc::now(),
-        "version": env!("CARGO_PKG_VERSION")
-    }))
+/// Taille lisible : `1,5 Mio`.
+pub fn human_bytes(bytes: u64) -> String {
+    const UNIT: f64 = 1024.0;
+    let (value, unit) = match bytes {
+        bytes if bytes < 1 << 10 => (bytes as f64, "octets"),
+        bytes if bytes < 1 << 20 => (bytes as f64 / UNIT, "Kio"),
+        bytes if bytes < 1 << 30 => (bytes as f64 / UNIT / UNIT, "Mio"),
+        bytes => (bytes as f64 / UNIT / UNIT / UNIT, "Gio"),
+    };
+    if bytes == 1 {
+        "1 octet".to_string()
+    } else if value.fract() == 0.0 {
+        format!("{value:.0} {unit}")
+    } else {
+        format!("{value:.1} {unit}").replace('.', ",")
+    }
 }
 
 #[cfg(test)]
@@ -671,21 +770,167 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_job_id_validation() {
-        assert!(is_valid_job_id("0a1b2c3d-1111-4222-8333-444455556666"));
-        assert!(!is_valid_job_id("../../etc/passwd"));
-        assert!(!is_valid_job_id("..%2F..%2Fsecret"));
-        assert!(!is_valid_job_id("aa\r\nbb"));
-        assert!(!is_valid_job_id(""));
-        assert!(!is_valid_job_id("not-a-uuid"));
+    fn file_names_lose_paths_and_unsafe_characters() {
+        assert_eq!(safe_file_name("lettre.txt"), "lettre.txt");
+        assert_eq!(safe_file_name("photo.jpg"), "photo.jpg");
+        assert_eq!(safe_file_name("données été.csv"), "données été.csv");
+        assert_eq!(safe_file_name("../../etc/passwd"), "passwd");
+        assert_eq!(safe_file_name("C:\\Users\\moi\\fichier.bin"), "fichier.bin");
+        assert_eq!(safe_file_name("dossier/"), "");
+        assert_eq!(
+            safe_file_name("a\"b\r\nX-Injected: 1.txt"),
+            "abX-Injected 1.txt"
+        );
+        assert_eq!(safe_file_name("..."), "");
+        assert_eq!(safe_file_name(".cache"), "cache");
+        assert_eq!(safe_file_name("fin ."), "fin");
+        assert_eq!(safe_file_name(""), "");
+        let long = "a".repeat(500);
+        assert_eq!(safe_file_name(&long).chars().count(), FILE_NAME_LIMIT);
     }
 
     #[test]
-    fn test_parse_fasta_roundtrip() {
-        let fasta = b">seq1|scheme:test\nACGTACGT\n>seq2\nTTTTGGGG\n";
-        let seqs = parse_fasta(fasta).unwrap();
-        assert_eq!(seqs.len(), 2);
-        assert_eq!(seqs[0].bases.len(), 8);
-        assert_eq!(seqs[1].bases.len(), 8);
+    fn attachments_carry_an_ascii_name_and_the_exact_one() {
+        assert_eq!(
+            attachment("lettre.txt.fasta"),
+            "attachment; filename=\"lettre.txt.fasta\"; filename*=UTF-8''lettre.txt.fasta"
+        );
+        assert_eq!(
+            attachment("données été.csv"),
+            "attachment; filename=\"donn_es__t_.csv\"; filename*=UTF-8''donn%C3%A9es%20%C3%A9t%C3%A9.csv"
+        );
+        assert_eq!(
+            attachment("../../x.txt"),
+            "attachment; filename=\"x.txt\"; filename*=UTF-8''x.txt"
+        );
+        // Une valeur d'en-tête doit rester un texte ASCII imprimable. Le barre oblique inverse
+        // est un séparateur de chemin : il ne reste que ce qui le suit.
+        let value = attachment("a\"b\\\r\né");
+        assert_eq!(value, "attachment; filename=\"_\"; filename*=UTF-8''%C3%A9");
+        header::HeaderValue::from_str(&value).expect("en-tête valide");
+        assert_eq!(
+            attachment("..."),
+            format!("attachment; filename=\"{UNNAMED_FILE}\"; filename*=UTF-8''{UNNAMED_FILE}")
+        );
+        assert!(percent_encode("a-b_c.d~e é/\"").starts_with("a-b_c.d~e"));
     }
+
+    #[test]
+    fn encode_options_follow_the_form_and_refuse_the_rest() {
+        let field = |name: &str, value: &str| (name.to_string(), value.to_string());
+        let defaults = encode_options(&[]).unwrap();
+        assert_eq!(defaults, EncodeOptions::default());
+
+        let options = encode_options(&[
+            field("scheme", "strands"),
+            field("compression", "zstd"),
+            field("redundancy", "2"),
+        ])
+        .unwrap();
+        assert_eq!(options.scheme, adn_core::Scheme::Strands);
+        assert_eq!(options.compression, Compression::Zstd);
+        assert_eq!(options.fountain.redundancy, 2.0);
+
+        // Les champs vides gardent les valeurs par défaut.
+        let options = encode_options(&[field("scheme", ""), field("redundancy", " ")]).unwrap();
+        assert_eq!(options, EncodeOptions::default());
+
+        let refused = |fields: Vec<(String, String)>| encode_options(&fields).unwrap_err().status();
+        assert_eq!(
+            refused(vec![field("scheme", "goldman")]),
+            StatusCode::BAD_REQUEST,
+            "un schéma retiré est refusé, pas ignoré"
+        );
+        assert_eq!(
+            refused(vec![field("scheme", "inconnu")]),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            refused(vec![field("compression", "zip")]),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            refused(vec![field("redundancy", "beaucoup")]),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            refused(vec![field("redundancy", "0.5")]),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            refused(vec![field("chunk_size", "32")]),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn only_uuids_name_jobs() {
+        assert_eq!(
+            job_id("0a1b2c3d-1111-4222-8333-444455556666").unwrap(),
+            "0a1b2c3d-1111-4222-8333-444455556666"
+        );
+        // La casse est remise en place, sans changer l'identifiant.
+        assert_eq!(
+            job_id("0A1B2C3D-1111-4222-8333-444455556666").unwrap(),
+            "0a1b2c3d-1111-4222-8333-444455556666"
+        );
+        for refused in [
+            "../../etc/passwd",
+            "..%2F..%2Fsecret",
+            "aa\r\nbb",
+            "",
+            "not-a-uuid",
+            "{0a1b2c3d-1111-4222-8333-444455556666}",
+            "urn:uuid:0a1b2c3d-1111-4222-8333-444455556666",
+            "0a1b2c3d111142228333444455556666",
+        ] {
+            assert_eq!(
+                job_id(refused).unwrap_err().status(),
+                StatusCode::BAD_REQUEST,
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_policies_follow_the_configuration() {
+        for local in ["127.0.0.1:8080", "localhost", "[::1]", "127.5.4.3"] {
+            assert!(HostPolicy::LOCAL.accepts(local), "{local}");
+        }
+        for refused in ["evil.example", "evil.example:8080", "192.168.1.20", ""] {
+            assert!(!HostPolicy::LOCAL.accepts(refused), "{refused}");
+            assert!(HostPolicy::ANY.accepts(refused), "{refused}");
+        }
+
+        // Les noms déclarés sont rognés, sans casse ni port ; les vides sont ignorés.
+        let proxied = HostPolicy::new(
+            "127.0.0.1",
+            vec![" AdN.Example.ORG ".to_string(), " ".to_string()],
+        );
+        assert!(proxied.accepts("adn.example.org"));
+        assert!(proxied.accepts("ADN.EXAMPLE.ORG:443"));
+        assert!(proxied.accepts("localhost"));
+        assert!(!proxied.accepts("evil.example.org"));
+
+        // Dès qu'un nom est déclaré, lui seul passe, même sur un serveur publié.
+        let published = HostPolicy::new("0.0.0.0", vec!["adn.example.org".to_string()]);
+        assert!(published.accepts("adn.example.org"));
+        assert!(!published.accepts("autre.example.org"));
+        assert!(
+            published.accepts("127.0.0.1"),
+            "la boucle locale passe toujours"
+        );
+    }
+
+    #[test]
+    fn sizes_are_readable() {
+        assert_eq!(human_bytes(1), "1 octet");
+        assert_eq!(human_bytes(2), "2 octets");
+        assert_eq!(human_bytes(1024), "1 Kio");
+        assert_eq!(human_bytes(1536), "1,5 Kio");
+        assert_eq!(human_bytes(DEFAULT_LIMIT as u64), "25 Mio");
+        assert_eq!(human_bytes(5 * 1024 * 1024 * 1024), "5 Gio");
+    }
+
+    const DEFAULT_LIMIT: usize = 25 * 1024 * 1024;
 }

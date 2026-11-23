@@ -1,374 +1,268 @@
-# 🧬 ADN Data Storage — DNA Encoding & Decoding Library
+# 🧬 ADN Data Storage
 
-**A Rust toolkit for encoding digital data into synthetic DNA sequences.**
+**Archiver des fichiers numériques en séquences d'ADN, et les restituer à l'identique.**
 
-This library implements several academic DNA storage encoding schemes (DNA Fountain / LT codes, Goldman 2013, Grass 2015), error correction codecs (Reed-Solomon, LDPC, convolutional/Viterbi), and a simulation framework for testing data recovery under realistic DNA error models (substitution, insertion, deletion).
+Une bibliothèque Rust, une ligne de commande (`adn`) et un serveur web (`adn-web`). Le fichier
+devient un ensemble d'oligos, écrit dans un fichier FASTA qu'on peut confier à un prestataire de
+synthèse ; les lectures issues du séquençage redonnent le fichier d'origine.
 
-> ⚠️ **Scope**: This is a **software-only** encoder/decoder library. It does not perform real DNA synthesis or sequencing — it produces FASTA files that *could* be sent to a synthesis provider, and can decode FASTA files obtained from sequencing.
+> **Périmètre.** C'est un logiciel d'encodage et de décodage. Il ne synthétise ni ne séquence
+> d'ADN : il produit des fichiers FASTA, et il lit des fichiers de lectures.
 
----
+## Trois garanties
 
-## 📋 Table of Contents
+1. **Rien n'est rendu sans vérification.** L'empreinte SHA-256 du fichier voyage dans l'archive.
+   Un fichier n'est écrit que si l'empreinte du contenu reconstitué est identique. Une archive
+   abîmée produit une erreur, jamais un contenu faux.
+2. **Une archive se suffit à elle-même.** Elle se décode depuis ses seules séquences : ni en-tête
+   FASTA, ni nom de fichier, ni paramètre extérieur. Le schéma, la compression et les paramètres
+   de codage sont portés par des oligos « manifestes ».
+3. **Les oligos respectent les contraintes biochimiques.** Par défaut 45 à 55 % de GC, et jamais
+   plus de trois bases identiques de suite.
 
-- [Why DNA Storage?](#-why-dna-storage)
-- [Core Capabilities](#-core-capabilities)
-- [Architecture](#-architecture)
-- [Installation & Usage](#-installation--usage)
-- [Technical Specifications](#-technical-specifications)
-- [Test Results](#-test-results)
-- [Known Limitations](#-known-limitations)
-- [Roadmap](#-roadmap)
-- [Contributing](#-contributing)
-- [Resources](#-resources)
-- [License](#-license)
+Le format est décrit précisément dans [`docs/FORMAT.md`](docs/FORMAT.md).
 
----
+## Les deux schémas
 
-## 🚀 Why DNA Storage?
+| | `fountain` — DNA Fountain | `strands` — brins codés |
+|---|---|---|
+| Principe | gouttes sans ordre ni adresse : l'archive se reconstitue à partir de n'importe quelles lectures | brins adressés, protégés par deux niveaux de Reed-Solomon |
+| Oligo | 152 nt | 160 nt |
+| Redondance | réglable : la *marge de perte* `r` garantit la lecture après la perte aléatoire de `1 − 1/r` des oligos | 32 brins de parité par bloc de 223 |
+| Limite du format | ≈ 137 Gio | ≈ 420 Mio |
+| Densité (fichier incompressible) | 1,41 bit/nt (marge 1,1) ; 1,04 (marge 1,5) | 1,31 bit/nt |
+| Encodage de 1 Mio | 0,19 s | 0,04 s |
+| Bien pour | les archives qui doivent traverser des pertes ; les très gros fichiers | les petits fichiers ; un encodage rapide |
 
-DNA is an attractive medium for long-term archival storage due to its raw density and durability. This section provides general background; the specific numbers below are physical/theoretical properties of DNA as a medium, not claims about this software's performance.
+**Comment choisir.** `fountain` est le schéma par défaut : c'est celui de l'article de référence,
+et sa marge de perte se règle. En dessous de quelques centaines de kilooctets, `strands` produit
+beaucoup moins d'oligos : un fichier de 75 octets donne 49 brins, contre 141 oligos avec
+`fountain`. Au-delà de 420 Mio, seul `fountain` convient.
 
-### The Problem
-- Global data volume continues to grow exponentially
-- Traditional storage (HDD, tape, SSD) has a 5–10 year lifespan and requires constant migration
-- Data centers consume significant electricity for cooling and operation
+Le détail, les paramètres et la tolérance aux erreurs mesurée de chaque schéma sont dans
+[`docs/encoding_schemes.md`](docs/encoding_schemes.md).
 
-### DNA as a Storage Medium
-- **Density**: DNA can theoretically store ~455 PB/gram (2 bits/base, ~1.4 × 10²¹ bases/gram)
-- **Durability**: DNA is stable for centuries to millennia under cool, dry, dark conditions
-- **No power needed**: Once synthesized, DNA requires no electricity to retain data
+## Installation
 
-> **Note**: The figures above are physical properties of DNA molecules from the scientific literature, not measurements produced by this software. This library handles the **encoding/decoding** step — converting bytes ↔ DNA sequences. Physical density and cost depend on the synthesis/sequencing provider.
+Il faut Rust 1.94 ou plus récent ([rustup](https://rustup.rs)).
 
----
-
-## ✨ Core Capabilities
-
-### Encoding Schemes
-| Scheme | Source Paper | Key Feature | Status |
-|--------|-------------|-------------|--------|
-| **DNA Fountain** (EZ 2017) | Erlich-Zielinski, Science 2017 | LT codes, Robust Soliton distribution, screening | ✅ Round-trip validated |
-| **Goldman 2013** | Goldman et al., Nature 2013 | Rotational encoding, 3-base homopolymer avoidance | ✅ Round-trip validated |
-| **Grass 2015** | Grass et al., Nat Biotech 2015 | Reed-Solomon ECC, 3-segment addressing | ✅ Round-trip validated |
-
-### Error Correction
-| Codec | Type | Round-trip Tested | Notes |
-|-------|------|:-:|-------|
-| **Reed-Solomon (255, 223)** | Block ECC (delegates to `reed-solomon` crate) | ✅ strict | Corrects 16 errors or 32 erasures per 255-byte block |
-| **LDPC** | Belief propagation (sum-product) | ✅ strict | Regular (3,6) parity-check matrix, 20% overhead |
-| **Concatenated** | RS outer + Convolutional inner | ✅ | Viterbi decoder implemented (K=7, rate 1/2, G1=171₈ G2=133₈) |
-| **Enhanced RS + Spreading** | RS + matrix interleaving | ✅ strict | Disperses burst errors before RS correction |
-
-### Data Processing Pipeline
-- **LZ4 / Huffman compression**: Optional pre-encoding compression with size-prefixed LZ4 (ensures correct padding truncation during Fountain decode)
-- **Adaptive analysis**: Entropy-based data type detection → automatic compression method selection
-- **Spreading code**: Matrix interleaving (block_size configurable) transforms burst errors into dispersed errors
-- **GC-balancing** (EZ 2017): Deterministic rotational 2-bit→base encoding + screening guarantees GC 40–60% and homopolymer <4
-
-### DNA Format & Compliance
-- **FASTA I/O**: Read/write standard FASTA files with metadata in headers
-- **Illumina structure**: P5/P7 adapters, barcodes, and multiplexing format support (simplified placeholder sequences — not production-accurate)
-- **GC constraints**: Configurable GC content bounds and homopolymer limits per encoding scheme
-
-### Simulation Framework
-- **Error channel**: Models substitution, insertion, and deletion with configurable per-base rates
-- **Reproducible**: Uses `ChaCha8Rng` with explicit seeds for deterministic results
-- **Metrics**: Min/max/average error rates across iterations, ASCII table reporting
-
-### CLI & Web Interface
-- **CLI** (`adn`): Four subcommands — `encode`, `decode`, `simulate`, `visualize` (table/JSON/HTML output)
-- **Web UI** (Actix-web): Drag-and-drop file upload, encode/decode jobs, FASTA download. **No authentication** — intended for local use only. Progress reporting is polling-based (not WebSocket).
-
----
-
-## 🏗️ Architecture
-
-### Workspace Structure
-```
-DNAproof/
-├── crates/
-│   ├── core/         # All codecs, ECC, encoding schemes, GC optimizer, constraints
-│   ├── cli/          # Command-line interface (clap)
-│   ├── web/          # Local web server (Actix-web + Tera templates)
-│   ├── storage/      # Virtual DNA pool + SQLite/Postgres repository (SQLite working)
-│   ├── simulation/   # Error channel model + metrics collection
-│   └── utils/        # Shared utilities (math, conversion)
-├── docs/             # Technical documentation
-├── Cargo.toml        # Workspace manifest
-└── config.toml       # Runtime configuration
-```
-
-### Encoding Pipeline (DNA Fountain / EZ 2017)
-```
-Input bytes
-    │
-    ▼
-┌──────────────┐
-│ Compression  │  LZ4 (size-prefixed) or adaptive (Huffman/LZ4/None)
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ Chunk split  │  Fixed-size chunks, padded to uniform length for XOR
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ LT encoding  │  Robust Soliton degree sampling → XOR droplets
-│ + Screening  │  (EZ 2017: reject droplets violating GC/homopolymer)
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ 2-bit→base   │  Rotational mapping (4 tables cycling by position)
-│ conversion   │  Inverted at decode by position-based lookup
-└──────┬───────┘
-       │
-       ▼
-  DNA sequences (FASTA)
-```
-
-### Decoding Pipeline (reverse)
-```
-DNA sequences → base→2-bit (inverse rotation) → LT peeling decoder
-→ padding truncation (via LZ4 size prefix) → decompression → original bytes
-```
-
----
-
-## 🧪 Installation & Usage
-
-### Prerequisites
-- Rust 1.70+ (2021 edition)
-- Optional: SQLite (for storage layer)
-
-### Build
-```bash
-git clone https://github.com/duan78/DNAproof.git
+```sh
+git clone https://github.com/duan78/DNAproof
 cd DNAproof
-
-# Debug build
-cargo build
-
-# Release build (optimized)
-cargo build --release
+cargo build --release --locked -p adn-cli -p adn-web
 ```
 
-The CLI binary is `target/debug/adn` (or `target/release/adn` for release).
-On Windows the binary has a `.exe` extension automatically.
+`target/release/adn` est la ligne de commande ; `target/release/adn-web`, le serveur web. Une
+image Docker est décrite dans le [guide de production](PRODUCTION_GUIDE.md#docker).
 
-### CLI Usage
+## Ligne de commande
 
-```bash
-# Encode a file into DNA sequences
-./target/release/adn encode \
-  --input data.pdf \
-  --output archive.fasta \
-  --algorithm fountain \
-  --redundancy 2.0
+### Encoder
 
-# Decode DNA sequences back to the original file
-./target/release/adn decode \
-  --input archive.fasta \
-  --output recovered.pdf
+```console
+$ adn encode --input lettre.txt
+Encodage de lettre.txt :
+  Fichier     : lettre.txt (75 o)
+  Schéma      : DNA Fountain (Erlich et Zielinski, 2017)
+  Compression : aucune (corps de 135 o)
+  Oligos      : 141 au total : 129 de données et 12 manifestes, de 152 nt chacun
+  Nucléotides : 21 432
+  Densité     : 0.028 bits par nucléotide
+  Redondance  : marge 1.10 ; 25.80 gouttes par bloc
+  SHA-256     : 2b8fe8fb37d80884a8a24aa8e419f526cdb665659746b2653b5fa69b23ae4b78
+  Durée       : 0.01 s
 
-# Simulate DNA storage errors on encoded sequences
-./target/release/adn simulate \
-  --input archive.fasta \
-  --substitution-rate 0.01 \
-  --insertion-rate 0.005 \
-  --deletion-rate 0.005 \
-  --iterations 100
-
-# Visualize sequence statistics
-./target/release/adn visualize \
-  --input archive.fasta \
-  --format table
+Archive écrite : lettre.fasta
 ```
 
-**Available algorithms**: `fountain`, `goldman`, `goldman2013`, `grass2015`, `adaptive`, `base3`, `ultimate`
+L'archive s'écrit à côté du fichier, ou là qu'indique `--output`. Les options :
 
-### Web Interface
-```bash
-cargo run -p adn-web
-# Open http://127.0.0.1:8080
+| Option | Rôle |
+|--------|------|
+| `-a, --algorithm <fountain\|strands>` | schéma d'encodage (`fountain` par défaut) |
+| `-r, --redundancy <r>` | marge de perte de DNA Fountain (`1.1` par défaut) |
+| `--rs-parity <1-32>` | octets de parité Reed-Solomon par oligo, pour DNA Fountain (`2`) : un oligo résiste à la moitié d'octets erronés, et s'allonge de 4 nt par octet. À relever devant des erreurs de synthèse |
+| `-c, --compression <auto\|none\|lz4\|zstd>` | compression du fichier avant encodage (`auto` : zstd s'il rapporte) |
+| `--gc-min`, `--gc-max`, `--max-homopolymer` | contraintes biochimiques (0.45, 0.55, 3) |
+| `--json` | sortie en JSON, pour un script |
+
+### Décoder
+
+```console
+$ adn decode --input lettre.fasta
+Décodage de lettre.fasta :
+  Schéma         : DNA Fountain (Erlich et Zielinski, 2017)
+  Compression    : aucune
+  Lectures       : 141 (141) ; 12 manifestes confirmants
+  Corrigées      : 0 lectures
+  Irrécupérables : 0 lectures
+  Fichier        : lettre.decoded (75 o)
+  SHA-256        : 2b8fe8fb37d80884a8a24aa8e419f526cdb665659746b2653b5fa69b23ae4b78
+
+L'empreinte embarquée dans l'archive correspond.
 ```
 
-Features: drag-and-drop upload, encode/decode jobs, FASTA download, dark mode UI.
-**No authentication** — bind to localhost only.
+Le schéma et la compression sont lus dans l'archive. Plusieurs fichiers de lectures se
+concatènent (`--input` se répète). `--expect-sha256` impose l'empreinte du fichier :
 
-### Run Tests
-```bash
-# Full test suite
-cargo test --workspace
+```console
+$ adn decode --input archive.fasta --expect-sha256 0000…0000
+Error: l'empreinte du fichier restitué (976d9a67…) ne correspond pas à celle attendue (0000…) ; rien n'a été écrit
+```
 
-# Run benchmarks
+### Vérifier une archive
+
+`adn verify` contrôle une archive sans rien écrire : contraintes de chaque oligo, manifeste,
+décodabilité, empreinte.
+
+```console
+$ adn verify --input alea-brins.fasta
+Vérification de alea-brins.fasta :
+  Séquences   : 40 043 (alea-brins.fasta), de 160 à 160 nt
+  GC          : de 45.0 à 55.0 %, 50.2 % en moyenne
+  Contraintes : 40 043/40 043 séquences respectent GC 45–55 % et suites ≤ 3 (la plus longue : 3)
+  Archive     : décodable ; empreinte vérifiée
+  Schéma      : Brins codés (Reed-Solomon interne et externe)
+  Fichier     : 1 048 576 octets
+  SHA-256     : 976d9a6758b4c379fc7422ce2658a8fb235c3ab8e20805595d8a4e70b72e9419
+```
+
+### Simuler la dégradation d'une archive
+
+`adn simulate` dégrade une archive — perte d'oligos, erreurs de synthèse portées par toutes les
+lectures d'un oligo, erreurs de séquençage propres à chaque lecture, couverture — puis tente de
+la relire, plusieurs fois :
+
+```console
+$ adn simulate --archive --input alea-fontaine.fasta --substitution-rate 0.001 --coverage 3 --trials 10
+Simulation sur alea-fontaine.fasta (archive existante) : 10 tirages, schéma DNA Fountain (Erlich et Zielinski, 2017)
+Canal, par nucléotide : synthèse 0.00 % / 0.00 % / 0.00 %, séquençage 0.10 % / 0.00 % / 0.00 % (substitution / insertion / délétion) ; perte 0.00 % ; couverture 3
+
+Tirage   Lectures Oligos perdus   Intactes   Hors long.  Résultat
+1          159619         5.1 %     137215            0  récupéré (second passage)
+…
+Récupérations : 10 sur 10 tirages
+Fichiers faux : 0 : un échec est toujours annoncé
+```
+
+Sans `--archive`, le fichier d'origine est encodé puis dégradé. `--seed` rend un tirage
+reproductible.
+
+### Statistiques de séquences
+
+```console
+$ adn visualize --input lettre.fasta
+Séquences : 141   Nucléotides : 21432   Longueurs : 152 à 152 nt
+GC : 45.4 à 54.6 % (moyenne 49.9 %)   Plus longue suite : 3   Conformes : 141/141
+
+Rang   Longueur        GC Suite max Conforme
+0           152     49.3 %         3 oui
+…
+```
+
+`--format html` écrit une page, `--format json` un objet, `--all` toutes les séquences.
+
+## Serveur web
+
+```sh
+cd crates/web
+../../target/release/adn-web
+# Serveur ADN 0.2.0 sur http://127.0.0.1:8080 (fichiers jusqu'à 25 Mio, 2 tâche(s) à la fois)
+```
+
+On dépose un fichier, on télécharge l'archive FASTA ; ou l'inverse. Les résultats sont conservés
+24 heures. Le serveur n'écoute que sur la machine elle-même, et il n'y a pas d'authentification :
+c'est un outil de poste de travail. Pour l'exposer, une base de données, un proxy inverse, systemd
+ou Docker : [guide de production](PRODUCTION_GUIDE.md). L'API : [référence](docs/api_reference.md).
+
+## Bibliothèque
+
+```rust
+use adn_core::{decode, encode, DecodeOptions, EncodeOptions, Scheme};
+
+let options = EncodeOptions::for_scheme(Scheme::Strands);
+let archive = encode(b"donnees", &options)?;
+adn_core::fasta::write_archive("archive.fasta", &archive.oligos, Scheme::Strands, archive.stats.manifest_copies)?;
+
+let records = adn_core::fasta::read_file("archive.fasta")?;
+let decoded = decode(records.iter().map(|record| record.sequence.as_slice()), &DecodeOptions::default())?;
+assert_eq!(decoded.data, b"donnees");
+```
+
+Les crates : `adn-core` (codecs, format, FASTA), `adn-simulation` (canal et erreurs),
+`adn-storage` (SQLite, PostgreSQL), `adn-cli`, `adn-web`.
+
+## Performances mesurées
+
+`cargo bench -p adn-core`. Construction `--release`, sur un AMD Ryzen AI Max+ 395 (32 threads).
+Fichiers incompressibles — le détail, les grandes tailles et la mémoire dans
+[Performances](docs/PERFORMANCE.md) :
+
+| | 64 Kio | 256 Kio | 1 Mio |
+|---|---|---|---|
+| Encodage `fountain` (marge 1,1) | 32 ms | 70 ms | 187 ms |
+| Encodage `strands` | 33 ms | 34 ms | 41 ms |
+| Décodage `fountain`, archive intacte | 3,8 ms | 13,7 ms | 63 ms |
+| Décodage `strands`, archive intacte | 2,8 ms | 9,0 ms | 31 ms |
+| Décodage `fountain`, 0,1 % de substitution, 3 lectures par oligo | 7,0 ms | 26 ms | 113 ms |
+| Décodage `strands`, 0,5 % de substitution | 4,7 ms | 12 ms | 45 ms |
+
+En grand : 32 Mio s'encodent en 6,9 s avec `fountain` (1,6 Go de mémoire), en 0,9 s avec
+`strands` (0,4 Go). Sur un fichier texte, la compression compte davantage que le schéma : 1,32 Mio
+de texte tient en 9 982 oligos une fois compressé par zstd, contre 39 000 pour un Mio d'octets au
+hasard.
+
+## Limites connues
+
+Elles sont mesurées, et détaillées dans [les schémas](docs/encoding_schemes.md#tolérance-aux-erreurs).
+Sur les 670 tirages de la matrice, aucun fichier faux n'a jamais été rendu.
+
+- **Erreurs de lecture.** Avec sa parité par défaut (deux octets), DNA Fountain ne corrige qu'une
+  erreur par oligo : dès 0,1 % de substitution par nucléotide, il faut plusieurs lectures par
+  oligo, et une vingtaine à 1 %. `strands` corrige deux octets par brin, et jusqu'à 32 brins
+  manquants sur 255.
+- **Insertions et suppressions.** Une lecture qui change de longueur est écartée. À 0,5 %
+  d'insertion et de suppression, `fountain` ne s'en tire qu'à marge large, et pas à tous les
+  coups ; `strands` jamais.
+- **Erreurs de synthèse.** Portées par toutes les lectures d'un oligo, elles ne se compensent
+  pas : il faut plus de parité par oligo (`--rs-parity 8`).
+- **Petits fichiers.** DNA Fountain leur donne beaucoup de redondance : 141 oligos pour 75 octets.
+  `strands` est bien plus économe.
+- **Fichiers de plus de 420 Mio.** Seul `fountain` convient.
+- **La mémoire.** Encoder avec `fountain` demande environ cinquante fois la taille du fichier
+  (1,6 Go pour 32 Mio) : la limite pratique d'un poste de travail vient avant celle du format.
+  Voir [performances](docs/PERFORMANCE.md).
+
+## Vérifier
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 cargo bench -p adn-core
-
-# Lint
-cargo clippy --workspace
+cargo audit          # aucune vulnérabilité connue des dépendances
 ```
 
----
+Le test du dépôt PostgreSQL est ignoré par défaut ; il lui faut un serveur et
+`STORAGE_TEST_DATABASE_URL=postgres://…`. Les tests d'échelle (des dizaines de méga-octets)
+sont ignorés aussi : `cargo test --release -p adn-core --test scale -- --ignored`.
 
-## 🧬 Technical Specifications
+## Documentation
 
-### DNA Constraints (configurable per scheme)
-- **GC content**: Default 40–60% (relaxed to 0–100% for schemes that don't enforce it)
-- **Homopolymer**: Default max 3 consecutive identical bases (configurable)
-- **Sequence length**: Default 150 nt (Illumina standard), up to 200 nt configurable
+- [Spécification du format d'archive](docs/FORMAT.md)
+- [Les schémas d'encodage](docs/encoding_schemes.md) et [performances mesurées](docs/PERFORMANCE.md)
+- [Guide de production](PRODUCTION_GUIDE.md) et [référence de l'API web](docs/api_reference.md)
+- [Journal des changements](CHANGELOG.md)
 
-### Encoding Scheme Details
+## Références
 
-#### DNA Fountain (Erlich-Zielinski 2017)
-- **Algorithm**: LT codes with Robust Soliton degree distribution (c=0.1)
-- **GC-balancing**: Rotational encoding + screening guarantees GC 40–60% and homopolymer <4
-- **Redundancy**: Configurable (recommended ≥2.0× for small files; the paper's 1.05× applies to thousands of chunks)
-- **Decode**: Peeling decoder with belief propagation; tolerates droplet loss up to the redundancy margin
+- Erlich Y., Zielinski D. — *DNA Fountain enables a robust and efficient storage architecture*,
+  Science 355:950–954, 2017.
+- Grass R. N., Heckel R., Puddu M., Paunescu D., Stark W. J. — *Robust Chemical Preservation of
+  Digital Information on DNA in Silica with Error-Correcting Codes*, Angewandte Chemie
+  International Edition 54:2552–2555, 2015.
+- Luby M. — *LT codes*, FOCS 2002.
 
-#### Goldman et al. 2013
-- **Algorithm**: Huffman/LZ4 compression + 3-base rotational encoding (homopolymer ≤3)
-- **Addressing**: Chunk-indexed sequences
-- **Note**: Current implementation uses LZ4 compression (not Huffman) as a practical proxy
+## Licence
 
-#### Grass et al. 2015
-- **Algorithm**: Reed-Solomon (255, 223) ECC + 3-segment addressing
-- **Block index**: 16-bit (supports up to 65,535 sequences)
-- **Features**: Balanced GC padding, RS error correction per block
-
-### Error Correction Details
-| Codec | Configuration | Corrects | Tested With Errors? |
-|-------|--------------|----------|:---:|
-| Reed-Solomon | (255, 223), 32-byte ECC | 16 errors / 32 erasures per block | ✅ |
-| LDPC | Rate 4/5, 20% parity, sum-product BP | *Not benchmarked with error injection* | ❌ |
-| Concatenated (Viterbi) | K=7, rate 1/2, RS outer | *Not benchmarked with error injection* | ❌ |
-| Enhanced RS + Spreading | RS + matrix interleave | RS capacity, burst-dispersed | ✅ |
-
-> **Transparency note**: LDPC and Viterbi decoders are implemented and pass **noiseless round-trip** tests (`assert_eq!(original, decoded)`), but no test currently injects errors and verifies correction capacity. The RS and Enhanced RS codecs are tested with injected errors. Future work: add error-injection tests for LDPC and concatenated codes.
-
----
-
-## 📊 Test Results
-
-```bash
-cargo test --workspace
-```
-
-| Test Category | Count | What They Verify |
-|--------------|:-----:|-----------------|
-| Core codec round-trips | 127 | `encode → decode == original` (strict) |
-| EZ 2017 paper validation | 8 | GC 40–60%, homopolymer <4, density, overhead, droplet loss tolerance |
-| End-to-end error recovery | 4 | `encode → error injection → decode == original` |
-| Error injection (LDPC/Viterbi/RS) | 3 | Bit-flip injection → correction verification |
-| Goldman 2013 / Grass 2015 | 13 | Round-trip fidelity across data types |
-| Storage / Utils / Simulation | 29 | Database, math, conversion, channel model |
-| **Total** | **181** | **0 failed, 0 ignored** |
-
-### Key Test Properties
-- **All round-trips are strict**: `assert_eq!(original, decoded)` — no "check non-empty" shortcuts
-- **EZ 2017 constraints enforced**: GC content and homopolymer limits are asserted per-sequence (via rotational encoding + screening)
-- **End-to-end error recovery**: The simulation channel (substitution/insertion/deletion) is connected to the decoder, verifying actual data recovery — including a test proving 30% droplet loss tolerance
-- **Error injection tests**: RS and Viterbi correction verified with injected bit/byte errors; LDPC limitation documented
-
----
-
-## ⚠️ Known Limitations
-
-- **No real DNA synthesis**: This is a software library only. It produces FASTA files but does not interface with synthesis/sequencing hardware or providers.
-- **No authentication in web layer**: The web UI is intended for local use (localhost binding). Do not expose it to a network without adding auth.
-- **EZ 2017 screening fallback**: For degenerate data (highly repetitive payloads producing identical droplets), the screening may accept non-conforming droplets to avoid blocking. This is logged with a warning.
-- **LDPC error correction**: The LDPC codec uses a simplified regular (3,6) parity-check matrix that does not support error correction (only noiseless round-trip). A production LDPC would need a denser H-matrix.
-- **Illumina sequences**: The P5/P7 adapter and barcode sequences are simplified placeholders, not production-accurate.
-
----
-
-## 🚀 Roadmap
-
-### Current State: v0.1.0 (alpha)
-- ✅ Three encoding schemes with strict round-trip validation
-- ✅ Reed-Solomon, LDPC, and concatenated (Viterbi) codecs
-- ✅ GC-balancing for EZ 2017 (rotational encoding + screening)
-- ✅ End-to-end error recovery tests
-- ✅ Error injection tests (RS, Viterbi verified; LDPC limitation documented)
-- ✅ Throughput benchmarks (encode/decode/ECC, registered in Cargo.toml)
-- ✅ CI/CD pipeline (GitHub Actions: build, test, clippy, fmt on Ubuntu + Windows)
-- ✅ Dockerfile for containerized deployment (multi-stage build)
-- ✅ Postgres support in storage layer (stubbed fetch_all replaced with generic fetch_count)
-- ✅ CLI with 4 subcommands + local web UI
-- ✅ Simulation framework with reproducible error model
-
-### Planned
-- [ ] Real DNA synthesis provider API integration
-- [ ] Production-grade LDPC matrix (denser H-matrix for actual error correction)
-- [ ] Turbocodes / polar codes for advanced ECC
-- [ ] GPU-accelerated encoding
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome. This is a research/educational project.
-
-### How to Contribute
-```bash
-# 1. Fork & clone
-git clone https://github.com/<your-username>/DNAproof.git
-
-# 2. Create a branch
-git checkout -b feature/your-feature
-
-# 3. Test your changes
-cargo test --workspace
-cargo clippy --workspace
-
-# 4. Commit and push
-git commit -m "Add: description of your feature"
-git push origin feature/your-feature
-
-# 5. Open a Pull Request
-```
-
-### Guidelines
-- Add tests for new features (strict round-trip assertions preferred)
-- Run `cargo clippy` before submitting
-- Keep PRs focused
-- Document any new encoding schemes or codecs
-
----
-
-## 📚 Resources
-
-### Documentation (in `docs/`)
-- [Performance Analysis](docs/PERFORMANCE_ANALYSIS.md) — Cost/density derivations (theoretical)
-- [GC-Aware Encoding](docs/GC_AWARE_ENCODING.md) — Constraint optimization techniques
-- [Encoding Schemes](docs/encoding_schemes.md) — Algorithm comparisons
-- [API Reference](docs/api_reference.md) — Web API endpoints (note: some documented endpoints may not yet be implemented)
-
-### Research Papers
-- [DNA Fountain — Erlich-Zielinski, Science 2017](https://science.sciencemag.org/content/357/6358/1372)
-- [Goldman et al., Nature 2013](https://www.nature.com/articles/nature11875)
-- [Grass et al., Nature Biotechnology 2015](https://www.nature.com/articles/nbt.3147)
-
-### Industry Resources
-- [DNA Data Storage Alliance](https://www.dnastoragealliance.org/)
-- [Twist Bioscience](https://www.twistbioscience.com/) — DNA synthesis
-- [Illumina](https://www.illumina.com/) — Sequencing technology
-- [Catalog DNA](https://www.catalogna.com/) — Commercial DNA storage
-
----
-
-## 📄 License
-
-Licensed under **MIT OR Apache-2.0** (per `Cargo.toml`).
-
-> **Note**: The license is declared in the workspace `Cargo.toml` (`license = "MIT OR Apache-2.0"`). A standalone `LICENSE` file should be added for completeness.
-
----
-
-<div align="center">
-
-**[GitHub](https://github.com/duan78/DNAproof)** · **[Issues](https://github.com/duan78/DNAproof/issues)** · **[Discussions](https://github.com/duan78/DNAproof/discussions)**
-
-*Built with Rust · DNA Data Storage Library v0.1.0*
-
-</div>
+MIT OU Apache 2.0, au choix : [`LICENSE-MIT`](LICENSE-MIT) ou [`LICENSE-APACHE`](LICENSE-APACHE).

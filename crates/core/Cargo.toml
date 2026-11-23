@@ -4,43 +4,22 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
 thiserror = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-bio = { workspace = true }
+serde = { workspace = true }
 reed-solomon = { workspace = true }
-lz4 = { workspace = true }
+lz4_flex = { workspace = true }
 zstd = { workspace = true }
-rand = { workspace = true }
-rand_chacha = { workspace = true }
 sha2 = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }
-rayon = "1.8"  # Pour le parallélisme
-parking_lot = "0.12"  # Pour les structures thread-safe
-tracing = "0.1"  # Pour le logging avancé
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-lru = "0.12"  # Pour le cache LRU
-bincode = "1.3"  # Pour la sérialisation binaire
+rayon = { workspace = true }
 
 [dev-dependencies]
-criterion = "0.5"
+proptest = { workspace = true }
+criterion = { workspace = true }
 
+# `cargo bench -p adn-core` : mesures des codecs, pilotées par criterion.
 [[bench]]
-name = "encoding_benchmark"
-harness = false
-
-[[bench]]
-name = "density_benchmark"
-harness = false
-
-[[bench]]
-name = "decoding_benchmark"
-harness = false
-
-[[bench]]
-name = "throughput_benchmark"
+name = "codec"
 harness = false

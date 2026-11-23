@@ -2,44 +2,47 @@
 name = "adn-web"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-# Web framework
-actix-web = "4.9"
-actix-files = "0.6"
-actix-multipart = "0.7"
-actix-cors = "0.7"
+# Serveur HTTP. Sans les fonctionnalités que le serveur n'utilise pas — cookies, HTTP/2,
+# compression des réponses, websockets, dépôt temporaire des envois — : ce sont autant de
+# dépendances et de surfaces d'attaque en moins.
+actix-web = { version = "4.20", default-features = false, features = ["macros", "unicode", "compat"] }
+actix-files = "0.7"
+actix-multipart = { version = "0.8", default-features = false }
 
-# Template engine
-tera = "1.20"
+# Pages
+tera = "2"
 
-# Serialization
+# Sérialisation
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Async runtime
-tokio = { version = "1.0", features = ["full"] }
+# Tâches asynchrones
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 
-# UUID for job IDs
-uuid = { workspace = true, features = ["serde", "v4"] }
+# Identifiants et dates
+uuid = { workspace = true }
+jiff = { workspace = true }
 
-# Date/time handling
-chrono = { workspace = true }
-
-# Core library
+# Bibliothèques du projet
 adn-core = { path = "../core" }
 adn-storage = { path = "../storage" }
 
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Journaux
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 tracing-actix-web = "0.7"
 
-# File upload/download
+# Corps des requêtes multipart
 futures = "0.3"
 
 # Configuration
-config = "0.13"
+config = { version = "0.15", default-features = false, features = ["toml"] }
 
 [dev-dependencies]
-toml = "0.8"
+# Le type des requêtes de bas niveau, pour écrire des helpers de test typés.
+actix-http = "3"

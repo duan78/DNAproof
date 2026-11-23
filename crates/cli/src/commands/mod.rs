@@ -1,80 +1,44 @@
-//! Commandes CLI
+//! Commandes de la ligne de commande.
 
 pub mod decode;
 pub mod encode;
 pub mod simulate;
+pub mod verify;
 pub mod visualize;
 
-use adn_core::DnaSequence;
-use anyhow::Result;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use adn_core::fasta::{self, Record};
+use anyhow::{bail, Context};
+use std::path::{Path, PathBuf};
 
-/// Lit un fichier FASTA.
-///
-/// Les séquences invalides produisent une erreur explicite (une base
-/// inconnue indiquait auparavant une séquence silencieusement ignorée, et
-/// l'utilisateur voyait moins de séquences que le fichier n'en contenait).
-pub(crate) fn read_fasta(path: &Path, source: &str) -> Result<Vec<DnaSequence>> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| anyhow::anyhow!("Impossible d'ouvrir {}: {}", path.display(), e))?;
-    let reader = BufReader::new(file);
-    let mut sequences = Vec::new();
-
-    let mut current_seq = String::new();
-    let mut chunk_index = 0;
-
-    for line in reader.lines() {
-        let line = line?.trim().to_string();
-
-        if line.is_empty() {
-            continue;
+/// Lit des fichiers de lectures et refuse nettement les archives de la version 0.1.
+pub(crate) fn read_reads(paths: &[PathBuf]) -> anyhow::Result<Vec<Record>> {
+    let mut records = Vec::new();
+    for path in paths {
+        let loaded = fasta::read_file(path)
+            .with_context(|| format!("impossible de lire {}", path.display()))?;
+        if loaded.is_empty() {
+            bail!("{} ne contient aucune séquence", path.display());
         }
-
-        if line.starts_with('>') {
-            if !current_seq.is_empty() {
-                let seq = DnaSequence::from_str(
-                    &current_seq,
-                    source.to_string(),
-                    chunk_index,
-                    current_seq.len() / 4,
-                    0,
-                )
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Séquence #{} invalide dans {}: {}",
-                        chunk_index,
-                        path.display(),
-                        e
-                    )
-                })?;
-                sequences.push(seq);
-                chunk_index += 1;
-            }
-            current_seq = String::new();
-        } else {
-            current_seq.push_str(&line);
-        }
+        records.extend(loaded);
     }
-
-    if !current_seq.is_empty() {
-        let seq = DnaSequence::from_str(
-            &current_seq,
-            source.to_string(),
-            chunk_index,
-            current_seq.len() / 4,
-            0,
-        )
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Séquence #{} invalide dans {}: {}",
-                chunk_index,
-                path.display(),
-                e
-            )
-        })?;
-        sequences.push(seq);
+    if fasta::is_legacy_v1(&records) {
+        bail!("{}", fasta::LEGACY_HINT);
     }
+    Ok(records)
+}
 
-    Ok(sequences)
+/// Séquences seules : les en-têtes ne portent aucune information utile au décodage.
+pub(crate) fn sequences(records: &[Record]) -> Vec<Vec<u8>> {
+    records
+        .iter()
+        .map(|record| record.sequence.clone())
+        .collect()
+}
+
+/// Nom du fichier, pour l'affichage.
+pub(crate) fn name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("?")
+        .to_string()
 }

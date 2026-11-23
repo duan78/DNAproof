@@ -1,28 +1,37 @@
-//! ADN Core Library
+//! adn-core : codecs d'archivage de données numériques en séquences d'ADN.
 //!
-//! Bibliothèque principale pour l'encodage/décodage de fichiers en ADN virtuel.
+//! Deux schémas produisent des oligos qui se suffisent à eux-mêmes : une archive se décode depuis
+//! ses seules séquences, et un fichier n'est jamais rendu si son empreinte SHA-256 n'est pas
+//! vérifiée.
+//!
+//! - [`Scheme::Fountain`] : DNA Fountain (Erlich et Zielinski, 2017).
+//! - [`Scheme::Strands`] : brins codés, à deux niveaux de Reed-Solomon.
+//!
+//! ```
+//! let options = adn_core::EncodeOptions::default();
+//! let archive = adn_core::encode(b"donnees", &options).unwrap();
+//! let decoded = adn_core::decode(&archive.oligos, &adn_core::DecodeOptions::default()).unwrap();
+//! assert_eq!(decoded.data, b"donnees");
+//! ```
+//!
+//! Le format est décrit dans `docs/FORMAT.md`.
 
-pub mod bio;
+pub mod checksum;
 pub mod codec;
 pub mod constraints;
+pub mod envelope;
 pub mod error;
-pub mod logging;
-pub mod performance;
+pub mod fasta;
+pub mod rs;
 pub mod sequence;
+pub mod verify;
 
-// Réexportations principales
-pub use bio::{
-    AdapterType, BarcodePosition, IlluminaAdapter, IlluminaBarcode, IlluminaConfig, IlluminaSystem,
-    IlluminaValidator,
+pub use codec::{
+    decode, encode, DecodeOptions, DecodeStats, Decoded, EncodeOptions, EncodeStats, Encoded,
+    Scheme,
 };
-pub use codec::{Decoder, DecoderConfig, Encoder, EncoderConfig, EncoderType, ReedSolomonCodec};
-pub use constraints::{
-    ConstraintChecker, DnaConstraintValidator, IncrementalConstraintValidator, IncrementalStats,
-};
+pub use constraints::DnaConstraints;
+pub use envelope::Compression;
 pub use error::{DnaError, Result};
-pub use logging::init_logging;
-pub use sequence::{DnaConstraints, DnaSequence, IupacBase, SequenceId, SequenceMetadata};
-// Les macros log_operation et log_error sont automatiquement exportées à la racine du crate
-pub use performance::{
-    AdvancedCacheManager, CacheStrategy, HybridCache, PerformanceCache, PerformanceOptimizer,
-};
+pub use fasta::Record;
+pub use verify::{OligoReport, PoolReport};

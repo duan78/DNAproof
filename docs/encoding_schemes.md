@@ -1,291 +1,169 @@
-# Schémas d'Encodage ADN
+# Les schémas d'encodage
 
-Ce document décrit les différents schémas d'encodage ADN implémentés dans ce projet, basés sur des publications scientifiques.
+Deux schémas répartissent un fichier en oligos. Ils partagent la même enveloppe, les mêmes
+manifestes et les mêmes contraintes biochimiques ([format](FORMAT.md)) ; ils diffèrent par la
+façon dont les oligos portent les données, donc par ce qu'ils savent traverser.
 
-## Table des Matières
+- **`fountain`** — DNA Fountain (Erlich et Zielinski, 2017) : des gouttes sans ordre ni adresse.
+- **`strands`** — brins codés : des brins adressés, protégés par deux niveaux de Reed-Solomon.
 
-- [Standards Publiés](#standards-publiés)
-  - [Goldman et al. 2013](#goldman-et-al-2013)
-  - [Erlich-Zielinski 2017](#erlich-zielinski-2017)
-  - [Grass et al. 2015](#grass-et-al-2015)
-- [Implémentations Custom](#implémentations-custom)
-- [Guide de Choix d'Algorithme](#guide-de-choix-dalgorithme)
-- [Performances Comparées](#performances-comparées)
+Le schéma se choisit à l'encodage. Il est écrit dans le manifeste de l'archive, et le décodage le
+lit : il n'y a jamais à s'en souvenir.
 
----
+## DNA Fountain
 
-## Standards Publiés
+### Principe
 
-### Goldman et al. 2013
+Le corps du fichier est coupé en blocs de 32 octets. Une *goutte* est le OU exclusif de quelques
+blocs, désignés par une graine de 4 octets : la graine donne le nombre de blocs (degré, tiré d'une
+distribution soliton robuste) et leurs rangs. L'oligo porte la graine, la goutte, et deux octets
+de parité : 38 octets, soit 152 nt.
 
-**Référence**: *Nature 2013* "Towards practical, high-capacity, low-maintenance information storage in synthesized DNA"
+Un oligo ne porte ni adresse ni rang. L'archive se reconstitue par *épluchage* : une goutte qui ne
+mélange plus qu'un bloc inconnu le révèle ; ce bloc est retiré des autres gouttes qui le
+mélangent, et ainsi de suite. Les lectures arrivent dans n'importe quel ordre, et n'importe
+lesquelles manquent : seules comptent les gouttes distinctes.
 
-**Algorithme**:
-- Encodage 3-base rotation (pas 2-bit fixe)
-- Addressing 8-base (16-bit) supportant jusqu'à 65,535 séquences
-- Segments alternés addressing/data
-- Contraintes GC équilibrées avec rotation
-- Oligos 100-150nt
+### Ce que règle l'encodeur
 
-**Performance**:
-- Densité: ~1.6 bits/base
-- Overhead: ~2.5× (addressing + rotation)
-- Tolérance erreur: Modérée
+| Paramètre | Défaut | Effet |
+|-----------|--------|-------|
+| marge de perte (`--redundancy`) | `1.1` | `r` : l'archive reste décodable après la perte aléatoire d'une fraction `1 − 1/r` des oligos, contrôlé sur 256 tirages |
+| parité par oligo (`--rs-parity`) | `2` | un oligo résiste à la moitié d'octets erronés ; l'oligo s'allonge de 4 nt par octet |
+| `c`, `δ` de la distribution | automatique, `0.001` | ajustés au nombre de blocs |
 
-**Quand l'utiliser**:
-- ✅ Meilleur pour: Fichiers texte, JSON, données répétitives
-- ✅ Petits à moyens fichiers (<100KB)
-- ⚠️ Éviter pour: Données déjà compressées
+**La marge n'est pas un chiffre indicatif.** L'encodeur tient un décodeur à jour et n'arrête
+d'ajouter des gouttes que lorsque l'archive reste décodable après l'écart aléatoire de la fraction
+`1 − 1/r` des oligos, pour chacun de 256 tirages indépendants. Un code LT a une queue de
+distribution lourde : sans ce contrôle, une archive à peine décodable échoue une fois sur dix dès
+qu'on lui retire des oligos.
 
-**Exemple**:
-```bash
-adn encode --input document.txt --output sequences/ --algorithm goldman2013
+**Les petits fichiers coûtent cher.** Pour quelques dizaines de blocs, la distribution soliton
+réclame beaucoup plus d'une goutte par bloc : un fichier de 75 octets donne 141 oligos, un de
+4 Ko environ 2,9 gouttes par bloc, et une densité de 0,5 bit par nucléotide. Au-delà de quelques
+centaines de kilooctets, on approche 1,2 goutte par bloc.
+
+**La parité par oligo.** Avec deux octets, une lecture ne corrige qu'un octet erroné. Les erreurs
+de *synthèse* — celles qui sont dans l'oligo lui-même, et que toutes ses lectures portent à
+l'identique — ne peuvent être démasquées par aucun vote : c'est la parité qui les corrige, ou rien.
+Huit octets font passer une synthèse à 1 % de substitution.
+
+## Brins codés
+
+### Principe
+
+Le corps est coupé en tranches de 30 octets, chacune dans un brin avec son index (3 octets) et
+quatre octets de parité interne : le mot de code de 37 octets est masqué par un flux dérivé d'un
+nonce de 3 octets. Un brin fait 40 octets, soit 160 nt.
+
+- **Code interne** : quatre octets de parité par brin corrigent jusqu'à 2 octets erronés par
+  lecture.
+- **Code externe** : les brins sont groupés par blocs de 223, et chaque bloc reçoit 32 brins de
+  parité, colonne par colonne. Le code corrige, dans chaque bloc, tout motif tel que
+  `2 · erreurs + brins manquants ≤ 32` : 32 brins manquants, ou 16 brins faux.
+
+### Ce qu'il faut savoir
+
+- Les brins sont adressés : l'archive a une taille fixe, sans redondance réglable.
+- L'index tient sur 24 bits : le corps ne dépasse pas 420 Mio.
+- C'est le schéma le plus économe pour les petits fichiers : 49 brins pour 75 octets.
+
+## Choisir
+
+| Vous avez… | Prenez |
+|------------|--------|
+| un petit fichier (moins de quelques centaines de kilooctets) | `strands` |
+| un fichier de plus de 420 Mio | `fountain` |
+| un canal qui perd des oligos | `fountain`, en relevant la marge (`--redundancy 1.5` voire plus) |
+| un canal à substitutions, peu de pertes | `strands` : il traverse 2 % de substitution |
+| un séquençage à insertions et suppressions | `fountain` avec une marge large et beaucoup de couverture, ou un séquençage meilleur : les lectures qui changent de longueur sont perdues |
+| une synthèse bruitée | `fountain` avec `--rs-parity 8` |
+
+## Tolérance aux erreurs
+
+Mesurée avec `adn simulate`, sur un fichier de 1 Mio d'octets incompressibles, 10 tirages par
+case. « 10/10 » : le fichier est restitué dans les dix tirages. **Sur les 670 tirages, aucun
+fichier faux n'a jamais été rendu** : un échec est toujours annoncé.
+
+La *couverture* est le nombre **moyen** de lectures par oligo, tiré d'une loi de Poisson — comme
+au séquençage. À couverture 1, 37 % des oligos n'ont aucune lecture : aucun schéma ne s'en
+remet. Les taux sont par nucléotide.
+
+| Scénario | `fountain` marge 1,1 | `fountain` marge 1,5 | `strands` |
+|----------|:--------------------:|:--------------------:|:---------:|
+| substitutions 0,1 %, couverture 1 | 0/10 | 0/10 | 0/10 |
+| substitutions 0,1 %, couverture 3 | 10/10 | 10/10 | 10/10 |
+| substitutions 0,1 %, couverture 5 | 10/10 | 10/10 | 10/10 |
+| substitutions 0,1 %, couverture 10 | 10/10 | 10/10 | 10/10 |
+| substitutions 0,5 %, couverture 5 | 6/10 | 10/10 | 10/10 |
+| substitutions 0,5 %, couverture 10 | 10/10 | 10/10 | 10/10 |
+| substitutions 1 %, couverture 10 | 0/10 | 2/10 | 10/10 |
+| substitutions 1 %, couverture 20 | 10/10 | 10/10 | 10/10 |
+| substitutions 1 %, couverture 30 | 10/10 | 10/10 | 10/10 |
+| substitutions 2 %, couverture 50 | 0/10 | 10/10 | 10/10 |
+| insertions et suppressions 0,5 %, couverture 5 | 0/10 | 7/10 | 0/10 |
+| insertions et suppressions 0,5 %, couverture 10 | 6/10 | 6/10 | 0/10 |
+| perte de 5 % des oligos | 10/10 | 10/10 | 10/10 |
+| perte de 8 % des oligos | 10/10 | 10/10 | 10/10 |
+| perte de 10 % des oligos | 10/10 | 10/10 | 0/10 |
+| perte de 15 % des oligos | 0/10 | 10/10 | 0/10 |
+| perte de 25 % des oligos | 0/10 | 10/10 | 0/10 |
+| synthèse : substitutions 0,5 %, couverture 5 | 0/10 | 0/10 | 0/10 |
+| tout combiné¹, couverture 10 | 0/10 | 10/10 | 10/10 |
+
+¹ substitutions 0,2 %, insertions 0,1 %, suppressions 0,1 %, synthèse 0,1 %, perte de 5 %.
+
+### Lire ce tableau
+
+- **Substitutions.** `strands` corrige deux octets par brin : il traverse 2 % de substitution.
+  `fountain` n'en corrige qu'un ; il compte alors sur les lectures reçues sans erreur, et il en
+  faut plusieurs par oligo dès que le taux dépasse 0,1 % : à 1 %, vingt lectures par oligo,
+  quelle que soit la marge. À 2 %, seule la marge de 1,5 s'en tire, avec cinquante lectures.
+- **Perte.** `fountain` traverse ce que sa marge promet, et un peu plus : à 1,1, 10 % de perte.
+  `strands` répare 32 brins manquants sur 255 par bloc — 12,5 % en théorie, 8 % en pratique avec
+  une couverture de 5, car les blocs les plus malmenés décident du sort de l'archive.
+- **Insertions et suppressions.** Une lecture dont la longueur a changé est écartée, par les deux
+  schémas : le décodage travaille sur des lectures de longueur exacte. À 0,5 % de chaque, il
+  reste environ 20 % de lectures utilisables. `fountain` s'en tire le mieux — 7 tirages sur 10,
+  à marge 1,5 — ; `strands` jamais.
+- **Synthèse.** Une erreur de synthèse est dans l'oligo : toutes ses lectures la portent. Avec
+  deux octets de parité, trois erreurs dans un oligo suffisent à perdre son avis, et aucun vote ne
+  peut le rattraper.
+
+### La parité par oligo, devant les erreurs de synthèse
+
+`fountain` à marge 1,1, couverture 5 sauf mention contraire :
+
+| Scénario | parité 4 (160 nt) | parité 8 (176 nt) |
+|----------|:-----------------:|:-----------------:|
+| synthèse : substitutions 0,5 % | 0/10 | 10/10 |
+| synthèse : substitutions 1 % | 0/10 | 10/10 |
+| synthèse 1 % et substitutions 1 %, couverture 10 | 0/10 | 5/10 |
+| substitutions 2 %, couverture 10 | 0/10 | 2/10 |
+| substitutions 5 %, couverture 30 | 0/10 | 0/10 |
+
+La parité protège des erreurs que toutes les lectures partagent ; elle ne remplace pas la
+couverture contre celles que chaque lecture porte seule.
+
+## Refaire ces mesures
+
+```sh
+adn encode --input fichier.bin --output archive.fasta
+adn simulate --archive --input archive.fasta \
+    --substitution-rate 0.01 --coverage 20 --trials 10
 ```
 
----
-
-### Erlich-Zielinski 2017 (DNA Fountain)
-
-**Référence**: *Science 2017* "DNA Fountain enables a robust and efficient storage architecture"
-
-**Algorithme**:
-- DNA Fountain codes (LT codes + distribution Robust Soliton)
-- Paramètres validés: c=0.1, δ=0.5
-- Contraintes biochemical strictes: GC 40-60%, homopolymer <4
-- Oligos 152nt
-- Compression LZ4/Zstd intégrée
-
-**Performance**:
-- Densité: ~1.92 bits/base (la plus élevée)
-- Overhead: ~1.03-1.07× (minimum théorique)
-- Tolérance: Excellente (peut perdre >30% oligos)
-
-**Quand l'utiliser**:
-- ✅ Meilleur pour: Fichiers volumineux, stockage archival
-- ✅ Images, PDF, binaires
-- ✅ Environnements avec taux d'erreur élevé
-- ⚠️ Éviter pour: Petits fichiers <1KB (overhead)
-
-**Exemple**:
-```bash
-adn encode --input archive.tar --output sequences/ --algorithm fountain --redundancy 1.05
-```
-
----
-
-### Grass et al. 2015
-
-**Référence**: *Nature Biotechnology 2015* "Robust chemical preservation of digital information on DNA in silica with error-correcting codes"
-
-**Algorithme**:
-- Addressing 3-segments (byte_offset, bit_offset, block_index)
-- Reed-Solomon (255, 223) comme code interne (version simplifiée actuelle)
-- 4% redondance logique
-- Oligos 124nt
-- Rotation pour éviter homopolymères
-
-**Performance**:
-- Densité: ~1.5 bits/base
-- Overhead: ~4% logique + redondance physique
-- Tolérance: Excellente (ECC multi-couches avec RS)
-
-**Quand l'utiliser**:
-- ✅ Meilleur pour: Archivage long-terme, haute fiabilité
-- ✅ Données critiques nécessitant une forte redondance
-- ⚠️ Éviter pour: Applications coûts-sensibles (plus d'oligos)
-
-**Exemple**:
-```bash
-adn encode --input critical_data.bin --output sequences/ --algorithm grass2015
-```
-
----
-
-## Implémentations Custom
-
-### DNA Fountain (Custom)
-
-Implémentation originale de DNA Fountain avec:
-- Distribution Robust Soliton simplifiée
-- Parallelisme avec Rayon
-- Contraintes GC configurables
-
-**Usage**: Pour tests et développement, utiliser EZ 2017 pour production.
-
-### Goldman (Simple 2-bit)
-
-Version simple de l'algorithme Goldman:
-- Encodage 2-bit fixe (00→A, 01→C, 10→G, 11→T)
-- Pas de rotation
-- Pas de contrôle des contraintes
-
-**Usage**: Tests et compatibilité uniquement. Utiliser Goldman 2013 pour production.
-
----
-
-## Guide de Choix d'Algorithme
-
-### Par Type de Fichier
-
-| Type | Meilleur Algorithme | Pourquoi |
-|------|---------------------|----------|
-| **TXT, CSV, JSON** | Goldman 2013 | Rotation + addressing efficace pour données répétitives |
-| **PDF, Images** | Erlich-Zielinski 2017 | Déjà compressés, densité maximale |
-| **Binaires** | Grass 2015 | Fiabilité maximale avec ECC multi-couches |
-| **Archives TAR/ZIP** | Erlich-Zielinski 2017 | Haute densité + excellente tolérance erreur |
-
-### Par Cas d'Usage
-
-| Cas d'Usage | Algorithme | Raison |
-|-------------|-----------|--------|
-| **Stockage archival** | Erlich-Zielinski 2017 | Densité max + tolérance erreur |
-| **Archivage long-terme** | Grass 2015 | ECC Reed-Solomon pour fiabilité maximale |
-| **Données critiques** | Grass 2015 | Redondance multi-couches |
-| **Prototypage** | Goldman 2013 | Simple et efficace |
-| **Démo/PoC** | Erlich-Zielinski 2017 | Meilleure densité = moins d'ADN |
-| **Budget limité** | Goldman 2013 | Moins d'oligos que Grass 2015 |
-
-### Par Taille de Fichier
-
-| Taille | Recommandation |
-|--------|----------------|
-| **< 1KB** | Goldman 2013 (overhead minimum) |
-| **1KB - 100KB** | Goldman 2013 ou Erlich-Zielinski 2017 |
-| **100KB - 10MB** | Erlich-Zielinski 2017 |
-| **> 10MB** | Erlich-Zielinski 2017 (densité optimale) |
-
----
-
-## Performances Comparées
-
-### Densité d'Information
-
-| Algorithme | Bits/Base | Bases/octet théorique | Efficacité |
-|-----------|-----------|----------------------|------------|
-| **Erlich-Zielinski 2017** | 1.92 | 4.17 | ★★★★★ |
-| **Goldman 2013** | 1.6 | 5.0 | ★★★★☆ |
-| **Grass 2015** | 1.5 | 5.33 | ★★★☆☆ |
-| **Goldman (Simple)** | 2.0 | 4.0 | ★★★★★ (sans contraintes) |
-
-**Note**: Plus "bases/octet" est faible, meilleure est l'efficacité.
-
-### Overhead (Redondance)
-
-| Algorithme | Overhead | Sequences/KB (données aléatoires) |
-|-----------|----------|-----------------------------------|
-| **Erlich-Zielinski 2017** | 1.03-1.07× | ~250 |
-| **Goldman 2013** | ~2.5× | ~500 |
-| **Grass 2015** | ~4% + RS | ~260 |
-| **Goldman (Simple)** | 1× | ~250 |
-
-### Tolérance aux Erreurs
-
-| Algorithme | Substitution | Insertion/Délétion | Perte oligos | Classement |
-|-----------|-------------|-------------------|--------------|------------|
-| **Grass 2015** | Excellent | Excellent | Bon (4%) | ★★★★★ |
-| **Erlich-Zielinski 2017** | Bon | Modéré | Excellent (30%+) | ★★★★☆ |
-| **Goldman 2013** | Modéré | Modéré | Faible | ★★★☆☆ |
-
-### Synthétisabilité (Coût)
-
-| Algorithme | Coût/oligo | Synthétisabilité | Recommandation |
-|-----------|-----------|------------------|----------------|
-| **Erlich-Zielinski 2017** | ★★★★★ | GC 40-60%, homo <4 | Meilleure pour synthèse |
-| **Goldman 2013** | ★★★★☆ | Rotation équilibrée | Bonne |
-| **Grass 2015** | ★★★☆☆ | Plus d'oligos = plus cher | OK pour archivage |
-
----
-
-## Utilisation API
-
-### Rust
-
-```rust
-use adn_core::{Encoder, EncoderConfig, EncoderType};
-
-// Erlich-Zielinski 2017
-let config = EncoderConfig {
-    encoder_type: EncoderType::ErlichZielinski2017,
-    redundancy: 1.05,
-    ..Default::default()
-};
-
-let encoder = Encoder::new(config)?;
-let sequences = encoder.encode(&file_data)?;
-
-// Goldman 2013
-let config = EncoderConfig {
-    encoder_type: EncoderType::Goldman2013,
-    ..Default::default()
-};
-
-let encoder = Encoder::new(config)?;
-let sequences = encoder.encode(&file_data)?;
-
-// Grass 2015
-let config = EncoderConfig {
-    encoder_type: EncoderType::Grass2015,
-    constraints: DnaConstraints {
-        gc_min: 0.0,
-        gc_max: 1.0,
-        max_homopolymer: 150,
-        max_sequence_length: 200,
-        allowed_bases: vec![IupacBase::A, IupacBase::C, IupacBase::G, IupacBase::T],
-    },
-    ..Default::default()
-};
-
-let encoder = Encoder::new(config)?;
-let sequences = encoder.encode(&file_data)?;
-```
-
-### CLI
-
-```bash
-# Erlich-Zielinski 2017 (recommandé)
-adn encode --input file.txt --output sequences/ \
-  --algorithm fountain --redundancy 1.05
-
-# Goldman 2013
-adn encode --input file.txt --output sequences/ \
-  --algorithm goldman2013
-
-# Grass 2015
-adn encode --input file.txt --output sequences/ \
-  --algorithm grass2015
-```
-
----
-
-## Recommandations Finales
-
-### Pour la Production
-
-1. **Par défaut**: Utiliser **Erlich-Zielinski 2017** (Fountain)
-   - Meilleure densité
-   - Excellente tolérance aux erreurs
-   - Contraintes biochemical optimales
-
-2. **Pour archivage long-terme**: Utiliser **Grass 2015**
-   - Reed-Solomon pour ECC
-   - Redondance multi-couches
-   - Fiabilité maximale
-
-3. **Pour données texte/répétitives**: Utiliser **Goldman 2013**
-   - Rotation efficace
-   - Addressing simple
-   - Bon compromis
-
-### Pour le Développement
-
-- Utiliser les tests unitaires dans `crates/core/src/codec/`
-- Voir `crates/core/tests/roundtrip_tests.rs` pour exemples
-- Consulter les papiers originaux pour détails théoriques
-
----
-
-## Références Scientifiques
-
-1. **Goldman et al. 2013**: "Towards practical, high-capacity, low-maintenance information storage in synthesized DNA" - *Nature* 494, 77-80
-2. **Erlich & Zielinski 2017**: "DNA Fountain enables a robust and efficient storage architecture" - *Science* 355, 950-954
-3. **Grass et al. 2015**: "Robust chemical preservation of digital information on DNA in silica with error-correcting codes" - *Nature Biotechnology* 33, 884-890
+Sans `--archive`, `simulate` encode le fichier avec les options données, puis le dégrade.
+`--synthesis-substitution-rate`, `--insertion-rate`, `--deletion-rate` et `--dropout` règlent le
+canal ; `--seed` rend un tirage reproductible.
+
+## Références
+
+- Erlich Y., Zielinski D. — *DNA Fountain enables a robust and efficient storage architecture*,
+  Science 355:950–954, 2017.
+- Grass R. N., Heckel R., Puddu M., Paunescu D., Stark W. J. — *Robust Chemical Preservation of
+  Digital Information on DNA in Silica with Error-Correcting Codes*, Angewandte Chemie
+  International Edition 54:2552–2555, 2015.
+- Luby M. — *LT codes*, FOCS 2002.
+- Goldman N. et al. — *Towards practical, high-capacity, low-maintenance information storage in
+  synthesised DNA*, Nature 494:77–80, 2013.

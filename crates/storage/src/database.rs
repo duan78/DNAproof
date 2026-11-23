@@ -1,203 +1,352 @@
-//! Module de base de données pour le stockage ADN
+//! Connexion aux bases de données : SQLite ou PostgreSQL.
+//!
+//! Les deux bases sont pilotées par le même code, avec les mêmes requêtes à paramètres
+//! numérotés (`$1`, `$2`…), que SQLite accepte comme PostgreSQL.
 
-use sqlx::postgres::PgPoolOptions;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Pool, Postgres, Sqlite};
+use sqlx::postgres::{PgPoolOptions, Postgres};
+use sqlx::sqlite::{Sqlite, SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::Pool;
 use std::str::FromStr;
-use tracing::{info, instrument};
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::info;
 
-/// Type de base de données supporté
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Base de données utilisée.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DatabaseType {
     Sqlite,
     Postgres,
 }
 
-/// Configuration de la base de données
-#[derive(Debug, Clone)]
+/// Paramètres de connexion.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatabaseConfig {
     pub db_type: DatabaseType,
+    /// Chemin d'un fichier SQLite, `:memory:`, ou URL PostgreSQL.
     pub connection_string: String,
+    /// Nombre maximal de connexions ouvertes.
     pub max_connections: u32,
 }
 
-impl Default for DatabaseConfig {
-    fn default() -> Self {
+impl DatabaseConfig {
+    /// Base SQLite dans un fichier.
+    pub fn sqlite(path: impl Into<String>) -> Self {
         Self {
             db_type: DatabaseType::Sqlite,
-            connection_string: ":memory:".to_string(),
+            connection_string: path.into(),
             max_connections: 5,
         }
     }
+
+    /// Base PostgreSQL, par URL (`postgres://utilisateur:mot_de_passe@hote/base`).
+    pub fn postgres(url: impl Into<String>) -> Self {
+        Self {
+            db_type: DatabaseType::Postgres,
+            connection_string: url.into(),
+            max_connections: 5,
+        }
+    }
+
+    /// Vérifie la cohérence des paramètres.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.connection_string.trim().is_empty() {
+            return Err(crate::StorageError::ConfigError(
+                "chaîne de connexion vide".to_string(),
+            ));
+        }
+        if self.max_connections == 0 {
+            return Err(crate::StorageError::ConfigError(
+                "au moins une connexion est nécessaire".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
-/// Gestionnaire de base de données principal
+/// Gestionnaire de la connexion : il possède le pool.
 pub struct DatabaseManager {
     config: DatabaseConfig,
-    pool: Option<DatabasePool>,
+    pool: Option<Arc<DatabasePool>>,
+}
+
+/// Adresse comprise par sqlx pour une base SQLite. sqlx exige une URL `sqlite://`.
+fn sqlite_url(connection: &str) -> String {
+    if connection.starts_with("sqlite:") {
+        connection.to_string()
+    } else if is_memory_database(connection) {
+        "sqlite::memory:".to_string()
+    } else {
+        format!("sqlite://{connection}")
+    }
+}
+
+/// Vrai pour les deux notations d'une base en mémoire.
+fn is_memory_database(connection: &str) -> bool {
+    matches!(connection, ":memory:" | "sqlite::memory:")
 }
 
 impl DatabaseManager {
-    /// Crée un nouveau gestionnaire de base de données
+    /// Prépare un gestionnaire, sans se connecter.
     pub fn new(config: DatabaseConfig) -> Self {
         Self { config, pool: None }
     }
 
-    /// Connecte à la base de données
-    #[instrument(skip(self))]
+    /// Paramètres du gestionnaire.
+    pub fn config(&self) -> &DatabaseConfig {
+        &self.config
+    }
+
+    /// Une part du pool, à donner aux dépôts et aux gestionnaires de requêtes.
+    pub fn shared_pool(&self) -> crate::Result<Arc<DatabasePool>> {
+        Ok(Arc::clone(self.pool()?))
+    }
+
+    /// Se connecte.
     pub async fn connect(&mut self) -> crate::Result<()> {
-        info!(
-            "Connexion à la base de données {}...",
-            match self.config.db_type {
-                DatabaseType::Sqlite => "SQLite",
-                DatabaseType::Postgres => "PostgreSQL",
-            }
-        );
-
+        self.config.validate()?;
         let pool = match self.config.db_type {
-            DatabaseType::Sqlite => {
-                // Normaliser la chaîne de connexion : sqlx exige une URL
-                // `sqlite://...` (un chemin nu comme "adn_storage.db" était
-                // rejeté) et ne crée pas le fichier sans create_if_missing.
-                let is_memory = self.config.connection_string == ":memory:"
-                    || self.config.connection_string == "sqlite::memory:";
-                let url = if self.config.connection_string.starts_with("sqlite:") {
-                    self.config.connection_string.clone()
-                } else if is_memory {
-                    "sqlite::memory:".to_string()
-                } else {
-                    format!("sqlite://{}", self.config.connection_string)
-                };
-
-                let mut options = SqliteConnectOptions::from_str(&url)?.create_if_missing(true);
-
-                // Une base en mémoire est privée à chaque connexion : limiter
-                // le pool à 1 pour que toutes les requêtes voient les mêmes
-                // données (sinon chaque connexion aurait une base vide).
-                let max_connections = if is_memory {
-                    1
-                } else {
-                    self.config.max_connections
-                };
-                if is_memory {
-                    options = options.shared_cache(true);
-                }
-
-                let sqlite_pool = SqlitePoolOptions::new()
-                    .max_connections(max_connections)
+            DatabaseType::Sqlite => DatabasePool::Sqlite({
+                let connection = self.config.connection_string.as_str();
+                let is_memory = is_memory_database(connection);
+                let options = SqliteConnectOptions::from_str(&sqlite_url(connection))?
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+                // Une base en mémoire est privée à chaque connexion : le pool est limité à
+                // une, pour que toutes les requêtes voient les mêmes données. sqlx ne crée
+                // pas le fichier sans `create_if_missing`.
+                SqlitePoolOptions::new()
+                    .max_connections(if is_memory {
+                        1
+                    } else {
+                        self.config.max_connections
+                    })
+                    .acquire_timeout(Duration::from_secs(10))
                     .connect_with(options)
-                    .await?;
-                DatabasePool::Sqlite(sqlite_pool)
-            }
-            DatabaseType::Postgres => {
-                let pg_pool = PgPoolOptions::new()
+                    .await?
+            }),
+            DatabaseType::Postgres => DatabasePool::Postgres(
+                PgPoolOptions::new()
                     .max_connections(self.config.max_connections)
+                    .acquire_timeout(Duration::from_secs(10))
                     .connect(&self.config.connection_string)
-                    .await?;
-                DatabasePool::Postgres(pg_pool)
-            }
+                    .await?,
+            ),
         };
-
-        self.pool = Some(pool);
-        info!("Connexion établie avec succès");
+        self.pool = Some(Arc::new(pool));
+        info!("Connexion établie");
         Ok(())
     }
 
-    /// Retourne le pool de connexions
-    pub fn pool(&self) -> crate::Result<&DatabasePool> {
+    /// Se connecte et applique les migrations.
+    pub async fn initialize(&mut self) -> crate::Result<()> {
+        self.connect().await?;
+        self.migrate().await
+    }
+
+    /// Applique les migrations.
+    pub async fn migrate(&self) -> crate::Result<()> {
+        match self.pool()?.as_ref() {
+            DatabasePool::Sqlite(pool) => {
+                sqlx::migrate!("./migrations/sqlite").run(pool).await?;
+            }
+            DatabasePool::Postgres(pool) => {
+                sqlx::migrate!("./migrations/postgres").run(pool).await?;
+            }
+        }
+        info!("Migrations appliquées");
+        Ok(())
+    }
+
+    /// Le pool, si la connexion est établie.
+    pub fn pool(&self) -> crate::Result<&Arc<DatabasePool>> {
         self.pool.as_ref().ok_or_else(|| {
-            crate::StorageError::ConnectionError("Base de données non connectée".to_string())
+            crate::StorageError::ConnectionError("base de données non connectée".to_string())
         })
     }
 
-    /// Initialise la base de données
-    #[instrument(skip(self))]
-    pub async fn initialize(&mut self) -> crate::Result<()> {
-        self.connect().await?;
-        self.migrate().await?;
-        Ok(())
-    }
-
-    /// Exécute les migrations
-    #[instrument(skip(self))]
-    pub async fn migrate(&self) -> crate::Result<()> {
-        let pool = self.pool()?;
-
-        match pool {
-            DatabasePool::Sqlite(pool) => {
-                sqlx::migrate!("./migrations/sqlite")
-                    .run(pool)
-                    .await
-                    .map_err(|e| crate::StorageError::MigrationError(e.to_string()))?;
-            }
-            DatabasePool::Postgres(pool) => {
-                sqlx::migrate!("./migrations/postgres")
-                    .run(pool)
-                    .await
-                    .map_err(|e| crate::StorageError::MigrationError(e.to_string()))?;
-            }
-        }
-
-        info!("Migrations exécutées avec succès");
-        Ok(())
-    }
-
-    /// Vérifie l'état de santé de la base de données
-    #[instrument(skip(self))]
+    /// Vérifie que la base répond.
     pub async fn health_check(&self) -> crate::Result<()> {
-        let pool = self.pool()?;
-
-        match pool {
-            DatabasePool::Sqlite(pool) => {
-                sqlx::query("SELECT 1").execute(pool).await?;
-            }
-            DatabasePool::Postgres(pool) => {
-                sqlx::query("SELECT 1").execute(pool).await?;
-            }
-        }
-
+        self.pool()?.execute("SELECT 1", &[]).await?;
         Ok(())
     }
 }
 
-/// Énumération des pools de base de données supportés
-/// Pool de connexions à la base de données
+/// Pool de connexions, pour l'un ou l'autre des deux bases.
 #[derive(Clone)]
 pub enum DatabasePool {
     Sqlite(Pool<Sqlite>),
     Postgres(Pool<Postgres>),
 }
 
-impl DatabasePool {
-    /// Exécute une requête SQL générique
-    pub async fn execute(&self, query: &str) -> crate::Result<u64> {
-        match self {
+/// Exécute le même code sur l'un ou l'autre des pools. `executor` désigne, dans `body`, une
+/// référence au pool (`&Pool<Sqlite>` ou `&Pool<Postgres>`) : `body` est compilé deux fois.
+macro_rules! on_pool {
+    ($pool:expr, $executor:ident => $body:expr) => {
+        match $pool {
             DatabasePool::Sqlite(pool) => {
-                let result = sqlx::query(query).execute(pool).await?;
-                Ok(result.rows_affected())
+                let $executor = pool;
+                $body
             }
             DatabasePool::Postgres(pool) => {
-                let result = sqlx::query(query).execute(pool).await?;
-                Ok(result.rows_affected())
+                let $executor = pool;
+                $body
             }
+        }
+    };
+}
+
+pub(crate) use on_pool;
+
+/// Une valeur passée à une requête. Dates et identifiants universels sont au format texte, lu
+/// pareil par les deux bases ; les nombres sont des entiers 64 bits, car PostgreSQL refuse de
+/// comparer un `bigint` à un texte.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Argument {
+    Text(String),
+    Int(i64),
+}
+
+impl From<String> for Argument {
+    fn from(text: String) -> Self {
+        Argument::Text(text)
+    }
+}
+
+impl From<&str> for Argument {
+    fn from(text: &str) -> Self {
+        Argument::Text(text.to_string())
+    }
+}
+
+impl From<i64> for Argument {
+    fn from(value: i64) -> Self {
+        Argument::Int(value)
+    }
+}
+
+/// Lie les arguments à la requête.
+fn bind<'q, 'e, DB: sqlx::Database>(
+    sql: impl sqlx::SqlSafeStr,
+    arguments: &[Argument],
+) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments>
+where
+    String: sqlx::Encode<'e, DB> + sqlx::Type<DB>,
+    i64: sqlx::Encode<'e, DB> + sqlx::Type<DB>,
+{
+    let mut query = sqlx::query(sql);
+    for argument in arguments {
+        query = match argument {
+            Argument::Text(text) => query.bind(text.clone()),
+            Argument::Int(value) => query.bind(*value),
+        };
+    }
+    query
+}
+
+/// Nombre de lignes touchées, lu pareil sur les deux bases.
+pub(crate) trait RowsAffected {
+    fn affected(&self) -> u64;
+}
+
+impl RowsAffected for sqlx::sqlite::SqliteQueryResult {
+    fn affected(&self) -> u64 {
+        self.rows_affected()
+    }
+}
+
+impl RowsAffected for sqlx::postgres::PgQueryResult {
+    fn affected(&self) -> u64 {
+        self.rows_affected()
+    }
+}
+
+/// Exécute une requête qui ne rend rien ; retourne le nombre de lignes touchées.
+pub(crate) async fn execute<'a, DB>(
+    executor: impl sqlx::Executor<'a, Database = DB>,
+    sql: impl sqlx::SqlSafeStr,
+    arguments: &[Argument],
+) -> crate::Result<u64>
+where
+    DB: sqlx::Database,
+    String: sqlx::Encode<'a, DB> + sqlx::Type<DB>,
+    i64: sqlx::Encode<'a, DB> + sqlx::Type<DB>,
+    <DB as sqlx::Database>::Arguments: sqlx::IntoArguments<DB>,
+    <DB as sqlx::Database>::QueryResult: RowsAffected,
+{
+    Ok(bind::<DB>(sql, arguments)
+        .execute(executor)
+        .await?
+        .affected())
+}
+
+/// Lit des lignes et les convertit.
+///
+/// `convert` reçoit chaque ligne par le trait `sqlx::Row` : les colonnes se lisent par leur nom.
+pub(crate) async fn fetch<'a, DB, T>(
+    executor: impl sqlx::Executor<'a, Database = DB>,
+    sql: impl sqlx::SqlSafeStr,
+    arguments: &[Argument],
+    convert: impl for<'r> Fn(&'r <DB as sqlx::Database>::Row) -> crate::Result<T>,
+) -> crate::Result<Vec<T>>
+where
+    DB: sqlx::Database,
+    String: sqlx::Encode<'a, DB> + sqlx::Type<DB>,
+    i64: sqlx::Encode<'a, DB> + sqlx::Type<DB>,
+    <DB as sqlx::Database>::Arguments: sqlx::IntoArguments<DB>,
+{
+    let rows: Vec<<DB as sqlx::Database>::Row> =
+        bind::<DB>(sql, arguments).fetch_all(executor).await?;
+    rows.iter().map(convert).collect()
+}
+
+impl DatabasePool {
+    /// Exécute une requête autonome ; retourne le nombre de lignes touchées. Une requête
+    /// construite à la main passe par [`sqlx::AssertSqlSafe`].
+    pub async fn execute(
+        &self,
+        sql: impl sqlx::SqlSafeStr,
+        arguments: &[Argument],
+    ) -> crate::Result<u64> {
+        on_pool!(self, executor => execute(executor, sql, arguments).await)
+    }
+
+    /// Ouvre une transaction.
+    pub async fn begin(&self) -> crate::Result<Transaction<'_>> {
+        Ok(match self {
+            DatabasePool::Sqlite(pool) => Transaction::Sqlite(pool.begin().await?),
+            DatabasePool::Postgres(pool) => Transaction::Postgres(pool.begin().await?),
+        })
+    }
+}
+
+/// Transaction en cours.
+pub enum Transaction<'a> {
+    Sqlite(sqlx::Transaction<'a, Sqlite>),
+    Postgres(sqlx::Transaction<'a, Postgres>),
+}
+
+impl Transaction<'_> {
+    /// Exécute une requête dans la transaction.
+    pub async fn execute(
+        &mut self,
+        sql: impl sqlx::SqlSafeStr,
+        arguments: &[Argument],
+    ) -> crate::Result<u64> {
+        match self {
+            Transaction::Sqlite(transaction) => execute(&mut **transaction, sql, arguments).await,
+            Transaction::Postgres(transaction) => execute(&mut **transaction, sql, arguments).await,
         }
     }
 
-    /// Exécute une requête SQL et retourne le nombre de lignes retournées.
-    ///
-    /// Note: `execute()` sur un SELECT rapporte toujours 0 ligne affectée —
-    /// il faut matérialiser les lignes et les compter.
-    pub async fn fetch_count(&self, query: &str) -> crate::Result<u64> {
+    /// Valide la transaction. Un abandon implicite (drop) annule ce qui a été fait.
+    pub async fn commit(self) -> crate::Result<()> {
         match self {
-            DatabasePool::Sqlite(pool) => {
-                let rows = sqlx::query(query).fetch_all(pool).await?;
-                Ok(rows.len() as u64)
-            }
-            DatabasePool::Postgres(pool) => {
-                let rows = sqlx::query(query).fetch_all(pool).await?;
-                Ok(rows.len() as u64)
-            }
+            Transaction::Sqlite(transaction) => transaction.commit().await?,
+            Transaction::Postgres(transaction) => transaction.commit().await?,
         }
+        Ok(())
     }
 }
 
@@ -205,95 +354,31 @@ impl DatabasePool {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_sqlite_file_connection_and_crud() {
-        // Régression : `Pool::<Sqlite>::connect("chemin_nu")` échouait —
-        // sqlx exige une URL sqlite:// et create_if_missing pour créer le
-        // fichier. On vérifie connexion + migration + CRUD complet.
-        let dir = std::env::temp_dir();
-        let db_path = dir.join(format!("adn_storage_test_{}.db", std::process::id()));
-        let db_path_str = db_path.to_string_lossy().to_string();
-
-        let mut manager = DatabaseManager::new(DatabaseConfig {
-            db_type: DatabaseType::Sqlite,
-            connection_string: db_path_str.clone(),
-            max_connections: 2,
-        });
-
-        manager
-            .initialize()
-            .await
-            .expect("connexion + migrations doivent réussir");
-
-        let pool = match manager.pool().unwrap() {
-            DatabasePool::Sqlite(p) => p.clone(),
-            _ => panic!("attendait un pool SQLite"),
-        };
-
-        let repo = crate::SequenceRepository::new(std::sync::Arc::new(DatabasePool::Sqlite(pool)));
-
-        let bases = vec![
-            adn_core::IupacBase::A,
-            adn_core::IupacBase::C,
-            adn_core::IupacBase::G,
-            adn_core::IupacBase::T,
-        ];
-        let seq = adn_core::DnaSequence::new(bases, "test.bin".to_string(), 0, 4, 42);
-
-        let id = repo.save_sequence(&seq).await.unwrap();
-        let fetched = repo
-            .get_sequence(id)
-            .await
-            .unwrap()
-            .expect("séquence doit exister");
-        assert_eq!(fetched.bases, seq.bases);
-        assert_eq!(repo.count_sequences().await.unwrap(), 1);
-
-        // fetch_count doit compter les lignes d'un SELECT
-        let count = DatabasePool::Sqlite(match manager.pool().unwrap() {
-            DatabasePool::Sqlite(p) => p.clone(),
-            _ => unreachable!(),
-        })
-        .fetch_count("SELECT * FROM sequences")
-        .await
-        .unwrap();
-        assert_eq!(count, 1);
-
-        assert!(repo.delete_sequence(id).await.unwrap());
-        assert_eq!(repo.count_sequences().await.unwrap(), 0);
-
-        let _ = std::fs::remove_file(&db_path);
+    #[test]
+    fn sqlite_urls() {
+        assert_eq!(sqlite_url(":memory:"), "sqlite::memory:");
+        assert_eq!(sqlite_url("sqlite::memory:"), "sqlite::memory:");
+        assert_eq!(sqlite_url("base.db"), "sqlite://base.db");
+        assert_eq!(sqlite_url("sqlite://base.db"), "sqlite://base.db");
+        assert_eq!(sqlite_url("data/base.db"), "sqlite://data/base.db");
     }
 
-    #[tokio::test]
-    async fn test_sqlite_memory_pool() {
-        // :memory: avec un pool > 1 : chaque connexion aurait sa propre base
-        // vide — le manager limite à 1 connexion dans ce cas.
-        let mut manager = DatabaseManager::new(DatabaseConfig {
-            db_type: DatabaseType::Sqlite,
-            connection_string: ":memory:".to_string(),
-            max_connections: 5,
-        });
-        manager
-            .initialize()
-            .await
-            .expect(":memory: doit se connecter");
+    #[test]
+    fn configuration_is_checked() {
+        assert!(DatabaseConfig::sqlite("base.db").validate().is_ok());
+        assert!(DatabaseConfig::postgres("postgres://h/base")
+            .validate()
+            .is_ok());
+        assert!(DatabaseConfig::sqlite("  ").validate().is_err());
+        let mut config = DatabaseConfig::sqlite("base.db");
+        config.max_connections = 0;
+        assert!(config.validate().is_err());
+    }
 
-        let pool = match manager.pool().unwrap() {
-            DatabasePool::Sqlite(p) => p.clone(),
-            _ => panic!("attendait un pool SQLite"),
-        };
-
-        let repo = crate::SequenceRepository::new(std::sync::Arc::new(DatabasePool::Sqlite(pool)));
-        let seq = adn_core::DnaSequence::new(
-            vec![adn_core::IupacBase::A, adn_core::IupacBase::T],
-            "mem.bin".to_string(),
-            0,
-            2,
-            1,
-        );
-        let id = repo.save_sequence(&seq).await.unwrap();
-        // La lecture doit voir l'écriture (même connexion partagée)
-        assert!(repo.get_sequence(id).await.unwrap().is_some());
+    #[test]
+    fn a_manager_without_connection_reports_it() {
+        let manager = DatabaseManager::new(DatabaseConfig::sqlite(":memory:"));
+        assert!(manager.pool().is_err());
+        assert!(manager.shared_pool().is_err());
     }
 }

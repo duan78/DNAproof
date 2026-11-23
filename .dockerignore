@@ -2,6 +2,13 @@ target/
 .git/
 .github/
 .zcode/
+.video_agent/
 *.md
 !README.md
 docs/
+
+# Résultats du serveur et bases locales
+crates/web/uploads/
+*.db
+*.db-wal
+*.db-shm

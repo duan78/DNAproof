@@ -1,178 +1,173 @@
-//! Commande de visualisation
+//! `adn visualize` : statistiques d'un ensemble de séquences, en tableau, JSON ou HTML.
 
-use crate::commands::read_fasta;
-use crate::VisualizationFormat;
-use adn_core::{ConstraintChecker, DnaSequence};
-use anyhow::Result;
-use std::path::PathBuf;
+use crate::output::Printer;
+use adn_core::verify::OligoReport;
+use adn_core::{fasta, verify};
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 
-pub fn run(input: PathBuf, format: VisualizationFormat, output: Option<PathBuf>) -> Result<()> {
-    println!("📊 Visualisation de: {}", input.display());
+/// Nombre de séquences montrées en tableau sans `--all`.
+const TABLE_LIMIT: usize = 30;
 
-    // 1. Lire les séquences
-    let sequences = read_fasta(&input, "visualized")?;
-    println!("{} séquences chargées", sequences.len());
+pub(crate) fn run(
+    input: &Path,
+    format: crate::FormatArg,
+    output: Option<PathBuf>,
+    limits: &crate::ConstraintArgs,
+    all: bool,
+    out: &Printer,
+) -> Result<()> {
+    let constraints = limits.constraints()?;
+    let records = crate::commands::read_reads(&[input.to_path_buf()])?;
+    let (pool, per_oligo) = verify::inspect(&records, &constraints);
 
-    if sequences.is_empty() {
-        anyhow::bail!("Aucune séquence trouvée dans {}", input.display());
-    }
+    let text = match format {
+        crate::FormatArg::Json => json(input, &pool, &records, &per_oligo)?,
+        crate::FormatArg::Html => html(&pool, &records, &per_oligo),
+        crate::FormatArg::Table => table(&pool, &per_oligo, all),
+    };
 
-    // 2. Visualiser selon le format
-    match format {
-        VisualizationFormat::Table => visualize_table(&sequences)?,
-        VisualizationFormat::Json => visualize_json(&sequences, output)?,
-        VisualizationFormat::Html => visualize_html(&sequences, output)?,
-    }
-
-    Ok(())
-}
-
-/// Visualisation en tableau
-fn visualize_table(sequences: &[DnaSequence]) -> Result<()> {
-    use tabled::{Table, Tabled};
-
-    #[derive(Tabled)]
-    struct SequenceRow {
-        #[tabled(rename = "ID")]
-        id: String,
-        #[tabled(rename = "Length")]
-        length: usize,
-        #[tabled(rename = "GC%")]
-        gc_percent: String,
-        #[tabled(rename = "Max Homopolymer")]
-        max_homopolymer: usize,
-        #[tabled(rename = "Entropy")]
-        entropy: f64,
-    }
-
-    let checker = ConstraintChecker::new();
-
-    let rows: Vec<SequenceRow> = sequences
-        .iter()
-        .map(|seq| {
-            let _stats = checker.stats(&seq.bases);
-            SequenceRow {
-                id: seq.id.to_string().chars().take(8).collect(),
-                length: seq.len(),
-                gc_percent: format!("{:.1}%", seq.metadata.gc_ratio * 100.0),
-                max_homopolymer: seq.metadata.max_homopolymer,
-                entropy: seq.metadata.entropy,
+    match output {
+        Some(path) => {
+            fasta::write_atomic(&path, text.as_bytes())
+                .with_context(|| format!("impossible d'écrire {}", path.display()))?;
+            if !out.is_json() {
+                println!("Écrit : {}", path.display());
             }
-        })
-        .collect();
-
-    println!();
-    println!("{}", Table::new(rows));
-
+        }
+        None => print!("{text}"),
+    }
     Ok(())
 }
 
-/// Visualisation en JSON
-fn visualize_json(sequences: &[DnaSequence], output: Option<PathBuf>) -> Result<()> {
-    let checker = ConstraintChecker::new();
-
-    let data: Vec<serde_json::Value> = sequences
+fn json(
+    input: &Path,
+    pool: &verify::PoolReport,
+    records: &[fasta::Record],
+    per_oligo: &[OligoReport],
+) -> Result<String> {
+    let sequences: Vec<serde_json::Value> = records
         .iter()
-        .map(|seq| {
-            let stats = checker.stats(&seq.bases);
+        .zip(per_oligo)
+        .map(|(record, stats)| {
             serde_json::json!({
-                "id": seq.id.to_string(),
-                "length": seq.len(),
-                "gc_ratio": seq.metadata.gc_ratio,
-                "max_homopolymer": seq.metadata.max_homopolymer,
-                "entropy": seq.metadata.entropy,
-                "chunk_index": seq.metadata.chunk_index,
-                "stats": {
-                    "count_a": stats.count_a,
-                    "count_c": stats.count_c,
-                    "count_g": stats.count_g,
-                    "count_t": stats.count_t,
-                }
+                "header": record.header,
+                "length": stats.length,
+                "gc": stats.gc,
+                "max_homopolymer": stats.max_homopolymer,
+                "compliant": stats.compliant,
             })
         })
         .collect();
-
-    let json = serde_json::to_string_pretty(&data)?;
-
-    if let Some(output) = output {
-        std::fs::write(&output, json)?;
-        println!("JSON écrit dans: {}", output.display());
-    } else {
-        println!("\n{}", json);
-    }
-
-    Ok(())
+    let document = serde_json::json!({
+        "input": input,
+        "pool": pool,
+        "sequences": sequences,
+    });
+    Ok(serde_json::to_string_pretty(&document)?)
 }
 
-/// Échappe les caractères spéciaux HTML (défense en profondeur contre le XSS
-/// si l'export HTML est ouvert dans un navigateur)
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
+fn table(pool: &verify::PoolReport, per_oligo: &[OligoReport], all: bool) -> String {
+    let shown = if all {
+        per_oligo.len()
+    } else {
+        TABLE_LIMIT.min(per_oligo.len())
+    };
+    let mut text = format!(
+        "Séquences : {}   Nucléotides : {}   Longueurs : {} à {} nt\n",
+        pool.oligos, pool.nucleotides, pool.length_min, pool.length_max
+    );
+    text.push_str(&format!(
+        "GC : {:.1} à {:.1} % (moyenne {:.1} %)   Plus longue suite : {}   Conformes : {}/{}\n\n",
+        pool.gc_min * 100.0,
+        pool.gc_max * 100.0,
+        pool.gc_mean * 100.0,
+        pool.max_homopolymer,
+        pool.compliant,
+        pool.oligos
+    ));
+    text.push_str(&format!(
+        "{:<6} {:>8} {:>9} {:>9} {}\n",
+        "Rang", "Longueur", "GC", "Suite max", "Conforme"
+    ));
+    for stats in &per_oligo[..shown] {
+        text.push_str(&format!(
+            "{:<6} {:>8} {:>8.1} % {:>9} {}\n",
+            stats.index,
+            stats.length,
+            stats.gc * 100.0,
+            stats.max_homopolymer,
+            if stats.compliant { "oui" } else { "non" }
+        ));
+    }
+    if shown < per_oligo.len() {
+        text.push_str(&format!(
+            "... {} autres séquences (--all pour toutes)\n",
+            per_oligo.len() - shown
+        ));
+    }
+    text
+}
+
+/// Échappe le texte destiné au document HTML.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
 }
 
-/// Visualisation en HTML
-fn visualize_html(sequences: &[DnaSequence], output: Option<PathBuf>) -> Result<()> {
-    let html = format!(
-        r#"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>ADN Visualization</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        table {{ border-collapse: collapse; width: 100%; }}
-        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-        th {{ background-color: #4CAF50; color: white; }}
-        tr:nth-child(even) {{ background-color: #f2f2f2; }}
-        .stats {{ margin: 20px 0; }}
-    </style>
-</head>
-<body>
-    <h1>🧬 ADN Sequence Visualization</h1>
-    <div class="stats">
-        <p><strong>Total sequences:</strong> {}</p>
-    </div>
-    <table>
-        <tr>
-            <th>ID</th>
-            <th>Length</th>
-            <th>GC%</th>
-            <th>Max Homopolymer</th>
-            <th>Entropy</th>
-        </tr>
-        {}
-    </table>
-</body>
-</html>
-"#,
-        sequences.len(),
-        sequences
-            .iter()
-            .map(|seq| {
-                let id: String = seq.id.to_string().chars().take(8).collect();
-                format!(
-                    "<tr><td>{}</td><td>{}</td><td>{:.1}%</td><td>{}</td><td>{:.2}</td></tr>",
-                    escape_html(&id),
-                    seq.len(),
-                    seq.metadata.gc_ratio * 100.0,
-                    seq.metadata.max_homopolymer,
-                    seq.metadata.entropy
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n        ")
-    );
-
-    if let Some(output) = output {
-        std::fs::write(&output, html)?;
-        println!("HTML écrit dans: {}", output.display());
-    } else {
-        println!("\n{}", html);
+fn html(pool: &verify::PoolReport, records: &[fasta::Record], per_oligo: &[OligoReport]) -> String {
+    let mut rows = String::new();
+    for (record, stats) in records.iter().zip(per_oligo) {
+        rows.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.1} %</td><td>{}</td><td>{}</td></tr>\n",
+            stats.index,
+            escape(&record.header),
+            stats.length,
+            stats.gc * 100.0,
+            stats.max_homopolymer,
+            if stats.compliant { "oui" } else { "non" }
+        ));
     }
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"fr\"><head><meta charset=\"utf-8\">\n\
+<title>Séquences d'ADN</title>\n\
+<style>body{{font-family:sans-serif;margin:2rem}}table{{border-collapse:collapse}}\n\
+th,td{{border:1px solid #ccc;padding:.3rem .6rem;text-align:left}}th{{background:#eee}}</style>\n\
+</head><body>\n<h1>Séquences d'ADN</h1>\n\
+<p>{count} séquences, {nucleotides} nucléotides, de {length_min} à {length_max} nt.</p>\n\
+<p>GC de {gc_min:.1} à {gc_max:.1} % (moyenne {gc_mean:.1} %) ; plus longue suite de bases \
+identiques : {homopolymer} ; {compliant} séquences conformes.</p>\n\
+<table><tr><th>Rang</th><th>En-tête</th><th>Longueur</th><th>GC</th><th>Suite max</th>\
+<th>Conforme</th></tr>\n{rows}</table>\n</body></html>\n",
+        count = pool.oligos,
+        nucleotides = pool.nucleotides,
+        length_min = pool.length_min,
+        length_max = pool.length_max,
+        gc_min = pool.gc_min * 100.0,
+        gc_max = pool.gc_max * 100.0,
+        gc_mean = pool.gc_mean * 100.0,
+        homopolymer = pool.max_homopolymer,
+        compliant = pool.compliant,
+    )
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adn_core::DnaConstraints;
+
+    #[test]
+    fn html_is_escaped() {
+        let constraints = DnaConstraints::default();
+        let records = vec![fasta::Record {
+            header: "<script>x</script>".to_string(),
+            sequence: b"ACGTTGCAACGTTCGA".to_vec(),
+        }];
+        let (pool, per_oligo) = verify::inspect(&records, &constraints);
+        let page = html(&pool, &records, &per_oligo);
+        assert!(!page.contains("<script>"));
+        assert!(page.contains("&lt;script&gt;x&lt;/script&gt;"));
+    }
 }

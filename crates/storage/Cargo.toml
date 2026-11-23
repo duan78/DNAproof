@@ -4,15 +4,21 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-chrono = { workspace = true }
-adn-core = { path = "../core" }
-sqlx = { version = "0.7", features = ["sqlite", "postgres", "runtime-tokio"] }
-tokio = { version = "1.0", features = ["full"] }
-tracing = "0.1"
+jiff = { workspace = true }
+tracing = { workspace = true }
+
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "postgres",
+    "macros",
+    "migrate",
+] }
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }

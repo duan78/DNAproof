@@ -1,172 +1,178 @@
-//! Commande d'encodage
+//! `adn encode` : archive un fichier en séquences d'ADN.
 
-use crate::{create_progress_bar, create_spinner, CompressionAlgorithm, EncodingAlgorithm};
-use adn_core::codec::encoder::{CompressionType, EncoderType};
-use adn_core::{DnaConstraints, Encoder, EncoderConfig};
-use anyhow::Result;
-use std::fs::File;
-use std::io::Write;
-use std::path::PathBuf;
+use crate::output::{bytes, seconds, thousands, Fields, Printer};
+use adn_core::{encode, fasta, Scheme};
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-pub fn run(
-    input: PathBuf,
-    output: PathBuf,
-    algorithm: EncodingAlgorithm,
-    redundancy: f64,
-    compress: bool,
-    compression: Option<CompressionAlgorithm>,
+pub(crate) fn run(
+    input: &Path,
+    output: Option<PathBuf>,
+    codec: &crate::CodecArgs,
+    out: &Printer,
 ) -> Result<()> {
-    println!("🧬 Encodage de: {}", input.display());
-
-    // 1. Lire le fichier
-    let spinner = create_spinner("Lecture du fichier...");
-    let data = std::fs::read(&input)?;
-    spinner.finish_with_message(format!("Fichier lu ({} octets)", data.len()));
-
-    if data.is_empty() {
-        anyhow::bail!("Le fichier d'entrée est vide");
+    let options = codec.options()?;
+    let data =
+        std::fs::read(input).with_context(|| format!("impossible de lire {}", input.display()))?;
+    let archive = archive_path(output, input);
+    if archive == input {
+        bail!("l'archive écraserait le fichier d'entrée : indiquer un autre chemin avec -o");
     }
 
-    // 2. Configurer l'encodeur
-    let encoder_type = match algorithm {
-        EncodingAlgorithm::Ez2017 => EncoderType::ErlichZielinski2017,
-        EncodingAlgorithm::Fountain => EncoderType::Fountain,
-        EncodingAlgorithm::Goldman => EncoderType::Goldman,
-        EncodingAlgorithm::Goldman2013 => EncoderType::Goldman2013,
-        EncodingAlgorithm::Grass2015 => EncoderType::Grass2015,
-        EncodingAlgorithm::Adaptive => EncoderType::Adaptive,
-        EncodingAlgorithm::Base3 => EncoderType::Base3,
-        EncodingAlgorithm::Ultimate => EncoderType::Ultimate,
-    };
+    let started = Instant::now();
+    let encoded = encode(&data, &options).context("encodage impossible")?;
+    let elapsed = started.elapsed().as_secs_f64();
+    let stats = &encoded.stats;
 
-    let compression_type = match compression.unwrap_or(CompressionAlgorithm::Lz4) {
-        CompressionAlgorithm::Lz4 => CompressionType::Lz4,
-        CompressionAlgorithm::Zstd => CompressionType::Zstd,
-        CompressionAlgorithm::None => CompressionType::None,
-    };
-
-    // Use lenient constraints for algorithms that don't enforce GC/homopolymer limits
-    // Each algorithm has different requirements:
-    // - Grass2015: Uses padding that may not meet strict GC constraints
-    // - Goldman2013: Uses rotation but may produce sequences outside 40-60% GC
-    // - Fountain: May fail to find valid bases with strict constraints
-    // - Adaptive: Falls back to Fountain
-    // - Goldman (legacy): Simple encoding without GC optimization
-    let constraints = match algorithm {
-        EncodingAlgorithm::Ez2017 => DnaConstraints {
-            // EZ 2017 : contraintes du papier (GC 40-60%, homopolymer < 4),
-            // longueur 152nt + marge pour l'encodage rotatif
-            gc_min: 0.40,
-            gc_max: 0.60,
-            max_homopolymer: 3,
-            max_sequence_length: 200,
-            allowed_bases: vec![
-                adn_core::IupacBase::A,
-                adn_core::IupacBase::C,
-                adn_core::IupacBase::G,
-                adn_core::IupacBase::T,
-            ],
-        },
-        EncodingAlgorithm::Grass2015 => DnaConstraints {
-            gc_min: 0.0,
-            gc_max: 1.0,
-            max_homopolymer: 150,
-            max_sequence_length: 200,
-            allowed_bases: vec![
-                adn_core::IupacBase::A,
-                adn_core::IupacBase::C,
-                adn_core::IupacBase::G,
-                adn_core::IupacBase::T,
-            ],
-        },
-        EncodingAlgorithm::Goldman2013 | EncodingAlgorithm::Goldman => DnaConstraints {
-            gc_min: 0.20, // More lenient for Goldman's rotation-based encoding
-            gc_max: 0.80,
-            max_homopolymer: 6,
-            max_sequence_length: 200,
-            allowed_bases: vec![
-                adn_core::IupacBase::A,
-                adn_core::IupacBase::C,
-                adn_core::IupacBase::G,
-                adn_core::IupacBase::T,
-            ],
-        },
-        EncodingAlgorithm::Fountain | EncodingAlgorithm::Adaptive => DnaConstraints {
-            gc_min: 0.0, // Très souple - l'encodage direct préserve les données
-            gc_max: 1.0,
-            max_homopolymer: 150, // Très souple pour éviter les erreurs de validation
-            max_sequence_length: 200,
-            allowed_bases: vec![
-                adn_core::IupacBase::A,
-                adn_core::IupacBase::C,
-                adn_core::IupacBase::G,
-                adn_core::IupacBase::T,
-            ],
-        },
-        EncodingAlgorithm::Ultimate => DnaConstraints {
-            gc_min: 0.25,
-            gc_max: 0.75,
-            max_homopolymer: 10,
-            max_sequence_length: 200,
-            allowed_bases: vec![
-                adn_core::IupacBase::A,
-                adn_core::IupacBase::C,
-                adn_core::IupacBase::G,
-                adn_core::IupacBase::T,
-            ],
-        },
-        _ => DnaConstraints::default(),
-    };
-
-    let config = EncoderConfig {
-        encoder_type,
-        chunk_size: 32,
-        redundancy,
-        compression_enabled: compress,
-        compression_type,
-        constraints,
-    };
-
-    // 3. Encoder
-    let pb = create_progress_bar(data.len() as u64, "Encodage ADN...");
-    let encoder = Encoder::new(config)?;
-    let sequences = encoder.encode(&data)?;
-    pb.finish_with_message(format!("{} séquences générées", sequences.len()));
-
-    // 4. Créer le répertoire de sortie
-    std::fs::create_dir_all(&output)?;
-
-    // 5. Écrire les séquences en format FASTA
-    let output_file = output.join(format!(
-        "{}.fasta",
-        input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output")
-    ));
-
-    let spinner = create_spinner("Écriture des séquences...");
-    let mut file = File::create(&output_file)?;
-
-    for seq in &sequences {
-        writeln!(file, "{}", seq.to_fasta())?;
+    if let Some(parent) = archive.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("impossible de créer le répertoire {}", parent.display())
+            })?;
+        }
     }
+    let oligo_length = options.oligo_length();
+    let written = fasta::write_archive(
+        &archive,
+        &encoded.oligos,
+        options.scheme,
+        stats.manifest_copies,
+    )
+    .with_context(|| format!("impossible d'écrire {}", archive.display()))?;
 
-    spinner.finish_with_message(format!("Séquences écrites dans {}", output_file.display()));
+    let droplets_per_unit = stats.data_oligos as f64 / f64::from(stats.units);
+    let redundancy = match options.scheme {
+        Scheme::Fountain => format!(
+            "marge {:.2} ; {:.2} gouttes par bloc",
+            options.fountain.redundancy, droplets_per_unit
+        ),
+        Scheme::Strands => format!(
+            "{} brins de parité par bloc de {}",
+            adn_core::codec::strands::OUTER_PARITY,
+            adn_core::codec::strands::OUTER_DATA
+        ),
+    };
+    let sha256 = adn_core::checksum::hex(&stats.sha256);
 
-    // 6. Statistiques
-    println!("\n📊 Statistiques:");
-    println!("   Séquences générées: {}", sequences.len());
-    println!(
-        "   Longueur moyenne: {:.1} bases",
-        sequences.iter().map(|s| s.len()).sum::<usize>() as f64 / sequences.len() as f64
-    );
-    println!(
-        "   GC moyen: {:.1}%",
-        sequences.iter().map(|s| s.metadata.gc_ratio).sum::<f64>() * 100.0 / sequences.len() as f64
-    );
+    let report = serde_json::json!({
+        "input": input,
+        "output": written,
+        "scheme": options.scheme,
+        "oligo_length_nt": oligo_length,
+        "compression": stats.compression,
+        "original_bytes": stats.original_len,
+        "body_bytes": stats.body_len,
+        "units": stats.units,
+        "data_oligos": stats.data_oligos,
+        "manifest_copies": stats.manifest_copies,
+        "nucleotides": stats.nucleotides,
+        "bits_per_nucleotide": stats.bits_per_nucleotide,
+        "droplets_per_unit": droplets_per_unit,
+        "candidates_tried": stats.candidates_tried,
+        "encode_seconds": elapsed,
+        "sha256": sha256,
+    });
+    let input_name = crate::commands::name(input);
+    out.finish(&report, || {
+        let mut fields = Fields::new();
+        fields
+            .add(
+                "Fichier",
+                format!("{} ({})", input_name, bytes(data.len() as u64)),
+            )
+            .add("Schéma", options.scheme.label())
+            .add(
+                "Compression",
+                format!(
+                    "{} (corps de {})",
+                    stats.compression.name(),
+                    bytes(stats.body_len)
+                ),
+            )
+            .add(
+                "Oligos",
+                format!(
+                    "{} au total : {} de données et {} manifestes, de {} nt chacun",
+                    thousands(encoded.oligos.len() as u64),
+                    thousands(stats.data_oligos as u64),
+                    thousands(stats.manifest_copies as u64),
+                    oligo_length
+                ),
+            )
+            .add("Nucléotides", thousands(stats.nucleotides))
+            .add(
+                "Densité",
+                format!("{:.3} bits par nucléotide", stats.bits_per_nucleotide),
+            )
+            .add("Redondance", redundancy)
+            .add("SHA-256", &sha256)
+            .add("Durée", seconds(elapsed));
+        format!(
+            "Encodage de {} :\n{}\nArchive écrite : {}\n",
+            input_name,
+            fields.render(2),
+            written.display()
+        )
+    })
+}
 
-    println!("\n✅ Encodage terminé!");
+/// Chemin de l'archive : celui demandé s'il nomme un fichier FASTA, sinon un fichier nommé
+/// d'après l'entrée et placé dans le répertoire demandé (ou à côté de l'entrée).
+fn archive_path(output: Option<PathBuf>, input: &Path) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("archive");
+    let path = match output {
+        Some(path) => {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            let is_archive = [".fasta", ".fa", ".fas"]
+                .iter()
+                .any(|suffix| name.to_ascii_lowercase().ends_with(suffix));
+            if path.is_dir() || !is_archive {
+                path.join(format!("{stem}.fasta"))
+            } else {
+                path
+            }
+        }
+        None => input.with_extension("fasta"),
+    };
+    if path == input {
+        input.with_extension("adn.fasta")
+    } else {
+        path
+    }
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_path_follows_the_request() {
+        let input = Path::new("data/lettre.txt");
+        assert_eq!(
+            archive_path(None, input),
+            PathBuf::from("data/lettre.fasta")
+        );
+        assert_eq!(
+            archive_path(Some("sortie.fasta".into()), input),
+            PathBuf::from("sortie.fasta")
+        );
+        assert_eq!(
+            archive_path(Some("sortie".into()), input),
+            PathBuf::from("sortie/lettre.fasta")
+        );
+        assert_eq!(
+            archive_path(Some("x.FA".into()), Path::new("d")),
+            PathBuf::from("x.FA")
+        );
+        // Encoder une archive ne doit pas la remplacer silencieusement.
+        let input = Path::new("arc.fasta");
+        assert_eq!(archive_path(None, input), PathBuf::from("arc.adn.fasta"));
+    }
 }

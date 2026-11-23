@@ -1,58 +1,56 @@
-# Multi-stage build for DNA Storage web server + CLI
+# syntax=docker/dockerfile:1
+# Serveur web et ligne de commande d'archivage de fichiers en ADN.
+#
+#     docker build -t adn .
+#     docker run --rm -p 8080:8080 -v adn-uploads:/app/uploads adn
+#     docker run --rm --entrypoint adn adn encode --input /data/fichier.txt --output /data/fichier.fasta
 
-# ─── Builder ───────────────────────────────────────────────
-# Note: MSRV >= 1.87 (le code utilise des APIs stabilisées en 1.87,
-# ex. usize::div_ceil sur slices) — garder une image >= 1.87.
-FROM rust:1.87-slim AS builder
+# ─── Builder ─────────────────────────────────────────────────────────────────
+# La version minimale prise en charge par le projet (`rust-version` du workspace) : une image
+# qui construit prouve que cette version suffit.
+FROM rust:1.94-slim AS builder
 
 WORKDIR /build
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy manifests first for better layer caching
+# Manifestes et verrou d'abord : la couche des dépendances reste en cache si seules les sources
+# changent. Le verrou est suivi dans le dépôt, et la construction s'y tient.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 
-# Build release binaries
-RUN cargo build --release -p adn-cli -p adn-web
+RUN cargo build --release --locked -p adn-cli -p adn-web
 
-# ─── Runtime ───────────────────────────────────────────────
+# ─── Runtime ─────────────────────────────────────────────────────────────────
+# Ni OpenSSL ni base : SQLite est compilé dans l'exécutable, et le serveur ne parle pas TLS
+# (c'est le rôle d'un proxy).
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 curl \
+    ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user
+# Utilisateur sans privilèges.
 RUN useradd --system --create-home --shell /usr/sbin/nologin adn
 
 WORKDIR /app
 
-# Copy binaries
-COPY --from=builder /build/target/release/adn /usr/local/bin/adn
-COPY --from=builder /build/target/release/adn-web /usr/local/bin/adn-web
+COPY --from=builder /build/target/release/adn /build/target/release/adn-web /usr/local/bin/
 
-# Copy web assets (templates, static files) and config
+# Pages, fichiers statiques et configuration.
 COPY crates/web/templates/ ./templates/
 COPY crates/web/static/ ./static/
 COPY config.toml ./
 
-# Dossier de travail des résultats d'encodage/décodage, accessible à adn
+# Dossier des résultats, accessible à l'utilisateur du serveur.
 RUN mkdir -p /app/uploads && chown -R adn:adn /app
 USER adn
 
-# Le conteneur doit écouter sur 0.0.0.0 pour être joignable via -p.
-# config.toml (127.0.0.1) est surchargé ici.
-ENV ADN_HOST=0.0.0.0
+# `config.toml` n'écoute que sur la boucle locale, ce qui protège un serveur lancé sur son
+# poste ; dans un conteneur, il faut écouter sur toutes les interfaces pour être joignable.
+ENV ADN_SERVER__HOST=0.0.0.0
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8080/health || exit 1
 
-# Default: run the web server.
-# Alternative (CLI): docker run --rm --entrypoint adn <image> encode --input /data/file.txt --output /data/out.fasta
 ENTRYPOINT ["adn-web"]

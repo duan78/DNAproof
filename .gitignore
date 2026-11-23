@@ -2,7 +2,13 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+# `Cargo.lock` est suivi : les exécutables sont construits à l'identique (`--locked`).
+
+# Résultats du serveur web et bases SQLite locales
+crates/web/uploads/
+*.db
+*.db-wal
+*.db-shm
 
 # IDE
 .vscode/

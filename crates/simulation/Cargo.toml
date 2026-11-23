@@ -4,9 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-rand = { workspace = true }
-rand_chacha = { workspace = true }
-serde = { workspace = true }
 adn-core = { path = "../core" }
+serde = { workspace = true }

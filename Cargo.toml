@@ -3,49 +3,47 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["adn"]
 license = "MIT OR Apache-2.0"
+rust-version = "1.94"
 
 [workspace.dependencies]
-# Core dependencies
+# Erreurs et sérialisation
 anyhow = "1.0"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Bioinformatics
-bio = "2.0"
-
-# Compression
-lz4 = "1.25"
-zstd = "0.13"
-
-# Error correction
+# Codes correcteurs et compression
 reed-solomon = "0.2"
+lz4_flex = "0.14"
+zstd = "0.13.4"
 
-# CLI
-clap = { version = "4.5", features = ["derive"] }
-console = "0.15"
-indicatif = "0.17"
-
-# Visualization
-tabled = "0.16"
-
-# Math and utilities
-rand = "0.8"
-rand_chacha = "0.3"
-
-# Hashing
+# Hachage
 sha2 = "0.10"
 
-# UUID
+# Parallélisme
+rayon = "1.8"
+
+# Ligne de commande
+clap = { version = "4.5", features = ["derive"] }
+
+# Divers
 uuid = { version = "1.0", features = ["v4", "serde"] }
+jiff = { version = "1.0", default-features = false, features = ["std", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-# Date/time
-chrono = { version = "0.4", features = ["serde"] }
-
-# Testing
+# Tests
 proptest = "1.5"
-criterion = "0.5"
+# Sans les graphiques : les mesures se lisent dans le terminal.
+criterion = { version = "0.5", default-features = false }
+
+[profile.release]
+# Les codecs sont limités par le processeur : la compilation whole-program rapporte, et les
+# binaires distribués n'ont pas besoin des symboles de débogage.
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
