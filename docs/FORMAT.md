@@ -421,7 +421,7 @@ commit `09df4f8`.
 ## Références
 
 - Erlich Y., Zielinski D. — *DNA Fountain enables a robust and efficient storage architecture*,
-  Science 355:950–954, 2017.
+  Science 355(6328):950–952, 2017.
 - Luby M. — *LT codes*, FOCS 2002.
 - Grass R. N., Heckel R., Puddu M., Paunescu D., Stark W. J. — *Robust Chemical Preservation of
   Digital Information on DNA in Silica with Error-Correcting Codes*, Angewandte Chemie
