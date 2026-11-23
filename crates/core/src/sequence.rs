@@ -7,7 +7,7 @@
 use crate::error::{DnaError, Result};
 
 /// Les quatre bases, dans l'ordre des valeurs 2 bits 0, 1, 2, 3.
-pub const BASES: [u8; 4] = [b'A', b'C', b'G', b'T'];
+pub const BASES: [u8; 4] = *b"ACGT";
 
 /// Longueur de ligne utilisée pour écrire les fichiers FASTA.
 pub const FASTA_LINE_WIDTH: usize = 60;
@@ -105,7 +105,8 @@ pub fn dna_to_bytes(dna: &[u8]) -> Result<Vec<u8>> {
         )));
     }
     let mut out = Vec::with_capacity(dna.len() / 4);
-    for quad in dna.chunks_exact(4) {
+    // La longueur est multiple de 4 : il n'y a pas de reste.
+    for quad in dna.as_chunks::<4>().0 {
         let mut byte = 0u8;
         for (i, &base) in quad.iter().enumerate() {
             let bits = base_to_bits(base).ok_or_else(|| {

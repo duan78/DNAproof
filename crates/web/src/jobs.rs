@@ -557,7 +557,7 @@ mod tests {
         registry.finish(&queued.id, Err("échec".into()));
         assert_eq!(registry.remove(&queued.id), Removal::Removed);
         assert_eq!(registry.remove("inconnue"), Removal::Unknown);
-        let _ = std::fs::remove_dir_all(directory("remove"));
+        let _ = std::fs::remove_dir_all(directory("running"));
     }
 
     #[test]

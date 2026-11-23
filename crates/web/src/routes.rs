@@ -531,6 +531,8 @@ struct Upload {
 
 /// Lit un formulaire multipart entier. Il tient en mémoire : la taille des fichiers est bornée
 /// par `limit`.
+// Une réponse d'erreur ne voyage qu'une fois, à l'échec : la boxer ne gagnerait rien.
+#[allow(clippy::result_large_err)]
 async fn read_upload(payload: &mut Multipart, limit: usize) -> Result<Upload, HttpResponse> {
     let mut upload = Upload {
         file_name: String::new(),

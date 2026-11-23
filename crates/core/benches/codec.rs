@@ -50,7 +50,7 @@ fn scenario_name(scheme: Scheme) -> String {
     )
 }
 
-const BASES: [u8; 4] = [b'A', b'C', b'G', b'T'];
+const BASES: [u8; 4] = *b"ACGT";
 
 /// Octets au hasard, reproductibles.
 fn random_bytes(len: usize, stream: u64) -> Vec<u8> {

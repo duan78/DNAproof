@@ -350,8 +350,10 @@ pub fn encode(
     let mut padded = body.to_vec();
     padded.resize(k as usize * CHUNK_LEN, 0);
     let words: Vec<u64> = padded
-        .chunks_exact(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("tranche de 8 octets")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| u64::from_le_bytes(*chunk))
         .collect();
     drop(padded);
 

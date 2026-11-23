@@ -85,7 +85,8 @@ jobs:
       - run: cargo test -p adn-storage --locked --test repository -- --ignored
 
   msrv:
-    name: Version minimale (Rust ${{ env.MSRV }})
+    # Le contexte `env` n'est pas permis dans le nom d'un job : la version y est répétée.
+    name: Version minimale (Rust 1.94)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

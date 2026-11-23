@@ -220,7 +220,12 @@ pub fn looks_like_manifest(read: &[u8], tag: &[u8]) -> bool {
         return false;
     }
     let mut differing_groups = 0;
-    for (group, expected) in read[..tag.len()].chunks_exact(4).zip(tag.chunks_exact(4)) {
+    for (group, expected) in read[..tag.len()]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(tag.as_chunks::<4>().0)
+    {
         if group != expected {
             differing_groups += 1;
             if differing_groups > 1 {

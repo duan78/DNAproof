@@ -102,7 +102,7 @@ pub fn xor_chunks(
             *slot ^= word;
         }
     }
-    for (chunk, &value) in out.chunks_exact_mut(8).zip(scratch.iter()) {
+    for (chunk, &value) in out.as_chunks_mut::<8>().0.iter_mut().zip(scratch.iter()) {
         chunk.copy_from_slice(&value.to_le_bytes());
     }
 }
@@ -458,8 +458,10 @@ mod tests {
     use super::*;
 
     fn words(body: &[u8]) -> Vec<u64> {
-        body.chunks_exact(8)
-            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        body.as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c))
             .collect()
     }
 
