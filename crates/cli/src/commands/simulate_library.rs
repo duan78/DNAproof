@@ -29,6 +29,8 @@ struct Trial {
     sautees: usize,
     ambigues: usize,
     inconnues: usize,
+    /// Lectures 2 arrêtées dans l'insert : sans son début, elles ne sont pas écrites.
+    r2_partielles: usize,
     echantillons: Vec<TrialSample>,
 }
 
@@ -206,6 +208,7 @@ pub(crate) fn run(
             sautees: stats.hopped,
             ambigues: demux.ambigues,
             inconnues: demux.inconnues,
+            r2_partielles: demux.r2_partielles,
             echantillons: samples,
         });
     }
@@ -303,6 +306,12 @@ pub(crate) fn run(
                 text.push_str(&format!(
                     "        sans réponse : {} ambiguës, {} inconnues ; {} sauts d'index\n",
                     trial.ambigues, trial.inconnues, trial.sautees
+                ));
+            }
+            if trial.r2_partielles > 0 {
+                text.push_str(&format!(
+                    "        lectures 2 arrêtées dans l'insert : {}, non écrites\n",
+                    crate::output::thousands(trial.r2_partielles as u64)
                 ));
             }
         }

@@ -632,11 +632,11 @@ cargo test --workspace --locked
 | Simulation, bout en bout | 12 | encodage → canal d'erreurs → décodage, 12 scénarios de canal |
 | Simulation, unitaires | 23 | modèle du canal, statistiques, erreurs en salves, indépendance des tirages ; séquenceur : lectures appariées, index, sauts d'index, qualités |
 | Stockage | 13 | SQLite et PostgreSQL : lots, transactions, reprise après redémarrage |
-| CLI | 28 | les sept sous-commandes exécutées comme par un utilisateur, dont deux archives goldman mélangées, un pool de deux échantillons séquencé, démultiplexé et décodé, le schéma ldpc aux erreurs et aux pertes, et le schéma hedges aux insertions, aux suppressions et aux pertes |
+| CLI | 29 | les sept sous-commandes exécutées comme par un utilisateur, dont deux archives goldman mélangées, un pool de deux échantillons séquencé, démultiplexé et décodé, une lecture 2 arrêtée dans l'insert écartée, le schéma ldpc aux erreurs et aux pertes, et le schéma hedges aux insertions, aux suppressions et aux pertes |
 | Serveur web | 38 | pages, API, refus, en-têtes, reprise, hôtes |
 | Exemple du README | 1 | le code montré plus haut, tel quel |
 | Exemple de la bibliothèque | 2 | les doc-tests de `adn-core` : l'archive, et une paire de lectures rangée |
-| **Total** | **332** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
+| **Total** | **333** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
 
 ### Propriétés clés
 
@@ -733,8 +733,8 @@ seconde, et `adn library` assemble 24 673 molécules en 40 ms —
   passer par la ligne de commande
 - **Bibliothèques Illumina** : les lectures partielles ne s'assemblent pas — la longueur de
   lecture doit atteindre le plus long insert du pool, et 19 bases de plus pour que la lecture 2
-  serve ; seul le format Nextera est décrit, et la qualité des lectures n'entre pas dans le
-  décodage
+  serve ; en dessous, elle est écartée ; seul le format Nextera est décrit, et la qualité des
+  lectures n'entre pas dans le décodage
 - **Le schéma `hedges` a ses propres limites**. La perte s'arrête où la parité du code externe
   le dit : 12,5 % d'un bloc, 7 % en pratique. Ses brins font 200 ou 300 nt : la longueur de
   lecture doit les couvrir. Une lecture qui résiste coûte une recherche entière : 4,3 ms,

@@ -27,8 +27,8 @@
 //! feuille d'échantillon du document d'Illumina ; pour i5, celles de l'adaptateur.
 //!
 //! [`Library::molecule`] entoure un insert de ses adaptateurs, [`place`] range une paire de
-//! lectures dans son échantillon et coupe les adaptateurs, [`read_pool`] relit un pool écrit par
-//! la commande `adn library`.
+//! lectures dans son échantillon et coupe les adaptateurs — une lecture 2 arrêtée dans l'insert
+//! est écartée —, [`read_pool`] relit un pool écrit par la commande `adn library`.
 //!
 //! ```
 //! use adn_core::library::{place, Library, Placement};
@@ -505,6 +505,8 @@ pub struct InsertReads {
     pub sample: usize,
     pub r1: Vec<u8>,
     pub r2: Vec<u8>,
+    /// La lecture 2 s'est arrêtée dans l'insert : elle n'en donnait que la fin, et `r2` est vide.
+    pub r2_partial: bool,
 }
 
 /// Le résultat du rangement d'une paire de lectures.
@@ -520,14 +522,27 @@ pub enum Placement {
 ///
 /// Les lectures sont rendues dans le sens de l'insert : la lecture 1 depuis son début, la
 /// lecture 2, complément inversée, depuis sa fin. Une lecture qui ne contient que des adaptateurs
-/// y est vide.
+/// y est vide. Une lecture 2 qui ne rejoint pas le début de l'insert n'en donne que la fin, qu'aucun
+/// schéma ne lit : elle est vide aussi, et [`InsertReads::r2_partial`] le dit.
 pub fn place(library: &Library, r1: &[u8], r2: &[u8], i7: &[u8], i5: Option<&[u8]>) -> Placement {
     match library.demultiplex(i7, i5) {
-        Assignment::Sample { sample, .. } => Placement::Sample(InsertReads {
-            sample,
-            r1: trim_after_insert(r1).to_vec(),
-            r2: trim_before_insert(trim_after_insert(&reverse_complement(r2))).to_vec(),
-        }),
+        Assignment::Sample { sample, .. } => {
+            let r1 = trim_after_insert(r1);
+            let flipped = reverse_complement(r2);
+            let flipped = trim_after_insert(&flipped);
+            let start = before_insert(flipped).unwrap_or(0);
+            let r2 = &flipped[start..];
+            // Sans extrémité mosaïque reconnaissable avant l'insert, une lecture 2 plus courte
+            // que la lecture 1 s'est arrêtée dans l'insert : elle n'en donne que la fin. Aussi
+            // longue ou plus longue, on ne peut rien conclure — et on la garde.
+            let r2_partial = start == 0 && r2.len() < r1.len();
+            Placement::Sample(InsertReads {
+                sample,
+                r1: r1.to_vec(),
+                r2: if r2_partial { Vec::new() } else { r2.to_vec() },
+                r2_partial,
+            })
+        }
         Assignment::Ambiguous => Placement::Ambiguous,
         Assignment::Unknown => Placement::Unknown,
     }
@@ -546,18 +561,22 @@ const BEFORE_INSERT_MAX: usize =
 /// contenir n'en garde que la fin : si sa première base d'insert la prolonge, elle se confond
 /// avec elle.
 pub fn trim_before_insert(read: &[u8]) -> &[u8] {
+    &read[before_insert(read).unwrap_or(0)..]
+}
+
+/// Ce qui précède l'insert au début d'une lecture, s'il est reconnaissable : le nombre de bases à
+/// couper ([`trim_before_insert`]).
+fn before_insert(read: &[u8]) -> Option<usize> {
     let limit = read.len().min(BEFORE_INSERT_MAX);
     if let Some(end) = (MOSAIC_END.len()..=limit)
         .find(|&end| differences(&read[end - MOSAIC_END.len()..end], MOSAIC_END) <= 1)
     {
-        return &read[end..];
+        return Some(end);
     }
     let shortest = read.len().min(MOSAIC_END.len() - 1);
-    let cut = (MIN_READ_THROUGH..=shortest)
+    (MIN_READ_THROUGH..=shortest)
         .rev()
         .find(|&cut| read[..cut] == MOSAIC_END[MOSAIC_END.len() - cut..])
-        .unwrap_or(0);
-    &read[cut..]
 }
 
 /// Une molécule d'un pool : sa séquence et le rang de son échantillon dans la bibliothèque.
@@ -1195,7 +1214,8 @@ mod tests {
             InsertReads {
                 sample: 0,
                 r1: insert.to_vec(),
-                r2: insert.to_vec()
+                r2: insert.to_vec(),
+                r2_partial: false,
             }
         );
         // Sans lecture d'index i5 : rangé sur le seul index i7.
@@ -1221,8 +1241,10 @@ mod tests {
         };
         let r1 = molecule[before..before + 20].to_vec();
         let r2 = [MOSAIC_END, reverse_complement(&insert[20..]).as_slice()].concat();
-        assert_eq!(placed_with(&r1, &r2).r1, insert[..20]);
-        assert_eq!(placed_with(&r1, &r2).r2, insert[20..]);
+        let reads = placed_with(&r1, &r2);
+        assert_eq!(reads.r1, insert[..20]);
+        assert_eq!(reads.r2, insert[20..]);
+        assert!(!reads.r2_partial);
         // Une lecture 2 arrêtée dans l'extrémité mosaïque : vide.
         let r2 = MOSAIC_END[..10].to_vec();
         assert!(placed_with(&r1, &r2).r2.is_empty());
@@ -1230,5 +1252,17 @@ mod tests {
         // elle reste telle quelle.
         let r1 = molecule[before..before + insert.len() + 5].to_vec();
         assert_eq!(placed_with(&r1, &r2).r1, r1);
+        // La lecture 1 lit l'insert en entier, la lecture 2 s'arrête dedans : il n'en reste que
+        // la fin, qu'aucun schéma ne lit. Elle est écartée.
+        let r1 = molecule[before..].to_vec();
+        let r2 = [MOSAIC_END, reverse_complement(&insert[20..]).as_slice()].concat();
+        let reads = placed_with(&r1, &r2);
+        assert_eq!(reads.r1, insert);
+        assert!(reads.r2.is_empty());
+        assert!(reads.r2_partial);
+        // Même chose quand la lecture 1 s'arrête pile au bout de l'insert : un séquençage
+        // 2 × 300 sur un brin de 300 nt.
+        let r1 = molecule[before..before + insert.len()].to_vec();
+        assert!(placed_with(&r1, &r2).r2_partial);
     }
 }

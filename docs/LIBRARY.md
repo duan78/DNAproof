@@ -66,14 +66,16 @@ la longueur de lecture doit atteindre le plus long insert du pool, manifestes co
 réglages par défaut : 152 nt pour `fountain` et les manifestes de `goldman`, 160 pour `strands`,
 154 pour `ldpc`, 200 pour les manifestes de `grass`, 200 ou 300 pour `hedges` — 300 à ⅓ et à ¼,
 200 à ½ et à ¾, manifestes compris. Une lecture de 300 bases, courant sur les machines de la
-gamme, couvre tout. En dessous, les lectures partielles ne s'assemblent pas : elles sont
+gamme, couvre tout. En dessous, les lectures 1 partielles ne s'assemblent pas : elles sont
 écrites telles quelles, et le décodeur en rejette la longueur — seul `hedges` complète une
 lecture arrêtée dans la queue de zéros de son brin.
 
 La lecture 2 ne sert que si elle couvre l'insert en entier : elle part de l'extrémité
-mosaïque, 19 bases plus loin. À 300 bases, c'est le cas d'un insert de 200 nt, pas d'un insert
-de 300 nt — sa lecture 2 donne les 281 dernières bases du brin. Tous les décodeurs l'écartent ;
-celui de `hedges` la cherche en vain, jusqu'au bout de son budget.
+mosaïque, 19 bases plus loin, et il lui faut 19 bases de plus que la lecture 1 pour arriver au
+début de l'insert. À 300 bases, c'est le cas d'un insert de 200 nt, pas d'un insert de 300 nt —
+sa lecture 2 donne les 281 dernières bases du brin. Une telle lecture est écartée : `adn demux`
+ne l'écrit pas, et la compte parmi les « lectures 2 partielles ». Aucun schéma ne lit la fin
+d'un brin sans son début ; celui de `hedges` la cherchait en vain, jusqu'au bout de son budget.
 
 **La coupe des adaptateurs.** `adn demux` rend chaque lecture dans le sens de l'insert :
 
@@ -81,7 +83,10 @@ celui de `hedges` la cherche en vain, jusqu'au bout de son budget.
   dix-neuf à une erreur près ;
 - la lecture 2 est complément inversée : ses dix-neuf dernières bases sont MEᶜ (ou sa fin, si la
   lecture s'est arrêtée dedans), et si elle a traversé l'insert, ce qu'elle a lu après lui se
-  retrouve avant lui, terminé par ME entière, à une erreur près.
+  retrouve avant lui, terminé par ME entière, à une erreur près ;
+- une lecture 2 qui n'a pas rejoint le début de l'insert est écartée : l'extrémité mosaïque qui
+  le précède n'y est pas reconnaissable, et son extrait est plus court que celui de la lecture 1.
+  Aussi long ou plus long, on ne peut rien conclure, et elle est gardée.
 
 Un dépassement de moins de dix bases n'est pas reconnaissable : la lecture reste telle quelle,
 et le décodeur en rejette la longueur.
@@ -278,11 +283,15 @@ tirages par scénario.
   de leur budget.
 - **La longueur de lecture doit couvrir le brin** : à 200 bases, les échantillons aux brins de
   300 nt (¼ et ⅓) échouent, ceux de 200 nt passent ; à 150, tous échouent.
+- **Durée** (même machine) : 0,8 s par tirage, du séquenceur au décodage. Les lectures 2 des
+  brins de 300 nt s'arrêtent dans l'insert : `adn demux` les écarte, et le décodeur ne les
+  cherche plus en vain — 5,3 s par tirage avant qu'il le fasse.
 
 ## Limites
 
 - **Lectures partielles** : elles ne s'assemblent pas. La longueur de lecture doit atteindre le
   plus long insert du pool — et 19 bases de plus pour que la lecture 2 couvre un insert entier.
+  En dessous, la lecture 2 est écartée, et la lecture 1 reste rejetée par les décodeurs.
 - **Format Nextera seul** : les adaptateurs en Y et le multiplexage par amorces ne sont pas
   décrits ; les molécules se construisent avec deux index, et le rangement sur le seul index i7
   ne s'applique qu'à des lectures.

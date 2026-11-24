@@ -47,7 +47,8 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
 - **`adn library`** : assemble des archives en un pool de molécules, un échantillon par
   archive.
 - **`adn demux`** : sépare les lectures d'un séquenceur par échantillon (FASTQ ou FASTA),
-  coupe les adaptateurs, remet la lecture 2 dans le sens de l'insert ; `--truth` confronte
+  coupe les adaptateurs, remet la lecture 2 dans le sens de l'insert et écarte les lectures 2
+  arrêtées dans l'insert — sans le début du brin, elles ne servent à rien ; `--truth` confronte
   le rangement à l'origine des lectures simulées.
 - **Séquenceur simulé** (`adn_simulation::Sequencer`) et **`adn simulate --library`** : lectures
   appariées, lectures d'index, erreurs croissantes le long de la lecture et qualités Phred,

@@ -4,7 +4,8 @@
 //! dans les deux sens de lecture. Une paire équidistante de deux échantillons reste sans réponse,
 //! jamais à moitié rangée. Les lectures rangées sont coupées des adaptateurs, la lecture 2
 //! remise dans le sens de l'insert : chaque échantillon se décode comme une archive
-//! (`adn decode <échantillon>.fasta`).
+//! (`adn decode <échantillon>.fasta`). Une lecture 2 qui s'est arrêtée dans l'insert n'en donne
+//! que la fin : elle n'est pas écrite, et le bilan la compte.
 //!
 //! Les lectures simulées portent l'échantillon d'origine dans leur en-tête : `--truth` le
 //! compare au rangement, et compte les fausses attributions.
@@ -74,7 +75,7 @@ pub struct SampleCounts {
     pub fichier: Option<String>,
     /// Paires rangées dans l'échantillon.
     pub paires: usize,
-    /// Lectures écrites : les deux d'une paire quand elles contiennent de l'insert.
+    /// Lectures écrites : les deux d'une paire quand elles contiennent l'insert depuis son début.
     pub lectures: usize,
     /// Erreurs comptées dans les index des paires rangées.
     pub erreurs_index: usize,
@@ -91,6 +92,8 @@ pub struct Demultiplexed {
     /// Lectures 1 et 2 coupées d'un adaptateur.
     pub coupees_r1: usize,
     pub coupees_r2: usize,
+    /// Lectures 2 arrêtées dans l'insert : sans son début, elles ne sont pas écrites.
+    pub r2_partielles: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verite: Option<Truth>,
 }
@@ -116,8 +119,8 @@ pub struct Confusion {
 /// et séquence, dans le sens de l'insert.
 type ReadSink<'a> = dyn FnMut(usize, &str, &[u8]) -> Result<()> + 'a;
 
-/// Range les paires et coupe les adaptateurs. Chaque lecture qui contient de l'insert passe à
-/// `sink`.
+/// Range les paires et coupe les adaptateurs. Chaque lecture qui contient l'insert depuis son
+/// début passe à `sink`.
 ///
 /// Avec `truth_sample` donné pour une paire, le rangement est confronté à l'origine.
 pub fn demultiplex(
@@ -150,7 +153,9 @@ pub fn demultiplex(
                 if reads.r1.len() < pair.r1.len() {
                     report.coupees_r1 += 1;
                 }
-                if pair.r2.len().saturating_sub(19) > reads.r2.len() {
+                if reads.r2_partial {
+                    report.r2_partielles += 1;
+                } else if pair.r2.len().saturating_sub(19) > reads.r2.len() {
                     report.coupees_r2 += 1;
                 }
                 if !reads.r1.is_empty() {
@@ -390,6 +395,11 @@ pub(crate) fn run(args: &DemuxArgs<'_>, out: &Printer) -> Result<()> {
             "Découpées d'un adaptateur",
             thousands(report.coupees_r1 as u64),
             thousands(report.coupees_r2 as u64)
+        ));
+        text.push_str(&format!(
+            "{:<24} {:>10}  arrêtées dans l'insert : sans son début, non écrites\n",
+            "Lectures 2 partielles",
+            thousands(report.r2_partielles as u64)
         ));
         if let Some(truth) = &report.verite {
             text.push_str(&format!(

@@ -185,6 +185,22 @@ fn sequence(sandbox: &Sandbox, extra: &[&str]) -> String {
     ok(&args)
 }
 
+/// Arguments d'une simulation d'un pool, en couverture de 3, un tirage.
+fn simulate_args<'a>(pool: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "simulate",
+        "-i",
+        pool,
+        "--library",
+        "--coverage",
+        "3",
+        "-n",
+        "1",
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
 /// Arguments de `adn demux` sur les lectures du sandbox. Chemins : R1 en 2, R2 en 4, I1 en 6.
 fn demux_args(sandbox: &Sandbox, output: &str) -> Vec<String> {
     [
@@ -588,4 +604,92 @@ fn demux_by_declared_indexes_and_its_refusals() {
         "--truth".into(),
     ]);
     refused(&as_str(&truth), "ne porte pas l'échantillon d'origine");
+}
+
+#[test]
+fn a_read_2_that_stops_inside_the_insert_is_left_out() {
+    let sandbox = Sandbox::new("partial");
+    // Des brins de 300 nt sous des lectures de 300 bases : la lecture 2 part de l'extrémité
+    // mosaïque, dix-neuf bases après le bout du brin, et s'arrête dix-neuf avant son début. Il
+    // ne reste de chaque paire que sa lecture 1, et l'archive se décode quand même.
+    let data = pseudo_random(1_000, 17);
+    let input = sandbox.write("in.bin", &data);
+    let archive = sandbox.path("h.adn.fasta");
+    ok(&[
+        "encode",
+        "-i",
+        &input,
+        "-o",
+        &archive,
+        "-a",
+        "hedges",
+        "--code-rate",
+        "1/4",
+    ]);
+    let pool = sandbox.path("pool.fasta");
+    ok(&[
+        "library",
+        "-o",
+        &pool,
+        "--sample",
+        &format!("{archive}=N701+N501"),
+    ]);
+
+    let text = ok(&simulate_args(&pool, &["--reads", &sandbox.path("reads")]));
+    assert!(text.contains("1 sur 1 tirages"), "{text}");
+    assert!(text.contains("lectures 2 arrêtées dans l'insert"), "{text}");
+    let report = json(&simulate_args(&pool, &[]));
+    let trial = &report["tirages"][0];
+    assert_eq!(
+        trial["echantillons"][0]["recuperation"], "Exact",
+        "{report}"
+    );
+    assert_eq!(
+        count(&trial["r2_partielles"]),
+        count(&trial["paires"]) - count(&trial["inconnues"]) - count(&trial["ambigues"]),
+        "{report}"
+    );
+    assert_eq!(
+        count(&trial["echantillons"][0]["lectures"]),
+        count(&trial["echantillons"][0]["paires"]),
+        "{report}"
+    );
+
+    // Démultiplexées, ces lectures ne donnent que des lectures 1.
+    let mut demux = demux_args(&sandbox, "demux");
+    demux.extend(["--library".into(), pool.clone()]);
+    let report = json(&as_str(&demux));
+    assert_eq!(
+        count(&report["r2_partielles"]),
+        count(&sample(&report, "h.adn")["paires"]),
+        "{report}"
+    );
+    assert_eq!(count(&report["coupees_r2"]), 0, "{report}");
+    let text = ok(&as_str(&demux));
+    assert!(text.contains("Lectures 2 partielles"), "{text}");
+    let reads = records(&sandbox.text("demux/h.adn.fasta"));
+    assert!(!reads.is_empty());
+    assert!(
+        reads.iter().all(|(header, _)| header.ends_with("/1")),
+        "{reads:?}"
+    );
+    assert_eq!(
+        reads.len() as u64,
+        count(&sample(&report, "h.adn")["lectures"])
+    );
+    restored(&sandbox, &sandbox.path("demux/h.adn.fasta"), &data);
+
+    // Trente bases de plus, et la lecture 2 rejoint le début du brin : aucune n'est écartée.
+    let report = json(&simulate_args(&pool, &["--read-length", "330"]));
+    let trial = &report["tirages"][0];
+    assert_eq!(count(&trial["r2_partielles"]), 0, "{report}");
+    assert_eq!(
+        trial["echantillons"][0]["recuperation"], "Exact",
+        "{report}"
+    );
+    assert_eq!(
+        count(&trial["echantillons"][0]["lectures"]),
+        2 * count(&trial["echantillons"][0]["paires"]),
+        "{report}"
+    );
 }

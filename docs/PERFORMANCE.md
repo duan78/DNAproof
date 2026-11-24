@@ -173,12 +173,12 @@ Avec la ligne de commande, sur des fichiers d'octets au hasard :
 | `adn simulate --library` : un tirage, du séquenceur au décodage des quatre échantillons | 246 728 paires de lectures | 2,3 s |
 | `adn demux`, échantillons pris du pool | 246 728 paires | 1,15 s |
 | `adn demux`, index déclarés, sans lecture d'index i5 | 246 728 paires | 0,95 s |
-| `adn simulate --library`, pool de quatre archives `hedges` (un par rendement) : un tirage, du séquenceur au décodage | 21 962 paires | 5,3 s |
+| `adn simulate --library`, pool de quatre archives `hedges` (un par rendement) : un tirage, du séquenceur au décodage | 21 962 paires | 0,8 s |
 | `adn demux` | 397 278 paires (1 Mio, un échantillon) | 1,84 s |
 
-Le pool `hedges` est plus lent à décoder que l'autre : les lectures y vont jusqu'à 300 bases,
-et celles de l'échantillon au rendement ¾, au-delà de ce qu'il corrige en bout de lecture, vont
-au bout de leur budget.
+Le pool `hedges` compte des brins de 300 nt sous des lectures de 300 bases : leur lecture 2
+s'arrête dix-neuf bases avant le début du brin, et `adn demux` l'écarte. Avant qu'il le fasse, le
+décodeur la cherchait en vain, jusqu'au bout de son budget, et ce pool prenait 5,3 s par tirage.
 
 `adn demux` range environ 215 000 paires de lectures par seconde, écriture des lectures
 comprise. La tolérance de la chaîne complète est mesurée dans
