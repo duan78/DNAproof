@@ -103,23 +103,26 @@ proptest! {
         let constraints = DnaConstraints::new(gc_low, (gc_low + width).min(1.0), max_run);
         let data = sample(kind, len, seed);
         for scheme in Scheme::ALL {
-            // Le schéma goldman ne règle pas le GC : il garde les bornes par défaut. Une
-            // fenêtre de GC de 10 % au moins laisse au schéma grass assez de nonces.
+            // Le schéma goldman ne règle pas le GC, et hedges garantit de 45 % à 55 %, rien
+            // de plus étroit : ils gardent les bornes par défaut. Une fenêtre de GC de 10 % au
+            // moins laisse au schéma grass assez de nonces.
+            let drawn = scheme.constrains_gc() && scheme != Scheme::Hedges;
+            let applied = if drawn {
+                constraints
+            } else {
+                DnaConstraints {
+                    max_homopolymer: max_run,
+                    ..DnaConstraints::default()
+                }
+            };
             let options = EncodeOptions {
-                constraints: if scheme.constrains_gc() {
-                    constraints
-                } else {
-                    DnaConstraints {
-                        max_homopolymer: max_run,
-                        ..DnaConstraints::default()
-                    }
-                },
+                constraints: applied,
                 ..EncodeOptions::for_scheme(scheme)
             };
             let encoded = encode(&data, &options).map_err(|e| fail(format!("encode: {e}")))?;
             for oligo in &encoded.oligos {
                 if scheme.constrains_gc() {
-                    constraints
+                    applied
                         .check(oligo)
                         .map_err(|e| fail(format!("oligo non conforme: {e}")))?;
                 }

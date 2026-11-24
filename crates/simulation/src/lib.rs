@@ -254,6 +254,17 @@ pub(crate) const STREAM_SEQUENCING: u64 = 0x0000_0000_0000_0024;
 pub(crate) const STREAM_SHUFFLE: u64 = 0x0000_0000_0000_0025;
 const STREAM_BURSTS: u64 = 0x0000_0000_0000_0028;
 
+/// Clé des tirages d'un oligo : son rang et la graine, mêlés.
+///
+/// Un ou exclusif eût changé les lectures d'une graine à l'autre, mais deux graines
+/// voisines — les dix tirages d'une même simulation — n'y auraient fait que permuter les
+/// tirages entre oligos voisins. Les totaux coïncidaient, et la charge de chaque bloc d'un
+/// code externe, le nombre de brins qui lui manquent, restait la même d'un tirage à
+/// l'autre : devant la perte et la couverture, dix tirages n'en faisaient qu'un.
+pub(crate) fn oligo_key(index: usize, seed: u64) -> u64 {
+    SeededRng::new(index as u64, seed).next_u64()
+}
+
 #[inline]
 fn rank_of(base: u8) -> u64 {
     match base {
@@ -383,7 +394,7 @@ impl DnaChannel {
         };
         let mut reads: Vec<SimulatedRead> = Vec::new();
         for (index, oligo) in oligos.iter().enumerate() {
-            let key = index as u64 ^ self.config.seed;
+            let key = oligo_key(index, self.config.seed);
             let dropped = self.config.dropout > 0.0
                 && SeededRng::new(key, STREAM_DROPOUT).next_f64() < self.config.dropout;
             let (template, synthesis_errors) = if self.config.synthesis.total() > 0.0 {
@@ -559,6 +570,43 @@ mod tests {
         assert!(stats_first.lost_oligos > 0);
         assert!(stats_first.reads_wrong_length > 0);
         assert!(first.windows(2).any(|pair| pair[0].oligo > pair[1].oligo));
+    }
+
+    #[test]
+    fn neighbouring_seeds_give_independent_losses() {
+        // Régression : la clé d'un oligo valait « rang ⊕ graine ». D'une graine voisine à
+        // l'autre, les oligos sans lecture ne faisaient que se déplacer : le total des
+        // lectures, et la charge de chacun des quatre premiers blocs de cent oligos,
+        // restaient identiques.
+        let pool = oligos(400, 152);
+        let signature = |seed: u64| {
+            let config = ChannelConfig {
+                sequencing: ErrorRates::NONE,
+                bursts: BurstConfig::NONE,
+                dropout: 0.1,
+                coverage: 8.0,
+                seed,
+                ..ChannelConfig::default()
+            };
+            let (reads, _) = DnaChannel::new(config).unwrap().simulate(&pool);
+            let mut present = [false; 400];
+            for read in &reads {
+                present[read.oligo as usize] = true;
+            }
+            let blocks: Vec<usize> = present
+                .chunks(100)
+                .map(|block| block.iter().filter(|&&there| !there).count())
+                .collect();
+            (reads.len(), blocks)
+        };
+        let first = signature(1);
+        for seed in [2, 3, 4] {
+            assert_ne!(
+                signature(seed),
+                first,
+                "la graine {seed}, voisine de 1, a donné le même tirage"
+            );
+        }
     }
 
     #[test]

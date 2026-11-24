@@ -245,15 +245,16 @@ fn legacy_v1_archives_are_recognized_and_refused() {
 #[test]
 fn strict_constraints_are_honoured_by_every_scheme() {
     // Suites d'au plus deux bases : une séquence aléatoire sur 12 500 suffit. Les schémas
-    // trouvent leurs candidats, et rien ne sort qui ne respecte pas les contraintes. Le schéma
-    // grass, lui, ne promet que trois bases (ses trimères) : deux lui sont refusées.
+    // trouvent leurs candidats, et rien ne sort qui ne respecte pas les contraintes. Les
+    // schémas grass et hedges, eux, ne promettent que trois bases — les trimères de l'un, la
+    // règle du code de l'autre — : deux leur sont refusées.
     let data = sample(0, 300);
     for scheme in Scheme::ALL {
         let options = EncodeOptions {
             constraints: DnaConstraints::new(0.45, 0.55, 2),
             ..EncodeOptions::for_scheme(scheme)
         };
-        if scheme == Scheme::Grass {
+        if matches!(scheme, Scheme::Grass | Scheme::Hedges) {
             let err = encode(&data, &options).unwrap_err();
             assert!(matches!(err, adn_core::DnaError::InvalidConfig(_)), "{err}");
             continue;
@@ -288,16 +289,18 @@ fn unsatisfiable_constraints_are_refused_up_front() {
             ..EncodeOptions::for_scheme(scheme)
         };
         let err = encode(b"x", &options).unwrap_err();
-        // Le schéma goldman ne règle pas le GC : des bornes particulières lui sont refusées.
+        // Les schémas goldman et hedges ne règlent pas le GC sur commande : l'un ne le garantit
+        // pas, l'autre garantit de 45 % à 55 % et rien de plus étroit. Des bornes particulières
+        // leur sont refusées d'emblée.
         let expected = match scheme {
-            Scheme::Goldman => adn_core::DnaError::InvalidConfig(String::new()),
+            Scheme::Goldman | Scheme::Hedges => adn_core::DnaError::InvalidConfig(String::new()),
             _ => adn_core::DnaError::Encoding(String::new()),
         };
         assert!(
             std::mem::discriminant(&err) == std::mem::discriminant(&expected),
             "{scheme:?} : {err}"
         );
-        if scheme != Scheme::Goldman {
+        if !matches!(scheme, Scheme::Goldman | Scheme::Hedges) {
             assert!(err.to_string().contains("trop strictes"), "{err}");
         }
     }
@@ -310,7 +313,8 @@ fn every_oligo_has_the_length_of_its_scheme() {
         let options = EncodeOptions::for_scheme(scheme);
         let encoded = encode(b"x", &options).unwrap();
         // Les brins de données ont la longueur du schéma ; les manifestes, celle d'un oligo en
-        // 2 bits par nucléotide, avec la parité du schéma.
+        // 2 bits par nucléotide, avec la parité du schéma — sauf en hedges, où le manifeste est
+        // codé par HEDGES et a la longueur d'un brin.
         let copies = encoded.stats.manifest_copies;
         assert_eq!(copies, 12);
         assert!(encoded.oligos[copies..]
@@ -322,10 +326,16 @@ fn every_oligo_has_the_length_of_its_scheme() {
             Scheme::Goldman => 2,
             Scheme::Grass => options.grass.parity as u8,
             Scheme::Ldpc => 2,
+            Scheme::Hedges => 0,
+        };
+        let manifest_len = if scheme == Scheme::Hedges {
+            options.oligo_length()
+        } else {
+            (36 + usize::from(manifest_parity)) * 4
         };
         assert!(encoded.oligos[..copies]
             .iter()
-            .all(|oligo| oligo.len() == (36 + usize::from(manifest_parity)) * 4));
+            .all(|oligo| oligo.len() == manifest_len));
     }
 }
 

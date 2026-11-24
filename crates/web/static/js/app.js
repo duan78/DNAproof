@@ -45,6 +45,7 @@ window.ADN = (function () {
         goldman: "Goldman et al., 2013",
         grass: "Grass et al., 2015",
         ldpc: "code convolutif et LDPC",
+        hedges: "HEDGES (code à hachis)",
     };
     const SCHEME_HELP = {
         fountain: "Sans adresse, marge de perte réglable : le schéma de l'article de référence.",
@@ -56,6 +57,8 @@ window.ADN = (function () {
         ldpc: "Code convolutif par brin, lu sur le treillis à décisions souples, et LDPC par bloc, " +
             "entrelacés : le plus tolérant aux erreurs de lecture et aux brins manquants. " +
             "Moins dense que les brins codés.",
+        hedges: "Code à hachis par brin, décodé par recherche, et Reed-Solomon entre les brins : le seul schéma qui corrige " +
+            "les insertions et les suppressions. Le rendement règle ce qu'il corrige : 4,5 % d'erreurs par base à 1/2, 15 % à 1/4.",
     };
 
     function el(tag, className, text) {
@@ -184,6 +187,8 @@ window.ADN = (function () {
         const slider = document.getElementById("redundancy");
         const marginValue = document.getElementById("redundancy-value");
         const marginHelp = document.getElementById("redundancy-help");
+        const rateField = document.getElementById("code-rate-field");
+        const rate = document.getElementById("code-rate");
         let selected = null;
 
         const describeMargin = () => {
@@ -196,6 +201,7 @@ window.ADN = (function () {
         const followScheme = () => {
             const fountain = scheme.value === "fountain";
             marginField.hidden = !fountain;
+            rateField.hidden = scheme.value !== "hedges";
             if (fountain) describeMargin();
             const help = document.getElementById("scheme-help");
             if (help) help.textContent = SCHEME_HELP[scheme.value] || "";
@@ -236,6 +242,7 @@ window.ADN = (function () {
                         scheme: scheme.value,
                         compression: compression.value,
                         redundancy: scheme.value === "fountain" ? slider.value : "",
+                        code_rate: scheme.value === "hedges" ? rate.value : "",
                     },
                     {
                         onStage: setStage,

@@ -26,8 +26,8 @@ use adn_core::{DnaError, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    apply_bursts, apply_errors, poisson, BurstConfig, ErrorCounts, ErrorRates, STREAM_DROPOUT,
-    STREAM_POISSON, STREAM_SEQUENCING, STREAM_SHUFFLE, STREAM_SYNTHESIS,
+    apply_bursts, apply_errors, oligo_key, poisson, BurstConfig, ErrorCounts, ErrorRates,
+    STREAM_DROPOUT, STREAM_POISSON, STREAM_SEQUENCING, STREAM_SHUFFLE, STREAM_SYNTHESIS,
 };
 
 const STREAM_INDEX: u64 = 0x0000_0000_0000_0026;
@@ -341,7 +341,7 @@ impl Sequencer {
         };
         let mut pairs: Vec<ReadPair> = Vec::new();
         for (index, molecule) in molecules.iter().enumerate() {
-            let key = index as u64 ^ config.seed;
+            let key = oligo_key(index, config.seed);
             let (before, after) = library.primer_offsets(molecule.sample)?;
             let insert_end = molecule.sequence.len() - after;
             let insert = &molecule.sequence[before..insert_end];

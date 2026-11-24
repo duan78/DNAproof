@@ -1,6 +1,6 @@
 //! Mesures des codecs : encodage et décodage par schéma et par taille, avec et sans erreurs de
-//! lecture, et coût des briques (compression, Reed-Solomon, code convolutif, LDPC,
-//! contraintes).
+//! lecture, et coût des briques (compression, Reed-Solomon, code convolutif, LDPC, recherche
+//! HEDGES, contraintes).
 //!
 //!     cargo bench -p adn-core
 //!
@@ -46,6 +46,8 @@ type Scenario = (f64, usize);
 ///   répare.
 /// - Le schéma ldpc lit chaque brin sur le treillis d'un code convolutif, à sorties souples ;
 ///   trois lectures par brin, additionnées, donnent au LDPC un canal presque sans erreur.
+/// - Le schéma hedges resynchronise chaque lecture par une recherche ; à 1 % de substitutions et
+///   trois lectures par brin, le code externe n'a presque rien à faire.
 fn scenario(scheme: Scheme) -> Scenario {
     match scheme {
         Scheme::Fountain => (0.001, 3),
@@ -53,6 +55,7 @@ fn scenario(scheme: Scheme) -> Scenario {
         Scheme::Goldman => (0.001, 3),
         Scheme::Grass => (0.005, 1),
         Scheme::Ldpc => (0.01, 3),
+        Scheme::Hedges => (0.01, 3),
     }
 }
 
@@ -84,6 +87,26 @@ fn substitute(base: u8, rng: &mut SeededRng) -> u8 {
         .position(|candidate| *candidate == base)
         .unwrap_or(0);
     BASES[(rank + 1 + rng.below(3) as usize) % 4]
+}
+
+/// Une lecture abîmée des trois façons : chaque base est remplacée, ou précède une base insérée,
+/// ou disparaît, avec le taux `each`.
+fn damage_with_indels(dna: &[u8], each: f64, rng: &mut SeededRng) -> Vec<u8> {
+    let mut read = Vec::with_capacity(dna.len() + 8);
+    for &base in dna {
+        let roll = rng.next_f64();
+        if roll < each {
+            read.push(substitute(base, rng));
+        } else if roll < 2.0 * each {
+            read.push(BASES[rng.below(4) as usize]);
+            read.push(base);
+        } else if roll < 3.0 * each {
+            // La base disparaît.
+        } else {
+            read.push(base);
+        }
+    }
+    read
 }
 
 /// Lectures d'une archive : `coverage` copies, et chacune porte des substitutions au taux
@@ -280,6 +303,53 @@ fn bench_parts(c: &mut Criterion) {
     group.bench_function("convolutif/log-map_308_bits", |b| {
         b.iter(|| black_box(convolutional::bcjr(&llrs, &no_prior).unwrap().llrs.len()))
     });
+
+    // HEDGES : un brin à chaque rendement, relu par la recherche. Lecture intacte, puis lecture
+    // abîmée de 1 % de chaque sorte d'erreur — substitution, insertion, suppression.
+    let mut rng = SeededRng::new(5, 0x4ED);
+    for rate in adn_core::hedges::Rate::ALL {
+        let layout = adn_core::hedges::Layout::strand(rate);
+        let free = random_bytes(layout.free_bytes(), 21);
+        let dna = adn_core::hedges::encode(&layout, &free);
+        let damaged = damage_with_indels(&dna, 0.01, &mut rng);
+        let mut decoder = adn_core::hedges::Decoder::new(layout);
+        let solved = decoder.decode(&damaged);
+        assert_eq!(solved.outcome, adn_core::hedges::Outcome::Solved);
+        assert_eq!(solved.message.as_deref(), Some(free.as_slice()));
+        let name = rate.name();
+        group.bench_function(format!("hedges/encoder_{name}"), |b| {
+            b.iter(|| black_box(adn_core::hedges::encode(&layout, &free)).len())
+        });
+        group.bench_function(format!("hedges/recherche_intact_{name}"), |b| {
+            b.iter(|| black_box(decoder.decode(&dna)).hypotheses)
+        });
+        group.bench_function(
+            format!("hedges/recherche_1pct_de_chaque_erreur_{name}"),
+            |b| b.iter(|| black_box(decoder.decode(&damaged)).hypotheses),
+        );
+        // Une lecture d'une autre archive, au rendement de même longueur de brin : rangée ici par
+        // un saut d'index, elle ne peut rien donner — et la recherche va au bout de son budget.
+        let other = if rate == adn_core::hedges::Rate::HALF {
+            adn_core::hedges::Rate::THREE_QUARTERS
+        } else if rate == adn_core::hedges::Rate::THREE_QUARTERS {
+            adn_core::hedges::Rate::HALF
+        } else if rate == adn_core::hedges::Rate::THIRD {
+            adn_core::hedges::Rate::QUARTER
+        } else {
+            adn_core::hedges::Rate::THIRD
+        };
+        let foreign_layout = adn_core::hedges::Layout::strand(other);
+        let foreign = adn_core::hedges::encode(
+            &foreign_layout,
+            &random_bytes(foreign_layout.free_bytes(), 22),
+        );
+        assert_eq!(foreign.len(), dna.len());
+        let outcome = decoder.decode(&foreign).outcome;
+        assert_ne!(outcome, adn_core::hedges::Outcome::Solved);
+        group.bench_function(format!("hedges/lecture_etrangere_{name}"), |b| {
+            b.iter(|| black_box(decoder.decode(&foreign)).hypotheses)
+        });
+    }
 
     // LDPC : le bloc d'une archive ldpc à la parité de 20 % — 819 brins de données, 164 de
     // parité, 104 bits chacun. Construction de la matrice, parité, puis décodage d'un bloc

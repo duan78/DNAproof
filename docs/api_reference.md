@@ -65,9 +65,10 @@ Encode un fichier. Requête `multipart/form-data` :
 | Champ | Requis | Contenu |
 |-------|--------|---------|
 | `file` | oui | le fichier à archiver ; un seul par requête |
-| `scheme` | non | `fountain` (défaut), `strands`, `goldman`, `grass` ou `ldpc` |
+| `scheme` | non | `fountain` (défaut), `strands`, `goldman`, `grass`, `ldpc` ou `hedges` |
 | `compression` | non | `auto` (défaut), `none`, `lz4` ou `zstd` |
 | `redundancy` | non | marge de perte de DNA Fountain : un nombre de 1 à 100, `1.1` par défaut |
+| `code_rate` | non | rendement du code de HEDGES : `1/4`, `1/3`, `1/2` (défaut) ou `3/4`. Sans objet pour les autres schémas, où il est ignoré comme `redundancy` hors DNA Fountain |
 
 Tout autre champ est refusé : un réglage ignoré en silence est une archive différente de celle
 qu'on croyait.
@@ -143,7 +144,7 @@ L'état du serveur :
   "started_at": "2026-11-23T15:04:46.1722536Z",
   "uptime_seconds": 33.4869678,
   "limits": {"upload_bytes": 26214400, "concurrent_jobs": 2, "retention_minutes": 1440},
-  "schemes": ["fountain", "strands", "goldman", "grass", "ldpc"],
+  "schemes": ["fountain", "strands", "goldman", "grass", "ldpc", "hedges"],
   "jobs": {"queued": 0, "running": 0, "complete": 2, "failed": 0},
   "database": {"enabled": true, "archives": 1, "oligos": 127}
 }
@@ -171,7 +172,7 @@ Toujours en JSON, avec le statut répété dans le corps :
 
 | Statut | Quand |
 |--------|-------|
-| `400` | aucun fichier, deux fichiers, champ inconnu, valeur inconnue (`scheme`, `compression`, `redundancy`, `expected_sha256`), identifiant mal formé |
+| `400` | aucun fichier, deux fichiers, champ inconnu, valeur inconnue (`scheme`, `compression`, `redundancy`, `code_rate`, `expected_sha256`), identifiant mal formé |
 | `403` | l'hôte de la requête n'est pas accepté |
 | `404` | tâche inconnue, rien à télécharger, fichier disparu |
 | `409` | retrait d'une tâche en attente ou en cours |
@@ -191,7 +192,7 @@ aucun manifeste lisible, empreinte inattendue, corps incohérent…
 |-------|---------|
 | `scheme`, `compression` | tels qu'ils ont été appliqués |
 | `original_bytes`, `body_bytes` | taille du fichier d'origine, puis de l'enveloppe (compressée ou non) |
-| `units` | blocs (DNA Fountain), fenêtres (`goldman`) ou brins de données (`strands`, `grass`, `ldpc`) |
+| `units` | blocs (DNA Fountain), fenêtres (`goldman`) ou brins de données (`strands`, `grass`, `ldpc`, `hedges`) |
 | `oligos`, `data_oligos`, `manifest_copies` | nombre d'oligos, au total, de données et de manifestes |
 | `oligo_length_nt` | longueur d'un oligo |
 | `nucleotides` | total |

@@ -439,7 +439,7 @@ async fn a_file_round_trips_through_the_server() {
     assert_eq!(stats["database"]["enabled"], false);
     assert_eq!(
         stats["schemes"],
-        json!(["fountain", "strands", "goldman", "grass", "ldpc"])
+        json!(["fountain", "strands", "goldman", "grass", "ldpc", "hedges"])
     );
 
     let health = get(&app, "/health").await;
@@ -514,6 +514,36 @@ async fn encoding_options_are_honoured() {
         assert_eq!(decoded["status"], "complete", "{decoded}");
         assert_eq!(decoded["sha256"], job["sha256"], "{scheme}");
         assert_eq!(decoded["stats"]["scheme"], scheme);
+    }
+
+    // HEDGES : le rendement règle la longueur du brin ; l'archive se relit sans que le
+    // schéma soit indiqué.
+    for (rate, length) in [("1/4", 300), ("3/4", 200)] {
+        let id = encode(
+            &app,
+            "hedges.txt",
+            &b"insertions et suppressions".repeat(30),
+            &[("scheme", "hedges"), ("code_rate", rate)],
+        )
+        .await;
+        let job = finished(&app, &id).await;
+        assert_eq!(job["status"], "complete", "{job}");
+        assert_eq!(job["stats"]["scheme"], "hedges");
+        assert_eq!(job["stats"]["oligo_length_nt"], length, "rendement {rate}");
+        let archive = get(&app, &format!("/download/fasta/{id}")).await;
+        let form = Form::new().file("file", "hedges.txt.fasta", archive.body.as_ref());
+        let accepted = post(&app, "/api/decode", form).await;
+        assert_eq!(
+            accepted.status,
+            StatusCode::ACCEPTED,
+            "rendement {rate} : {}",
+            accepted.text()
+        );
+        let decode_id = accepted.json()["job_id"].as_str().unwrap().to_string();
+        let decoded = finished(&app, &decode_id).await;
+        assert_eq!(decoded["status"], "complete", "{decoded}");
+        assert_eq!(decoded["sha256"], job["sha256"], "rendement {rate}");
+        assert_eq!(decoded["stats"]["scheme"], "hedges");
     }
 
     // Les deux archives se décodent sans que le schéma soit indiqué.

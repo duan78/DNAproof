@@ -10,12 +10,12 @@
 //! | décalage | taille | contenu |
 //! |----------|--------|---------|
 //! | 0        | 1      | version du format (2) |
-//! | 1        | 1      | schéma : 1 = DNA Fountain, 2 = brins codés, 3 = goldman, 4 = grass, 5 = ldpc |
-//! | 2        | 1      | octets (fountain, strands) ou symboles (grass) de parité Reed-Solomon de chaque oligo |
+//! | 1        | 1      | schéma : 1 = DNA Fountain, 2 = brins codés, 3 = goldman, 4 = grass, 5 = ldpc, 6 = hedges |
+//! | 2        | 1      | parité Reed-Solomon de chaque oligo : en octets (fountain, strands), en symboles (grass), `2` pour goldman et ldpc (leurs manifestes), `0` pour hedges |
 //! | 3        | 1      | compression de l'enveloppe |
 //! | 4        | 8      | longueur de l'enveloppe (octets, petit-boutiste) |
 //! | 12       | 4      | nombre de blocs (DNA Fountain) ou de fenêtres (goldman), 0 sinon |
-//! | 16       | 4      | `c` de la distribution soliton (f32, petit-boutiste) ; sinon, au premier octet : identifiant de fichier du schéma goldman, parité du schéma ldpc (en pour cent) |
+//! | 16       | 4      | `c` de la distribution soliton (f32, petit-boutiste) ; sinon, au premier octet : identifiant de fichier du schéma goldman, parité du schéma ldpc (en pour cent), rendement du schéma hedges (1 à 4) |
 //! | 20       | 4      | `δ` de la distribution soliton (f32, petit-boutiste) |
 //! | 24       | 4      | CRC-32 des 24 premiers octets |
 //!
@@ -27,6 +27,10 @@
 //!
 //! L'étiquette permet de reconnaître un oligo manifeste parmi les lectures. Le décodeur retient le
 //! manifeste confirmé par le plus grand nombre de lectures.
+//!
+//! Les archives du schéma hedges font exception : leur oligo manifeste est codé par HEDGES
+//! derrière l'étiquette `HEDG` ([`super::hedges`]), pour traverser lui aussi les insertions et
+//! les suppressions.
 
 use crate::checksum::crc32;
 use crate::codec::rng::{scramble_u32, SeededRng};
@@ -55,6 +59,7 @@ pub enum SchemeId {
     Goldman = 3,
     Grass = 4,
     Ldpc = 5,
+    Hedges = 6,
 }
 
 impl SchemeId {
@@ -65,6 +70,7 @@ impl SchemeId {
             3 => Some(SchemeId::Goldman),
             4 => Some(SchemeId::Grass),
             5 => Some(SchemeId::Ldpc),
+            6 => Some(SchemeId::Hedges),
             _ => None,
         }
     }
@@ -81,7 +87,8 @@ pub struct Manifest {
     pub c: f32,
     pub delta: f32,
     /// Identifiant de fichier du schéma goldman (0 à 8), parité du schéma ldpc (5 à 100, pour
-    /// cent) ; rangé dans le premier octet de `c`, qui vaut alors 0.
+    /// cent), rendement du schéma hedges (1 à 4) ; rangé dans le premier octet de `c`, qui
+    /// vaut alors 0.
     pub file_id: u8,
 }
 
@@ -106,9 +113,9 @@ pub fn encode(manifest: &Manifest) -> [u8; MANIFEST_LEN] {
     bytes[4..12].copy_from_slice(&manifest.body_len.to_le_bytes());
     bytes[12..16].copy_from_slice(&manifest.chunks.to_le_bytes());
     // `c` n'a de sens que pour DNA Fountain : son premier octet porte l'identifiant de fichier
-    // du schéma goldman.
+    // du schéma goldman, la parité du schéma ldpc ou le rendement du schéma hedges.
     match manifest.scheme {
-        SchemeId::Goldman | SchemeId::Ldpc => {
+        SchemeId::Goldman | SchemeId::Ldpc | SchemeId::Hedges => {
             bytes[16] = manifest.file_id;
             bytes[17..20].fill(0);
         }
@@ -146,7 +153,7 @@ pub fn decode(bytes: &[u8]) -> Result<Manifest> {
         DnaError::UnsupportedFormat(format!("compression de manifeste inconnue: {}", bytes[3]))
     })?;
     let (c, file_id) = match scheme {
-        SchemeId::Goldman | SchemeId::Ldpc => (0.0, bytes[16]),
+        SchemeId::Goldman | SchemeId::Ldpc | SchemeId::Hedges => (0.0, bytes[16]),
         _ => (
             f32::from_le_bytes(bytes[16..20].try_into().expect("4 octets")),
             0,
@@ -329,9 +336,12 @@ pub fn parse_oligo(read: &[u8], rs: &RsCode) -> Result<Manifest> {
 /// Cherche le manifeste confirmé par le plus de lectures.
 ///
 /// Prend possession des lectures et retourne le manifeste ainsi que les lectures de données
-/// (celles qui ne ressemblent pas à un manifeste).
+/// (celles qui ne ressemblent pas à un manifeste). Les archives hedges portent leur manifeste
+/// derrière l'étiquette `HEDG`, codé par HEDGES : on les reconnaît à leur étiquette, et on essaie
+/// leurs rendements ([`super::hedges::probe_manifest_oligo`]).
 pub fn find(reads: Vec<Vec<u8>>) -> Result<(Manifest, Vec<Vec<u8>>, ManifestStats)> {
     let tag = tag_dna();
+    let hedges_tag = super::hedges::manifest_tag_dna();
     let mut stats = ManifestStats::default();
     let candidates: Vec<&Vec<u8>> = reads
         .iter()
@@ -368,6 +378,30 @@ pub fn find(reads: Vec<Vec<u8>>) -> Result<(Manifest, Vec<Vec<u8>>, ManifestStat
             manifests.push(manifest);
         }
     }
+
+    // Les oligos manifestes des archives hedges. Leurs copies sont identiques : une passe
+    // courte suffit sur chacune dès qu'une aboutit — une lecture qui résiste coûterait une
+    // recherche entière, et la recherche du manifeste ne se fait pas en parallèle. La
+    // recherche entière ne vient que si aucune passe n'a abouti, et sur les premières
+    // lectures seulement ([`super::hedges::MAX_SEARCHED_MANIFESTS`]).
+    let hedges_candidates: Vec<&Vec<u8>> = reads
+        .iter()
+        .filter(|read| looks_like_manifest(read, &hedges_tag))
+        .collect();
+    stats.candidates += hedges_candidates.len();
+    let mut probed: Vec<Manifest> = hedges_candidates
+        .iter()
+        .filter_map(|read| super::hedges::probe_manifest_oligo(read))
+        .collect();
+    if probed.is_empty() {
+        probed = hedges_candidates
+            .iter()
+            .take(super::hedges::MAX_SEARCHED_MANIFESTS)
+            .filter_map(|read| super::hedges::parse_manifest_oligo(read).ok())
+            .collect();
+    }
+    manifests.extend(probed);
+
     stats.valid = manifests.len();
     if manifests.is_empty() {
         return Err(DnaError::UnsupportedFormat(format!(
@@ -391,7 +425,7 @@ pub fn find(reads: Vec<Vec<u8>>) -> Result<(Manifest, Vec<Vec<u8>>, ManifestStat
 
     let data_reads: Vec<Vec<u8>> = reads
         .into_iter()
-        .filter(|read| !looks_like_manifest(read, &tag))
+        .filter(|read| !looks_like_manifest(read, &tag) && !looks_like_manifest(read, &hedges_tag))
         .collect();
     Ok((manifest, data_reads, stats))
 }
@@ -623,6 +657,48 @@ mod tests {
         assert!(data.is_empty());
         assert_eq!(stats.candidates, 4);
         assert_eq!(stats.valid, 1);
+    }
+
+    /// Des lectures qui portent l'étiquette `HEDG` sans être des manifestes — un brin tronqué,
+    /// par exemple — ne masquent pas les vrais manifestes : la passe courte les écarte, et le
+    /// manifeste est trouvé quand bien même il arrive après plus de lectures fausses que la
+    /// recherche entière n'en tenterait.
+    #[test]
+    fn hedges_tag_like_reads_do_not_hide_the_manifest() {
+        let options = crate::codec::EncodeOptions {
+            compression: Compression::None,
+            ..crate::codec::EncodeOptions::for_scheme(crate::codec::Scheme::Hedges)
+        };
+        let encoded = crate::codec::encode(&[7u8; 300], &options).unwrap();
+        let tag = super::super::hedges::manifest_tag_dna();
+        let manifests: Vec<Vec<u8>> = encoded
+            .oligos
+            .iter()
+            .filter(|oligo| oligo.starts_with(&tag))
+            .cloned()
+            .collect();
+        assert!(manifests.len() >= 12);
+        let data_oligos: Vec<Vec<u8>> = encoded
+            .oligos
+            .iter()
+            .filter(|oligo| !oligo.starts_with(&tag))
+            .cloned()
+            .collect();
+        let mut reads: Vec<Vec<u8>> = (1..=150)
+            .map(|seed| {
+                let mut read = tag.clone();
+                read.extend(random_dna(184, seed));
+                read
+            })
+            .collect();
+        reads.extend(manifests.iter().cloned());
+        reads.extend(data_oligos.iter().cloned());
+        let (found, data, stats) = find(reads).unwrap();
+        assert_eq!(found.scheme, SchemeId::Hedges);
+        assert_eq!(found.body_len, 360);
+        assert_eq!(stats.candidates, 150 + manifests.len());
+        assert_eq!(stats.valid, manifests.len());
+        assert_eq!(data, data_oligos);
     }
 
     #[test]

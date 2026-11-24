@@ -73,11 +73,12 @@ rassembler dans une seule boîte à outils — et dire où chacune en est.
 | Encodage | Brins codés : index dans l'ADN, deux niveaux de Reed-Solomon | architecture de Grass et al., 2015 | ✅ livré |
 | Encodage | Code ternaire de Huffman, jamais deux bases identiques, fenêtres recouvrantes | Goldman et al., 2013 | ✅ livré |
 | Encodage | Reed-Solomon sur le corps à 47 éléments, un symbole par trimère | Grass et al., 2015 | ✅ livré |
-| Encodage | Code à hash, résistant aux insertions et suppressions (HEDGES) | Press et al., 2020 | 📋 planifié |
+| Encodage | Code à hachis, résistant aux insertions et suppressions (HEDGES) | Press et al., 2020 | ✅ livré |
 | Codes correcteurs | Reed-Solomon GF(256), interne et externe | — | ✅ livré |
 | Codes correcteurs | Code LT, marge de perte certifiée | Luby, 2002 | ✅ livré |
 | Codes correcteurs | Code convolutif et décodage de Viterbi (K = 7, rendement ½) | Viterbi, 1967 ; Bahl et al., 1974 | ✅ livré |
 | Codes correcteurs | LDPC à propagation de croyances | Gallager, 1963 | ✅ livré |
+| Codes correcteurs | Décodage séquentiel à pile : la recherche best-first de HEDGES | Zigangirov, 1966 ; Jelinek, 1969 | ✅ livré |
 | Codes correcteurs | Entrelacement contre les salves d'erreurs | — | ✅ livré |
 | Traitement | Compression (zstd, LZ4), manifeste embarqué, empreinte SHA-256 | — | ✅ livré |
 | Format | FASTA et FASTQ | — | ✅ livré |
@@ -85,6 +86,8 @@ rassembler dans une seule boîte à outils — et dire où chacune en est.
 | Simulation | Synthèse, séquençage, perte, couverture, erreurs en salves — reliée au décodeur | — | ✅ livré |
 | Simulation | Séquenceur : lectures appariées, lectures d'index, sauts d'index | — | ✅ livré |
 | Outillage | CLI, serveur web, SQLite et PostgreSQL, Docker, CI | — | ✅ livré |
+| Encodage | Codes VT et codes à filigrane : d'autres façons de relire les insertions et suppressions | Varshamov et Tenengolts, 1965 ; Davey et MacKay, 2001 | 📋 planifié |
+| Codes correcteurs | Turbocodes et codes polaires | Berrou et al., 1993 ; Arıkan, 2009 | 📋 planifié |
 
 ✅ livré et mesuré · 📋 planifié : annoncé ici comme objectif, pas encore dans le code
 
@@ -113,20 +116,20 @@ rassembler dans une seule boîte à outils — et dire où chacune en est.
 | Goldman 2013 — `goldman` | code ternaire de Huffman, jamais deux bases identiques de suite, chaque base lue dans quatre brins | ✅ livré |
 | Grass 2015 — `grass` | Reed-Solomon sur le corps à 47 éléments, un symbole par groupe de trois bases | ✅ livré |
 | LDPC et code convolutif — `ldpc` | code convolutif par brin, lu à décisions souples ; LDPC par bloc ; entrelacement | ✅ livré |
-| HEDGES — Press et al., 2020 | code à hash, résistant aux insertions et aux suppressions | 📋 planifié |
+| HEDGES — `hedges` | code à hachis par brin, décodé par une recherche best-first : les insertions et les suppressions sont corrigées ; Reed-Solomon en diagonale entre les brins | ✅ livré |
 
-Les cinq schémas, comparés :
+Les six schémas, comparés :
 
-| | `fountain` — DNA Fountain | `strands` — brins codés | `goldman` — Goldman 2013 | `grass` — Grass 2015 | `ldpc` — code convolutif et LDPC |
-|---|---|---|---|---|---|
-| Principe | gouttes sans ordre ni adresse : l'archive se reconstitue à partir de n'importe quelles lectures | brins adressés, protégés par deux niveaux de Reed-Solomon | un trit par base, jamais deux bases identiques ; chaque base du message lue dans quatre brins, et votée | symboles de GF(47) écrits en trois bases, protégés par deux niveaux de Reed-Solomon | code convolutif par brin, relu à décisions souples ; LDPC par bloc ; entrelacement |
-| Oligo | 152 nt | 160 nt | 117 nt | 117 nt | 154 nt |
-| Redondance | réglable : la *marge de perte* `r` garantit la lecture après la perte aléatoire de `1 − 1/r` des oligos | 32 brins de parité par bloc de 223 | recouvrement ×4 | 14 symboles de parité par brin ; 92 brins de parité par bloc de 713 | code de rendement ½, puis 20 % de brins de parité par bloc de 819 |
-| Limite du format | ≈ 137 Gio | ≈ 420 Mio | ≈ 2,6 Mo | ≈ 55 Mo | ≈ 173 Mio |
-| Densité (fichier incompressible) | 1,41 bit/nt (marge 1,1) ; 1,04 (marge 1,5) | 1,31 bit/nt | 0,34 bit/nt | 0,77 bit/nt ; 1,12 (parité 6) | 0,56 bit/nt ; 0,45 (parité 50) |
-| Traverse (mesuré) | 10 % de perte à marge 1,1 | 2 % de substitution | 2 % de substitution à couverture 20 ; 5 % de perte | 5 % de substitution à couverture 3 ; 10 % de perte | 5 % de substitution à couverture 10 ; 11 % de perte ; 5 % d'erreurs de synthèse |
-| Encodage de 1 Mio | 0,22 s | 0,05 s | 0,11 s | 0,27 s | 0,17 s |
-| Bien pour | les archives qui doivent traverser des pertes ; les très gros fichiers | les petits fichiers ; un encodage rapide | le schéma de l'article, tel quel ; plusieurs archives dans un même tube | un canal à substitutions denses | un séquençage ou une synthèse très bruités, une salve d'erreurs, quand la densité importe peu |
+| | `fountain` — DNA Fountain | `strands` — brins codés | `goldman` — Goldman 2013 | `grass` — Grass 2015 | `ldpc` — code convolutif et LDPC | `hedges` — code à hachis (HEDGES), rendement ½ |
+|---|---|---|---|---|---|---|
+| Principe | gouttes sans ordre ni adresse : l'archive se reconstitue à partir de n'importe quelles lectures | brins adressés, protégés par deux niveaux de Reed-Solomon | un trit par base, jamais deux bases identiques ; chaque base du message lue dans quatre brins, et votée | symboles de GF(47) écrits en trois bases, protégés par deux niveaux de Reed-Solomon | code convolutif par brin, relu à décisions souples ; LDPC par bloc ; entrelacement | chaque base est désignée par un hachis de la position, des bits précédents et du sel ; une recherche best-first resynchronise chaque lecture ; Reed-Solomon en diagonale entre les brins |
+| Oligo | 152 nt | 160 nt | 117 nt | 117 nt | 154 nt | 200 ou 300 nt, selon le rendement |
+| Redondance | réglable : la *marge de perte* `r` garantit la lecture après la perte aléatoire de `1 − 1/r` des oligos | 32 brins de parité par bloc de 223 | recouvrement ×4 | 14 symboles de parité par brin ; 92 brins de parité par bloc de 713 | code de rendement ½, puis 20 % de brins de parité par bloc de 819 | réglable : le *rendement* du code (¾, ½, ⅓, ¼) ; 32 brins de parité par bloc de 223 |
+| Limite du format | ≈ 137 Gio | ≈ 420 Mio | ≈ 2,6 Mo | ≈ 55 Mo | ≈ 173 Mio | ≈ 182 Mio (¼) à ≈ 448 Mio (¾) |
+| Densité (fichier incompressible) | 1,41 bit/nt (marge 1,1) ; 1,04 (marge 1,5) | 1,31 bit/nt | 0,34 bit/nt | 0,77 bit/nt ; 1,12 (parité 6) | 0,56 bit/nt ; 0,45 (parité 50) | 1,12 bit/nt (¾) ; 0,70 (½) ; 0,47 (⅓) ; 0,30 (¼) |
+| Traverse (mesuré) | 10 % de perte à marge 1,1 | 2 % de substitution | 2 % de substitution à couverture 20 ; 2 % de perte | 5 % de substitution à couverture 3 ; 8 % de perte | 5 % de substitution à couverture 10 ; 10 % de perte ; 5 % d'erreurs de synthèse, une fois sur deux | 4,5 % d'erreurs des trois sortes réunies par base à ½, 15 % à ¼ — 18 % à couverture 20 ; 7 % de perte |
+| Encodage de 1 Mio | 0,22 s | 0,05 s | 0,11 s | 0,27 s | 0,17 s | 0,05 s |
+| Bien pour | les archives qui doivent traverser des pertes ; les très gros fichiers | les petits fichiers ; un encodage rapide | le schéma de l'article, tel quel ; plusieurs archives dans un même tube | un canal à substitutions denses | un séquençage ou une synthèse très bruités, une salve d'erreurs, quand la densité importe peu | un séquençage à insertions et suppressions — lectures longues et bruitées — ; rien d'autre ne les corrige |
 
 **Comment choisir.** `fountain` est le schéma par défaut : c'est celui de l'article de référence,
 et sa marge de perte se règle. En dessous de quelques centaines de kilooctets, `strands` produit
@@ -136,7 +139,9 @@ des articles, pour qui les veut tels quels : le premier n'a pas de code correcte
 la couverture ; le second est le plus résistant aux substitutions, et le moins dense. `ldpc`
 va plus loin que tous devant les erreurs — 5 % de substitution, 5 % d'erreurs de synthèse, 20 %
 d'erreurs en salves —, et c'est le seul à lire chaque bit avec son poids de preuve ; il est
-moins dense que `strands`, plus lent à décoder, et demande de la couverture.
+moins dense que `strands`, plus lent à décoder, et demande de la couverture. `hedges` est le
+seul à corriger les insertions et les suppressions : c'est lui qu'il faut dès que des lectures
+changent de longueur, et son rendement se règle à la mesure du canal.
 
 ### Corrections d'erreurs
 
@@ -151,10 +156,13 @@ moins dense que `strands`, plus lent à décoder, et demande de la couverture.
 | Reed-Solomon sur GF(47²) | chaque bloc de 713 brins `grass` (92 brins de parité) | tout motif `2 × erreurs + brins manquants ≤ 92` | ✅ livré, mesuré |
 | Code concaténé | `strands` et `grass` : un code interne par brin sous un code externe par bloc | les deux codes à la fois | ✅ livré |
 | Code convolutif | chaque brin `ldpc` : (171, 133) en octal, K = 7, rendement ½, décodé par Viterbi ou par log-MAP | toute salve de 4 bits ; à sorties souples, un rapport de vraisemblance par bit | ✅ livré, mesuré |
-| LDPC | chaque bloc de 819 brins `ldpc` (20 % de parité par défaut), propagation de croyances | 11 % des brins manquants ; 25 % avec 50 % de parité | ✅ livré, mesuré |
+| LDPC | chaque bloc de 819 brins `ldpc` (20 % de parité par défaut), propagation de croyances | 10 % des brins manquants ; 22 % avec 50 % de parité | ✅ livré, mesuré |
 | Entrelacement | entre les deux, dans `ldpc` | un brin sans lecture devient 104 effacements isolés : à 5 % de brins manquants, 10 restitutions sur 10 au lieu de 1 | ✅ livré, mesuré |
+| Code à hachis (HEDGES) | chaque brin `hedges` : la base est désignée par un hachis de la position, des derniers bits du message (de 8 à 48, selon le rendement) et du sel ; recherche best-first | les insertions et les suppressions comme les substitutions : 1,5 % des trois sortes réunies par base à ¾, 4,5 % à ½, 6 % à ⅓, 15 % à ¼, à couverture 10 | ✅ livré, mesuré |
+| Vote par brin | entre les lectures d'un brin `hedges` | une lecture qui rend un autre message que les autres : elle est écartée, à égalité le brin aussi | ✅ livré, mesuré |
+| Reed-Solomon externe | chaque bloc de 255 brins `hedges` (32 brins de parité), en diagonale | 32 brins manquants, ou 16 brins faux | ✅ livré, mesuré |
 
-Les mesures de tolérance (près de deux mille tirages de simulation, erreurs réelles injectées)
+Les mesures de tolérance (plus de deux mille sept cents tirages de simulation, erreurs réelles injectées)
 sont dans [les schémas d'encodage](docs/encoding_schemes.md#tolérance-aux-erreurs) — avec celles
 des erreurs en salves, moins redoutables que les erreurs dispersées.
 
@@ -209,10 +217,10 @@ des erreurs en salves, moins redoutables que les erreurs dispersées.
 ```
 DNAproof/
 ├── crates/
-│   ├── core/         # format v2, cinq schémas (fountain, strands, goldman, grass, ldpc),
-│   │                 # Reed-Solomon sur GF(256), GF(47) et GF(47²), code convolutif, LDPC,
-│   │                 # enveloppe,
-│   │                 # FASTA et FASTQ, bibliothèques Illumina
+│   ├── core/         # format v2, six schémas (fountain, strands, goldman, grass, ldpc,
+│   │                 # hedges), Reed-Solomon sur GF(256), GF(47) et GF(47²), code
+│   │                 # convolutif, LDPC, code à hachis, enveloppe, FASTA et FASTQ,
+│   │                 # bibliothèques Illumina
 │   ├── cli/          # ligne de commande (clap)
 │   ├── web/          # serveur local (actix-web + tera), tâches, téléchargements
 │   ├── storage/      # miroir des archives : SQLite ou PostgreSQL (sqlx)
@@ -235,7 +243,7 @@ Fichier d'entrée
        │  corps
        ▼
 ┌───────────────────┐
-│ Manifeste         │ 12 à 64 oligos « ADNF » : schéma, compression,
+│ Manifeste         │ 12 à 64 oligos « ADNF » (« HEDG » pour hedges) : schéma, compression,
 │                   │ longueur du corps, paramètres du schéma
 └──────┬────────────┘
        │  corps réparti selon le schéma
@@ -273,13 +281,17 @@ Les schémas de la littérature ont chacun leur chemin, à partir de la même en
   symbole en trois bases.
 - `ldpc` passe chaque brin dans un code convolutif, entrelace les bits du bloc, et les protège
   par un LDPC ; au décodage, chaque bit pèse son rapport de vraisemblance.
+- `hedges` écrit chaque brin à partir d'un hachis de la position, des bits précédents et de
+  l'index du brin, terminé par une queue de zéros ; un Reed-Solomon en diagonale protège les
+  brins bloc par bloc, et au décodage une recherche best-first resynchronise chaque lecture —
+  substitutions, insertions et suppressions.
 
 ### Pipeline de décodage (en sens inverse)
 
 ```
 Lectures FASTA → normalisation (majuscules, blancs) → manifeste (vote entre lectures)
 → corps selon le schéma (épluchage LT ; code interne puis externe ; vote entre fenêtres recouvrantes ;
-  treillis à sorties souples puis LDPC)
+  treillis à sorties souples puis LDPC ; recherche best-first, vote par brin puis code externe)
 → contrôle CRC-32 → décompression → contrôle SHA-256 → fichier original
 ```
 
@@ -348,10 +360,11 @@ Les options principales :
 
 | Option | Rôle |
 |--------|------|
-| `-a, --algorithm <fountain\|strands\|goldman\|grass>` | schéma d'encodage (`fountain` par défaut) |
+| `-a, --algorithm <fountain\|strands\|goldman\|grass\|ldpc\|hedges>` | schéma d'encodage (`fountain` par défaut) |
 | `-r, --redundancy <r>` | marge de perte de DNA Fountain (`1.1` par défaut) |
 | `--rs-parity <PARITÉ>` | parité du schéma : octets Reed-Solomon par oligo pour DNA Fountain (`2`, jusqu'à 32), symboles par brin pour `grass` (`14`, nombre pair de 2 à 30), brins de parité pour cent pour `ldpc` (`20`, de 5 à 100) |
 | `--file-id <0-8>` | identifiant de fichier pour `goldman` : sépare plusieurs archives mélangées dans un même tube |
+| `--code-rate <1/4\|1/3\|1/2\|3/4>` | rendement du code de HEDGES (`hedges`) : moins il porte, plus il corrige (`1/2` par défaut) |
 | `-c, --compression <auto\|none\|lz4\|zstd>` | compression du fichier avant encodage |
 | `--gc-min`, `--gc-max`, `--max-homopolymer` | contraintes biochimiques (0.45, 0.55, 3) |
 | `--json` | sortie en JSON, pour un script |
@@ -553,6 +566,25 @@ Le test du dépôt PostgreSQL est ignoré par défaut : il lui faut un serveur e
 - **Limite** : l'index tient sur 24 bits, d'où le corps maximal d'environ 173 Mio ; les
   lectures qui changent de longueur sont écartées, comme ailleurs
 
+### HEDGES (Press et al., 2020)
+
+- **Brin** : l'index de 24 bits sert de sel, puis la charge utile (13 à 32 octets selon le
+  rendement) et une queue de 16 à 20 zéros ; chaque base porte zéro, un ou deux bits du message,
+  suivant le motif du rendement — 200 nt à ¾ et à ½, 300 à ⅓ et à ¼
+- **Base émise** : `A[(K + v) mod |A|]` — `v` porte les bits du message, `A` est l'ensemble des
+  bases admises, et `K` un hachis de la position, des derniers bits du message et du sel. Le
+  message ne se lit pas dans l'ADN : il se déduit du hachis
+- **Lecture** : une recherche best-first sur l'arbre des hypothèses ; une base qui correspond
+  rapporte, une erreur coûte ; une chaîne qui suppose trop d'erreurs est abandonnée, et un
+  message rival presque à égalité fait échouer la lecture
+- **Contraintes** : dans le code, sans criblage — jamais plus de trois bases identiques, et la
+  part de GC du brin tenue entre 45 et 55 %
+- **Code externe** : Reed-Solomon (255, 223) en diagonale entre les brins ; 32 brins de parité
+  par bloc, les lectures d'un brin votent
+- **Limite** : l'index tient sur 24 bits, d'où le corps maximal d'environ 182 Mio à ¼ et 448 Mio
+  à ¾ ; une lecture qui résiste coûte une recherche entière : 4,3 ms, 310 fois une
+  lecture intacte
+
 ### Bibliothèques Illumina
 
 - **Molécule** : format Nextera — P5, index i5, site de la lecture 1, extrémité mosaïque, insert,
@@ -593,27 +625,27 @@ cargo test --workspace --locked
 
 | Catégorie | Nombre | Ce qui est vérifié |
 |-----------|:------:|--------------------|
-| Cœur, unitaires | 175 | enveloppe, manifeste, gouttes, brins, fenêtres goldman, brins grass, brins ldpc, Reed-Solomon sur GF(256), GF(47) et GF(47²), code convolutif et LDPC, contraintes, générateur, FASTA et FASTQ, bibliothèques Illumina |
-| Aller-retour format | 10 | `encode → FASTA → decode == original` pour les cinq schémas, en-têtes renommés ou perdus, CRLF et minuscules, contraintes strictes |
+| Cœur, unitaires | 195 | enveloppe, manifeste, gouttes, brins, fenêtres goldman, brins grass, brins ldpc, Reed-Solomon sur GF(256), GF(47) et GF(47²), code convolutif et LDPC, code à hachis et schéma hedges, contraintes, générateur, FASTA et FASTQ, bibliothèques Illumina |
+| Aller-retour format | 10 | `encode → FASTA → decode == original` pour les six schémas, en-têtes renommés ou perdus, CRLF et minuscules, contraintes strictes |
 | Robustesse | 8 | substitutions corrigées, marge honorée puis refusée au-delà, brins manquants réparés, manifestes abîmés, altérations au hasard : jamais un fichier faux |
 | Propriétés (proptest) | 2 | aller-retour sur entrées au hasard (schéma × type × taille × mélange) et à contraintes aléatoires |
 | Simulation, bout en bout | 12 | encodage → canal d'erreurs → décodage, 12 scénarios de canal |
-| Simulation, unitaires | 22 | modèle du canal, statistiques, erreurs en salves ; séquenceur : lectures appariées, index, sauts d'index, qualités |
+| Simulation, unitaires | 23 | modèle du canal, statistiques, erreurs en salves, indépendance des tirages ; séquenceur : lectures appariées, index, sauts d'index, qualités |
 | Stockage | 13 | SQLite et PostgreSQL : lots, transactions, reprise après redémarrage |
-| CLI | 25 | les sept sous-commandes exécutées comme par un utilisateur, dont deux archives goldman mélangées, un pool de deux échantillons séquencé, démultiplexé et décodé, et le schéma ldpc aux erreurs et aux pertes |
+| CLI | 28 | les sept sous-commandes exécutées comme par un utilisateur, dont deux archives goldman mélangées, un pool de deux échantillons séquencé, démultiplexé et décodé, le schéma ldpc aux erreurs et aux pertes, et le schéma hedges aux insertions, aux suppressions et aux pertes |
 | Serveur web | 38 | pages, API, refus, en-têtes, reprise, hôtes |
 | Exemple du README | 1 | le code montré plus haut, tel quel |
 | Exemple de la bibliothèque | 2 | les doc-tests de `adn-core` : l'archive, et une paire de lectures rangée |
-| **Total** | **308** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
+| **Total** | **332** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
 
 ### Propriétés clés
 
 - **Tous les aller-retours sont stricts** : `assert_eq!(original, decoded)` — aucun raccourci du
   genre « vérifier que ce n'est pas vide »
 - **Les contraintes sont vérifiées oligo par oligo**, pas échantillonnées
-- **Un fichier faux n'a jamais été produit** : sur les près de deux mille tirages des matrices de
-  tolérance et les tests d'altération au hasard, chaque contenu reconstitué était exact, et chaque
-  archive trop abîmée a été refusée avec un message
+- **Un fichier faux n'a jamais été produit** : sur les plus de deux mille sept cents tirages des
+  matrices de tolérance et les tests d'altération au hasard, chaque contenu reconstitué était
+  exact, et chaque archive trop abîmée a été refusée avec un message
 - **Le canal de simulation est branché sur le décodeur** : les tests de bout en bout vérifient la
   récupération réelle, pas seulement un aller-retour sans bruit
 
@@ -632,6 +664,7 @@ Fichiers incompressibles — le détail, les grandes tailles et la mémoire dans
 | Encodage `goldman` | 31 ms | 47 ms | 114 ms |
 | Encodage `grass` | 68 ms | 103 ms | 267 ms |
 | Encodage `ldpc` | 80 ms | 113 ms | 175 ms |
+| Encodage `hedges` | 4,4 ms | 14,1 ms | 51,9 ms |
 | Décodage `fountain`, archive intacte | 4,3 ms | 13 ms | 65 ms |
 | Décodage `strands`, archive intacte | 3,0 ms | 10 ms | 31 ms |
 | Décodage `goldman`, archive intacte | 19 ms | 76 ms | 292 ms |
@@ -642,11 +675,17 @@ Fichiers incompressibles — le détail, les grandes tailles et la mémoire dans
 | Décodage `goldman`, 0,1 % de substitution, 3 lectures par brin | 45 ms | 179 ms | 693 ms |
 | Décodage `grass`, 0,5 % de substitution | 14 ms | 33 ms | 113 ms |
 | Décodage `ldpc`, 1 % de substitution, 3 lectures par brin | 283 ms | 934 ms | 3,55 s |
+| Décodage `hedges`, archive intacte | 87 ms | 140 ms | 328 ms |
+| Décodage `hedges`, 1 % de substitution, 3 lectures par brin | 333 ms | 554 ms | 2,12 s |
 
 Le schéma `goldman` produit quatre fois plus de brins que les autres pour un même fichier, et
 ses lectures y vont de trois : c'est le nombre de lectures qui fait son coût. Le schéma `ldpc`
 est le plus lent à décoder : chaque lecture fautive passe sur un treillis de 64 états, et son
 décodage compte en secondes dès le mébioctet — intacte, l'archive se relit dix fois plus vite.
+Le schéma `hedges` paie ses lectures une par une : une recherche de 13,9 µs si elle est intacte,
+63,7 µs à 1 % d'erreur de chaque sorte, 143 µs au rendement ¾ — et 4,3 ms si elle résiste, 310
+fois plus : une lecture d'une autre archive, rangée dans la mauvaise par un saut d'index, ou
+plus abîmée que ce que son rendement corrige.
 
 En grand : 32 Mio s'encodent en 6,9 s avec `fountain` (1,6 Go de mémoire), en 0,9 s avec
 `strands` (0,4 Go). Sur un fichier texte, la compression compte davantage que le schéma : 1,32 Mio
@@ -668,34 +707,44 @@ seconde, et `adn library` assemble 24 673 molécules en 40 ms —
 - **Erreurs de lecture** : avec sa parité par défaut (deux octets), DNA Fountain ne corrige qu'une
   erreur par oligo : dès 0,1 % de substitution par nucléotide, il faut plusieurs lectures par
   oligo, et une vingtaine à 1 %. `strands` corrige deux octets par brin, et jusqu'à 32 brins
-  manquants sur 255. `grass` va le plus loin : 5 % de substitution, à couverture 3
+  manquants sur 255 — 5 % en pratique sur un gros fichier. `grass` va le plus loin : 5 % de
+  substitution, à couverture 3
 - **Le schéma `goldman` n'a pas de code correcteur** : chaque base doit être lue dans l'un de ses
   quatre brins, et une erreur dans l'index d'un brin le fait perdre. Il demande une couverture de
   5, et ne garantit pas la teneur en GC de ses brins
-- **Insertions et suppressions** : une lecture qui change de longueur est écartée. À 0,5 %
-  d'insertion et de suppression, `fountain` ne s'en tire qu'à marge large, et pas à tous les
-  coups ; `strands`, `goldman` et `grass` jamais
+- **Insertions et suppressions** : hors `hedges`, une lecture qui change de longueur est
+  écartée. À 0,5 % de chaque sorte, `fountain` ne s'en tire qu'à marge large, et pas à tous
+  les coups ; `strands`, `goldman` et `ldpc` jamais ; `grass` seulement à forte couverture
 - **Erreurs de synthèse** : portées par toutes les lectures d'un oligo, elles ne se compensent
   pas : il faut plus de parité par oligo (`--rs-parity 8`). `grass` les traverse jusqu'à 1 % ;
-  `goldman` les perd dès qu'elles touchent un index. Seul `ldpc` les lit comme des erreurs de
-  lecture : 5 % à couverture 10
+  `goldman` les perd dès qu'elles touchent un index. `ldpc` les lit comme des erreurs de
+  lecture : 5 % à couverture 10, une fois sur deux. `hedges` les corrige à sa place
 - **Le schéma `ldpc`** demande 2,5 lectures par brin en moyenne au moins, perd les lectures dont
   la longueur a changé, et décode lentement. Son LDPC est régulier, sans distribution de degrés
   optimisée : pris seul, il corrige 2 % d'erreurs à rendement 0,8, loin de la capacité du canal
-  (11 %) ; il faut une parité de 50 % pour passer de 11 à 25 % de perte
+  (10 %) ; il faut une parité de 50 % pour passer de 10 à 22 % de perte
 - **Petits fichiers** : DNA Fountain leur donne beaucoup de redondance (141 oligos pour 75
   octets), et `grass` un bloc entier de parité (103 brins) ; `strands` est le plus économe
-- **Taille** : `goldman` s'arrête à 2,6 Mo, `grass` à 55 Mo, `ldpc` à 173 Mio, `strands` à
-  420 Mio ; au-delà, seul `fountain` convient, et son encodage demande environ cinquante fois
-  la taille du fichier en mémoire
-- **Le serveur web n'expose ni la marge ni la parité** : passer par la ligne de commande pour un
-  canal difficile
+- **Taille** : `goldman` s'arrête à 2,6 Mo, `grass` à 55 Mo, `hedges` à 182 Mio (rendement ¼)
+  et à 448 Mio (¾), `ldpc` à 173 Mio, `strands` à 420 Mio ; au-delà, seul `fountain` convient,
+  et son encodage demande environ cinquante fois la taille du fichier en mémoire
+- **Le serveur web règle peu de choses** : la marge de DNA Fountain et le rendement de `hedges`,
+  mais ni la parité (`--rs-parity`), ni les contraintes biochimiques — pour un canal difficile,
+  passer par la ligne de commande
 - **Bibliothèques Illumina** : les lectures partielles ne s'assemblent pas — la longueur de
-  lecture doit atteindre le plus long insert du pool ; seul le format Nextera est décrit, et la
-  qualité des lectures n'entre pas dans le décodage
-- **Tout n'est pas encore reconstruit** : HEDGES, et avec lui les insertions et suppressions,
-  est au programme, pas encore dans le code — voir
-  [la couverture de la littérature](#-couverture-de-la-littérature)
+  lecture doit atteindre le plus long insert du pool, et 19 bases de plus pour que la lecture 2
+  serve ; seul le format Nextera est décrit, et la qualité des lectures n'entre pas dans le
+  décodage
+- **Le schéma `hedges` a ses propres limites**. La perte s'arrête où la parité du code externe
+  le dit : 12,5 % d'un bloc, 7 % en pratique. Ses brins font 200 ou 300 nt : la longueur de
+  lecture doit les couvrir. Une lecture qui résiste coûte une recherche entière : 4,3 ms,
+  310 fois une lecture intacte — c'est le prix d'une lecture d'une autre archive, et de
+  toute lecture plus abîmée que ce que son rendement corrige. Et le code ne garantit que les
+  contraintes par défaut : des bornes de GC plus étroites, ou deux bases identiques au plus,
+  lui sont refusées
+- **Au-delà de ce qu'un code corrige, un fichier faux reste possible en théorie** : à ¼,
+  à 10 % d'erreurs, 1,9 lecture sur mille rend un message faux, 3,8 à 12 %. Le vote, le code externe et l'empreinte du fichier l'arrêtent — aucun
+  fichier faux n'a été rendu
 
 ---
 
@@ -704,14 +753,18 @@ seconde, et `adn library` assemble 24 673 molécules en 40 ms —
 ### État actuel : v0.2.0
 
 - ✅ Format v2 autosuffisant : manifeste embarqué, empreinte SHA-256 vérifiée à chaque décodage
-- ✅ Cinq schémas (`fountain`, `strands`, `goldman`, `grass`, `ldpc`) à aller-retour strict,
-  dont les deux schémas pionniers de la littérature, suivis article par article
+- ✅ Six schémas (`fountain`, `strands`, `goldman`, `grass`, `ldpc`, `hedges`) à aller-retour
+  strict, dont les deux schémas pionniers de la littérature, suivis article par article
 - ✅ Marge de perte certifiée à l'encodage ; décodeurs durcis (vote par goutte, code externe par
   bloc)
 - ✅ Simulation réaliste (synthèse, séquençage, perte, couverture) branchée sur le décodeur
-- ✅ Matrices de tolérance mesurées : près de deux mille tirages, aucun fichier faux
+- ✅ Matrices de tolérance mesurées : plus de deux mille sept cents tirages indépendants,
+  aucun fichier faux
 - ✅ Codes convolutif et LDPC, entrelacement, erreurs en salves : `ldpc` traverse 5 % de
-  substitution, 5 % d'erreurs de synthèse et 20 % d'erreurs en salves
+  substitution, 5 % d'erreurs de synthèse une fois sur deux, et 20 % d'erreurs en salves
+- ✅ HEDGES : le seul schéma qui corrige les insertions et les suppressions — 4,5 % d'erreurs
+  des trois sortes réunies par base au rendement ½, 15 % au rendement ¼, 18 % à couverture
+  20 —, manifeste compris
 - ✅ Bibliothèques Illumina : pool multiplexé au format Nextera, séquenceur simulé,
   démultiplexage à une erreur par index — à 30 % de sauts d'index, chaque échantillon est
   restitué à l'identique
@@ -733,11 +786,15 @@ La direction du projet : couvrir, pour de vrai, ce que la littérature a propos�
    démultiplexage tolérants aux erreurs, avec un séquenceur simulé pour les mesurer.
 3. ✅ **Les familles de codes correcteurs** — code convolutif et décodage de Viterbi, LDPC à
    propagation de croyances capable de corriger, entrelacement contre les salves d'erreurs.
-4. **Les insertions et suppressions** — le point faible mesuré : HEDGES et codes apparentés.
+4. ✅ **Les insertions et suppressions** — HEDGES (Press et al., 2020), code à hachis par
+   brin décodé par une recherche, mesuré avec sa matrice de tolérance.
 
 Ensuite :
 
-- [ ] Marge et parité réglables depuis le serveur web (aujourd'hui : ligne de commande)
+- [ ] Parité réglable depuis le serveur web (aujourd'hui : marge de perte et rendement de
+  `hedges`)
+- [ ] Les codes apparentés à HEDGES — codes VT, codes à filigrane — et l'accélération de sa
+  recherche (GPU)
 - [ ] Envoi en flux de gros fichiers (aujourd'hui : le fichier est lu en mémoire)
 - [ ] Authentification pour publier le serveur web au-delà d'un proxy
 - [ ] Conformité aux spécifications d'industrie de la DNA Data Storage Alliance
@@ -797,8 +854,12 @@ git push origin feature/votre-fonction
 - Gallager R. G. — *Low-density parity-check codes*, MIT Press, 1963.
 - Press W. H., Hawkins J. A., Jones S. K. Jr., Schaub J. M., Finkelstein I. J. — *HEDGES
   error-correcting code for DNA storage corrects indels and allows sequence constraints*,
-  Proceedings of the National Academy of Sciences 117:18489–18496, 2020 (au programme du projet).
+  Proceedings of the National Academy of Sciences 117:18489–18496, 2020.
   [doi:10.1073/pnas.2004821117](https://www.pnas.org/doi/10.1073/pnas.2004821117)
+- Zigangirov K. S. — *Some sequential decoding procedures using a criterion*, Problems of
+  Information Transmission 2(4):13–25, 1966 ; Jelinek F. — *A fast sequential decoding
+  algorithm using a stack*, IBM Journal of Research and Development 13(6):675–685, 1969 :
+  le décodage séquentiel à pile, dont la recherche de HEDGES procède
 
 ### Industrie
 

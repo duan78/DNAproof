@@ -64,9 +64,16 @@ Une lecture s'arrête au bout de la molécule.
 **Longueur de lecture.** Pour qu'une archive se décode, chaque oligo doit être lu en entier :
 la longueur de lecture doit atteindre le plus long insert du pool, manifestes compris. Avec les
 réglages par défaut : 152 nt pour `fountain` et les manifestes de `goldman`, 160 pour `strands`,
-154 pour `ldpc`, 200 pour les manifestes de `grass`. Une lecture de 300 bases, courant sur les
-machines de la gamme, couvre tout. En dessous, les lectures partielles ne s'assemblent pas :
-elles sont écrites telles quelles, et le décodeur en rejette la longueur.
+154 pour `ldpc`, 200 pour les manifestes de `grass`, 200 ou 300 pour `hedges` — 300 à ⅓ et à ¼,
+200 à ½ et à ¾, manifestes compris. Une lecture de 300 bases, courant sur les machines de la
+gamme, couvre tout. En dessous, les lectures partielles ne s'assemblent pas : elles sont
+écrites telles quelles, et le décodeur en rejette la longueur — seul `hedges` complète une
+lecture arrêtée dans la queue de zéros de son brin.
+
+La lecture 2 ne sert que si elle couvre l'insert en entier : elle part de l'extrémité
+mosaïque, 19 bases plus loin. À 300 bases, c'est le cas d'un insert de 200 nt, pas d'un insert
+de 300 nt — sa lecture 2 donne les 281 dernières bases du brin. Tous les décodeurs l'écartent ;
+celui de `hedges` la cherche en vain, jusqu'au bout de son budget.
 
 **La coupe des adaptateurs.** `adn demux` rend chaque lecture dans le sens de l'insert :
 
@@ -205,45 +212,77 @@ couverture de 10 (37 240 paires par tirage), cinq tirages par scénario. Constru
 
 | Scénario | Tirages entièrement restitués | Attributions fausses | Paires sans réponse |
 |---|:---:|---:|---:|
-| Référence (0,1 % d'erreur) | 5 sur 5 | 0 | 20 |
-| Sauts d'index de 0,1 % | 5 sur 5 | 135 | 20 |
-| Sauts d'index de 1 % | 5 sur 5 | 1 342 | 20 |
-| Sauts d'index de 5 % | 5 sur 5 | 6 410 | 20 |
-| Sauts d'index de 10 % | 5 sur 5 | 12 775 | 20 |
-| Sauts d'index de 30 % | 5 sur 5 | 37 161 | 20 |
-| Substitutions de 0,5 % | 5 sur 5 | 0 | 20 |
-| Substitutions de 1 % | 5 sur 5 | 0 | 20 |
-| Substitutions de 2 % | 5 sur 5 | 0 | 20 |
-| Erreurs d'index de 1 % | 5 sur 5 | 0 | 1 063 |
-| Erreurs d'index de 5 % | 5 sur 5 | 0 | 20 450 |
-| Substitutions de 1 % et sauts d'index de 5 % | 5 sur 5 | 6 410 | 20 |
-| Erreurs de synthèse de 1 % | 0 sur 5 | 0 | 20 |
-| Perte de 10 % des molécules | 4 sur 5 | 0 | 15 |
-| Couverture de 3 | 5 sur 5 | 0 | 5 |
+| Référence (0,1 % d'erreur) | 5 sur 5 | 0 | 11 |
+| Sauts d'index de 0,1 % | 5 sur 5 | 126 | 11 |
+| Sauts d'index de 1 % | 5 sur 5 | 1 240 | 11 |
+| Sauts d'index de 5 % | 5 sur 5 | 6 349 | 11 |
+| Sauts d'index de 10 % | 5 sur 5 | 12 667 | 11 |
+| Sauts d'index de 30 % | 5 sur 5 | 37 696 | 11 |
+| Substitutions de 0,5 % | 5 sur 5 | 0 | 11 |
+| Substitutions de 1 % | 5 sur 5 | 0 | 11 |
+| Substitutions de 2 % | 5 sur 5 | 0 | 11 |
+| Erreurs d'index de 1 % | 5 sur 5 | 0 | 1 012 |
+| Erreurs d'index de 5 % | 5 sur 5 | 0 | 20 700 |
+| Substitutions de 1 % et sauts d'index de 5 % | 5 sur 5 | 6 349 | 11 |
+| Erreurs de synthèse de 1 % | 0 sur 5 | 0 | 11 |
+| Perte de 10 % des molécules | 2 sur 5 | 0 | 9 |
+| Couverture de 3 | 5 sur 5 | 0 | 2 |
 | Couverture de 1 | 0 sur 5 | 0 | 0 |
-| Lectures de 200 bases | 5 sur 5 | 0 | 20 |
-| Lectures de 150 bases | 0 sur 5 | 0 | 20 |
+| Lectures de 200 bases | 5 sur 5 | 0 | 11 |
+| Lectures de 150 bases | 0 sur 5 | 0 | 11 |
 
 - **Les lectures étrangères ne corrompent rien.** À 30 % de sauts d'index, un cinquième des
   paires est rangée dans un autre échantillon que le sien, et chaque échantillon est pourtant
   restitué à l'identique : les codes des quatre schémas écartent les lectures d'une autre archive.
 - **Aucune fausse attribution sans saut d'index.** Jusqu'à 5 % d'erreur dans les index, une
-  paire se range à bon escient ou reste sans réponse : 0,01 % des paires à 0,1 % d'erreur dans
-  les index, 0,6 % à 1 %, 11 % à 5 %.
+  paire se range à bon escient ou reste sans réponse : 0,5 % des paires restent sans réponse à
+  1 % d'erreur dans les index, 11 % à 5 %.
 - **Le reste est celui du canal**
   [hors bibliothèque](encoding_schemes.md#tolérance-aux-erreurs) — la couverture compte les
   paires, donc dix paires font vingt lectures par oligo. À 1 % d'erreur de synthèse, seul
-  `grass` passe : `fountain`, `strands` et `goldman` échouent à chacun des cinq tirages ;
-  `goldman` perd un tirage sur cinq à 10 % de perte.
+  `grass` passe : `fountain`, `strands` et `goldman` échouent à chacun des cinq tirages. À 10 %
+  de perte, le pool n'est restitué que deux fois sur cinq : `goldman` perd deux tirages,
+  `strands` un.
 - **Durées** (même machine, construction `--release`) : `adn library` assemble quatre archives
   de 64 Kio (24 673 molécules) en 40 ms ; `adn demux` range environ 215 000 paires de lectures
   par seconde (246 728 paires en 1,15 s, 397 278 en 1,84 s) ; `adn simulate --library` tire,
   démultiplexe et décode 246 728 paires en 2,3 s.
 
+Un second pool, cette fois de quatre échantillons de 8 Kio tous au schéma `hedges`, un par
+rendement — ¼, ⅓, ½, ¾, dans cet ordre ci-dessous —, index `N701`–`N704` et `N501`–`N504` :
+2 197 molécules, soit 21 962 paires par tirage à couverture de 10. Lectures de 300 bases, cinq
+tirages par scénario.
+
+| Scénario | Tirages entièrement restitués | Attributions fausses | Paires sans réponse | Échantillons restitués |
+|---|:---:|:---:|:---:|---|
+| Référence (0,1 % d'erreur), couverture 10 | 5 sur 5 | 0 | 4 | 5/5, 5/5, 5/5, 5/5 |
+| Insertions, suppressions et substitutions de 1 %, couverture 10 | 5 sur 5 | 0 | 4 | 5/5, 5/5, 5/5, 5/5 |
+| Insertions, suppressions et substitutions de 3 %, couverture 10 | 5 sur 5 | 0 | 4 | 5/5, 5/5, 5/5, 5/5 |
+| Insertions, suppressions et substitutions de 3 %, couverture 20 | 5 sur 5 | 0 | 10 | 5/5, 5/5, 5/5, 5/5 |
+| Substitutions de 1 %, couverture 10 | 5 sur 5 | 0 | 4 | 5/5, 5/5, 5/5, 5/5 |
+| Synthèse : insertions, suppressions et substitutions de 3 %, couverture 10 | 0 sur 5 | 0 | 4 | 5/5, 5/5, 5/5, 0/5 |
+| Sauts d'index de 10 %, couverture 10 | 5 sur 5 | 7 911 | 4 | 5/5, 5/5, 5/5, 5/5 |
+| Lectures de 200 bases | 0 sur 5 | 0 | 4 | 0/5, 0/5, 5/5, 5/5 |
+| Lectures de 150 bases | 0 sur 5 | 0 | 4 | 0/5, 0/5, 0/5, 0/5 |
+| Couverture de 3 | 5 sur 5 | 0 | 1 | 5/5, 5/5, 5/5, 5/5 |
+
+- **Les lectures qui changent de longueur passent comme les autres** : à 3 % d'insertions, de
+  suppressions et de substitutions par base, les quatre échantillons sont restitués à chaque
+  tirage, en couverture 10 comme en 20 — là où, hors bibliothèque, `fountain`, `strands` et
+  `goldman` échouent dès 1,5 %.
+- **Chaque rendement a son taux** : à 3 % d'erreurs de synthèse, l'échantillon au rendement ¾
+  échoue à chaque tirage — trois fois ce qu'il corrige —, et les trois autres passent.
+- **Les lectures étrangères ne corrompent rien, mais elles coûtent** : à 10 % de sauts d'index,
+  7 911 paires sont rangées dans un autre échantillon que le sien, et chaque archive
+  est pourtant restituée. Les lectures du rendement de même longueur de brin y vont jusqu'au bout
+  de leur budget.
+- **La longueur de lecture doit couvrir le brin** : à 200 bases, les échantillons aux brins de
+  300 nt (¼ et ⅓) échouent, ceux de 200 nt passent ; à 150, tous échouent.
+
 ## Limites
 
 - **Lectures partielles** : elles ne s'assemblent pas. La longueur de lecture doit atteindre le
-  plus long insert du pool.
+  plus long insert du pool — et 19 bases de plus pour que la lecture 2 couvre un insert entier.
 - **Format Nextera seul** : les adaptateurs en Y et le multiplexage par amorces ne sont pas
   décrits ; les molécules se construisent avec deux index, et le rangement sur le seul index i7
   ne s'applique qu'à des lectures.

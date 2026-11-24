@@ -21,6 +21,7 @@
             <option value="goldman">Goldman et al., 2013 — code ternaire, fenêtres recouvrantes</option>
             <option value="grass">Grass et al., 2015 — Reed-Solomon sur GF(47), symboles en trimères</option>
             <option value="ldpc">Code convolutif et LDPC — décisions souples, entrelacement</option>
+            <option value="hedges">HEDGES (Press et al., 2020) — code à hachis, insertions et suppressions</option>
         </select>
         <span class="muted" id="scheme-help"></span>
 
@@ -36,6 +37,17 @@
             <label for="redundancy">Marge de perte : <output id="redundancy-value" for="redundancy">{{ redundancy_default }}</output></label>
             <input type="range" name="redundancy" id="redundancy" min="{{ redundancy_min }}" max="{{ redundancy_max }}" step="0.05" value="{{ redundancy_default }}">
             <span class="muted" id="redundancy-help"></span>
+        </div>
+
+        <div class="field" id="code-rate-field" hidden>
+            <label for="code-rate">Rendement du code HEDGES</label>
+            <select name="code-rate" id="code-rate">
+                <option value="3/4">3/4 — 1,5 bit par base, ~1 % d'erreurs par base</option>
+                <option value="1/2" selected>1/2 — 1 bit par base, ~3 %</option>
+                <option value="1/3">1/3 — 0,67 bit par base, ~6 %</option>
+                <option value="1/4">1/4 — 0,5 bit par base, ~10 %</option>
+            </select>
+            <span class="muted">Moins le code porte, plus il corrige : substitutions, insertions et suppressions.</span>
         </div>
     </fieldset>
 

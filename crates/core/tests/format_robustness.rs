@@ -76,8 +76,11 @@ fn n_bases_and_foreign_reads_are_ignored() {
         assert_eq!(decoded.data, data, "{scheme:?}");
         // Cinq lectures portent un N, une est vide, une a un caractère impossible.
         assert_eq!(decoded.stats.reads_invalid, 7, "{scheme:?}");
-        // Une trop courte et une trop longue.
-        assert_eq!(decoded.stats.reads_bad_length, 2, "{scheme:?}");
+        // Une trop courte et une trop longue. Sauf en hedges : la longueur d'une lecture n'y est
+        // pas un critère, une insertion ou une suppression la change. Ces deux lectures sont
+        // soumises au code, qui les déclare perdues.
+        let bad_length = if scheme == Scheme::Hedges { 0 } else { 2 };
+        assert_eq!(decoded.stats.reads_bad_length, bad_length, "{scheme:?}");
     }
 }
 

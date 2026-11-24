@@ -69,6 +69,12 @@ pub(crate) fn run(
             ),
             adn_core::codec::ldpc::BLOCK_DATA
         ),
+        Scheme::Hedges => format!(
+            "code HEDGES au rendement {} ; {} brins de parité par bloc de {}",
+            options.hedges.rate.name(),
+            adn_core::codec::hedges::OUTER_PARITY,
+            adn_core::codec::hedges::BLOCK_DATA
+        ),
     };
     let sha256 = adn_core::checksum::hex(&stats.sha256);
     let lengths = if manifest_length == oligo_length {

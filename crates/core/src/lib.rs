@@ -1,6 +1,6 @@
 //! adn-core : codecs d'archivage de données numériques en séquences d'ADN.
 //!
-//! Quatre schémas produisent des oligos qui se suffisent à eux-mêmes : une archive se décode
+//! Six schémas produisent des oligos qui se suffisent à eux-mêmes : une archive se décode
 //! depuis ses seules séquences, et un fichier n'est jamais rendu si son empreinte SHA-256 n'est
 //! pas vérifiée.
 //!
@@ -10,6 +10,10 @@
 //!   (Goldman et al., 2013).
 //! - [`Scheme::Grass`] : Reed-Solomon sur le corps à 47 éléments, un symbole par trimère
 //!   (Grass et al., 2015).
+//! - [`Scheme::Ldpc`] : code convolutif par brin et LDPC par bloc, décodage à décisions
+//!   souples.
+//! - [`Scheme::Hedges`] : code à hachis par brin, décodé par recherche (Press et al.,
+//!   2020) — le seul qui corrige les insertions et les suppressions.
 //!
 //! ```
 //! let options = adn_core::EncodeOptions::default();
@@ -29,6 +33,7 @@ pub mod convolutional;
 pub mod envelope;
 pub mod error;
 pub mod fasta;
+pub mod hedges;
 pub mod ldpc;
 pub mod library;
 pub mod rs;

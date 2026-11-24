@@ -199,6 +199,10 @@ enum SchemeArg {
     /// Code convolutif par brin, LDPC par bloc, décodage à décisions souples
     #[value(alias = "viterbi")]
     Ldpc,
+    /// Code à hachis par brin, décodé par recherche (Press et al., 2020) : corrige aussi les
+    /// insertions et les suppressions
+    #[value(alias = "indels")]
+    Hedges,
 }
 
 impl SchemeArg {
@@ -209,6 +213,36 @@ impl SchemeArg {
             SchemeArg::Goldman => adn_core::Scheme::Goldman,
             SchemeArg::Grass => adn_core::Scheme::Grass,
             SchemeArg::Ldpc => adn_core::Scheme::Ldpc,
+            SchemeArg::Hedges => adn_core::Scheme::Hedges,
+        }
+    }
+}
+
+/// Rendement du code de HEDGES : les motifs de bits par base de l'article.
+#[derive(Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum CodeRateArg {
+    /// Une base sur deux porte un bit (300 nt) : ~10 % d'erreurs par base
+    #[value(name = "1/4")]
+    Quarter,
+    /// Deux bits pour trois bases (300 nt) : ~6 %
+    #[value(name = "1/3")]
+    Third,
+    /// Un bit par base (200 nt) : ~3 %
+    #[default]
+    #[value(name = "1/2")]
+    Half,
+    /// Trois bits pour deux bases (200 nt) : ~1 %
+    #[value(name = "3/4")]
+    ThreeQuarters,
+}
+
+impl CodeRateArg {
+    fn rate(self) -> adn_core::hedges::Rate {
+        match self {
+            CodeRateArg::Quarter => adn_core::hedges::Rate::QUARTER,
+            CodeRateArg::Third => adn_core::hedges::Rate::THIRD,
+            CodeRateArg::Half => adn_core::hedges::Rate::HALF,
+            CodeRateArg::ThreeQuarters => adn_core::hedges::Rate::THREE_QUARTERS,
         }
     }
 }
@@ -281,6 +315,10 @@ struct CodecArgs {
     #[arg(long, value_name = "0-8", value_parser = clap::value_parser!(u8))]
     file_id: Option<u8>,
 
+    /// Rendement du code de HEDGES (hedges) : moins il porte, plus il corrige
+    #[arg(long, value_enum, value_name = "1/4|1/3|1/2|3/4")]
+    code_rate: Option<CodeRateArg>,
+
     /// Compression du fichier avant encodage
     #[arg(short = 'c', long, value_enum, default_value_t = CompressionArg::Auto)]
     compression: CompressionArg,
@@ -327,6 +365,15 @@ impl CodecArgs {
         if self.file_id.is_some() && scheme != adn_core::Scheme::Goldman {
             anyhow::bail!("--file-id ne s'applique qu'au schéma goldman");
         }
+        let default_rate = CodeRateArg::default().rate();
+        if self.code_rate.is_some() && scheme != adn_core::Scheme::Hedges {
+            anyhow::bail!("--code-rate ne s'applique qu'au schéma hedges");
+        }
+        let hedges_rate = if scheme == adn_core::Scheme::Hedges {
+            self.code_rate.map_or(default_rate, CodeRateArg::rate)
+        } else {
+            default_rate
+        };
         let options = adn_core::EncodeOptions {
             scheme,
             compression,
@@ -348,6 +395,7 @@ impl CodecArgs {
                     ldpc::DEFAULT_PARITY
                 },
             },
+            hedges: adn_core::codec::hedges::HedgesParams { rate: hedges_rate },
             constraints: self.limits.constraints()?,
         };
         options.validate()?;

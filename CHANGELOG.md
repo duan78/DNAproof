@@ -83,15 +83,50 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
 - **Codes pris isolément** (`adn_core::convolutional`, `adn_core::ldpc`) : Viterbi à entrées
   souples, log-MAP, LDPC de poids de colonne réglable ; `examples/ldpc_threshold.rs` mesure
   leurs seuils.
+- **Schéma `hedges`** : HEDGES (Press et al., 2020), code à hachis par brin, décodé par
+  une recherche best-first — le seul schéma qui corrige les **insertions et les
+  suppressions** en même temps que les substitutions. Quatre rendements
+  (`--code-rate`) : ¾, ½, ⅓ et ¼, pour environ 1 %, 3 %, 6 % et 10 % d'erreurs des trois
+  sortes réunies par base. Un Reed-Solomon (255, 223) appliqué en diagonale entre les brins
+  restitue jusqu'à 32 brins manquants par bloc, ou en corrige 16 de faux ; les lectures
+  d'un même brin votent. L'oligo manifeste est codé de même, derrière l'étiquette
+  `HEDG` : l'archive se lit encore quand insertions et suppressions abîment jusqu'à
+  ses manifestes. Mesuré avec `adn simulate`, 64 Kio, dix tirages indépendants par
+  cas : à couverture 10, le fichier est restitué dix fois sur dix avec 1,5 % d'erreurs des
+  trois sortes réunies par base au rendement ¾, 4,5 % au ½, 6 % au ⅓, 15 % au ¼ ; à
+  couverture 20, 3 %, 9 %, 12 % et 18 %. Les autres schémas, eux, échouent à 1,5 %
+  (`grass` s'en tire à cette couverture), et tous perdent leur archive à 3 % d'erreurs de
+  synthèse des trois sortes. Sept pour cent de brins perdus passent, 8 % neuf fois sur
+  dix. Sur les 510 tirages de cette mesure, aucun fichier faux.
+- **Code à hachis pris isolément** (`adn_core::hedges`) : l'encodeur et la recherche.
+  S'ajoutent à l'article trois garde-fous : une chaîne qui suppose trop d'erreurs est
+  abandonnée avant d'épuiser le budget, la queue de zéros est forcée et contrôle
+  encore, et un rival presque à égalité fait échouer la lecture plutôt que de laisser
+  passer un message faux. `cargo run --release -p adn-core --example hedges_messages` mesure
+  ce que la recherche rend de lectures abîmées : à ¼, 1,9 lecture sur mille rend un message
+  faux à 10 % d'erreurs, 3,8 à 12 % — le vote et le code externe les arrêtent.
 - Licence Apache 2.0 : le texte accompagne désormais la licence MIT.
 
 ### Modifié
 
+- **Simulation : les tirages d'une même commande sont indépendants.** La clé des tirages
+  d'un oligo était son rang combiné par OU exclusif avec la graine : d'une graine voisine à
+  l'autre — d'un tirage à l'autre —, les oligos sans lecture ne faisaient que se déplacer, et
+  la charge de chaque bloc d'un code externe restait la même. Les matrices de tolérance ont
+  été reprises : devant la perte ou une faible couverture, une case mesurait un seul tirage.
+  Les cas limites y montrent leur vraie probabilité — `strands` traverse 5 % de perte, et
+  8 % un tirage sur dix ; `ldpc` traverse 6 % de substitution à couverture 20, et 7 % quatre
+  fois sur dix ; `goldman` traverse 2 % de perte, et 5 % une fois sur deux ; `grass` 8 %.
+  Les scénarios à taux d'erreurs, eux, étaient déjà des tirages distincts, et ne bougent
+  qu'à un tirage près.
+- Les archives du schéma `hedges` refusent d'emblée des contraintes plus étroites que ce
+  que le code garantit (bornes de GC, deux bases identiques au plus), comme `goldman` et
+  `grass` le faisaient pour les leurs.
 - **Version minimale de Rust : 1.94** (précédemment 1.87, non vérifiée). Elle est imposée par
   `sqlx 0.9`, qui corrige une vulnérabilité de la bibliothèque SQLite embarquée.
 - `Cargo.lock` est suivi dans le dépôt ; la construction d'une image s'y tient (`--locked`).
-- Les noms de schéma acceptés sont `fountain`, `strands`, `goldman` et `grass` (`goldman2013` et
-  `grass2015` sont des alias).
+- Les noms de schéma acceptés sont `fountain`, `strands`, `goldman`, `grass`, `ldpc` et `hedges`
+  (`goldman2013`, `grass2015`, `viterbi` et `indels` sont des alias).
 - La compression automatique utilise zstd (LZ4 reste au choix).
 - La limite d'envoi du serveur web passe de 100 Mio à 25 Mio.
 - Les résultats du serveur web sont conservés 24 heures par défaut (une heure auparavant, et
@@ -108,8 +143,7 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
 - Les codecs LDPC et convolutif (Viterbi), « Reed-Solomon renforcé avec entrelacement » et les
   séquences Illumina. Le LDPC ne corrigeait aucune erreur, le code convolutif n'était jamais
   testé avec des erreurs injectées, les séquences Illumina étaient fictives. Le code convolutif,
-  le LDPC, l'entrelacement, HEDGES et le format Illumina sont au programme du projet, pour être
-  reconstruits pour de vrai (voir la feuille de route du README).
+  le LDPC, l'entrelacement et les bibliothèques Illumina sont réécrits à neuf (voir *Ajouté*).
 - La lecture des archives de la version 0.1.
 - `POST /api/encode/stream` : il ne transmettait rien en flux, et contournait les contrôles.
 - CORS : l'API ne se lit que depuis les pages du serveur.

@@ -10,6 +10,7 @@
 pub mod fountain;
 pub mod goldman;
 pub mod grass;
+pub mod hedges;
 pub mod ldpc;
 pub mod lt;
 pub mod manifest;
@@ -18,7 +19,7 @@ pub mod soliton;
 pub mod strands;
 
 use crate::checksum::sha256;
-use crate::constraints::DnaConstraints;
+use crate::constraints::{DnaConstraints, DEFAULT_GC};
 use crate::envelope::{self, Compression};
 use crate::error::{DnaError, Result};
 
@@ -30,7 +31,7 @@ const MANIFEST_COPIES_MIN: usize = 12;
 /// Nombre maximal d'oligos manifestes dans une archive.
 const MANIFEST_COPIES_MAX: usize = 64;
 /// Noms de tous les schémas, pour les messages d'erreur.
-const SCHEME_NAMES: &str = "fountain, strands, goldman, grass, ldpc";
+const SCHEME_NAMES: &str = "fountain, strands, goldman, grass, ldpc, hedges";
 /// Parité des oligos manifestes d'une archive goldman ou ldpc (2 octets : 152 nt).
 const TWO_BYTE_MANIFEST_PARITY: u8 = 2;
 
@@ -48,16 +49,20 @@ pub enum Scheme {
     Grass,
     /// Code convolutif par brin, LDPC par bloc, décodage à décisions souples.
     Ldpc,
+    /// Code à hachis par brin, décodé par recherche (Press et al., 2020) : le seul qui corrige
+    /// les insertions et les suppressions.
+    Hedges,
 }
 
 impl Scheme {
     /// Tous les schémas.
-    pub const ALL: [Scheme; 5] = [
+    pub const ALL: [Scheme; 6] = [
         Scheme::Fountain,
         Scheme::Strands,
         Scheme::Goldman,
         Scheme::Grass,
         Scheme::Ldpc,
+        Scheme::Hedges,
     ];
 
     /// Nom utilisé en ligne de commande et dans l'API.
@@ -68,6 +73,7 @@ impl Scheme {
             Scheme::Goldman => "goldman",
             Scheme::Grass => "grass",
             Scheme::Ldpc => "ldpc",
+            Scheme::Hedges => "hedges",
         }
     }
 
@@ -79,6 +85,9 @@ impl Scheme {
             Scheme::Goldman => "Goldman et al., 2013 (code ternaire sans base répétée)",
             Scheme::Grass => "Grass et al., 2015 (Reed-Solomon sur GF(47), symboles en trimères)",
             Scheme::Ldpc => "Code convolutif et LDPC (décisions souples)",
+            Scheme::Hedges => {
+                "HEDGES (Press et al., 2020 : code à hachis, insertions et suppressions)"
+            }
         }
     }
 
@@ -100,6 +109,7 @@ impl Scheme {
             "goldman" | "goldman2013" | "goldman_2013" => Some(Scheme::Goldman),
             "grass" | "grass2015" | "grass_2015" => Some(Scheme::Grass),
             "ldpc" | "viterbi" => Some(Scheme::Ldpc),
+            "hedges" => Some(Scheme::Hedges),
             _ => None,
         }
     }
@@ -141,6 +151,8 @@ pub struct EncodeOptions {
     pub grass: grass::GrassParams,
     /// Paramètres du schéma ldpc.
     pub ldpc: ldpc::LdpcParams,
+    /// Paramètres du schéma hedges.
+    pub hedges: hedges::HedgesParams,
     /// Contraintes biochimiques que doit respecter chaque oligo.
     pub constraints: DnaConstraints,
 }
@@ -154,6 +166,7 @@ impl Default for EncodeOptions {
             goldman: goldman::GoldmanParams::default(),
             grass: grass::GrassParams::default(),
             ldpc: ldpc::LdpcParams::default(),
+            hedges: hedges::HedgesParams::default(),
             constraints: DnaConstraints::default(),
         }
     }
@@ -177,6 +190,7 @@ impl EncodeOptions {
             Scheme::Goldman => goldman::STRAND_LEN,
             Scheme::Grass => grass::STRAND_LEN,
             Scheme::Ldpc => ldpc::STRAND_LEN,
+            Scheme::Hedges => self.hedges.strand_len(),
         }
     }
 
@@ -210,6 +224,27 @@ impl EncodeOptions {
                 Ok(())
             }
             Scheme::Ldpc => self.ldpc.validate(),
+            Scheme::Hedges => {
+                self.hedges.validate()?;
+                // Le code tient lui-même la part de GC de chaque oligo entre 45 % et 55 %, et
+                // ses suites d'au plus 3 bases : il ne sait rien garantir de plus étroit.
+                if self.constraints.gc_min > DEFAULT_GC.0 || self.constraints.gc_max < DEFAULT_GC.1
+                {
+                    return Err(DnaError::InvalidConfig(
+                        "le schéma hedges tient la part de GC de ses oligos entre 45 % et 55 % : \
+                         des bornes plus étroites sont refusées, élargissez-les"
+                            .to_string(),
+                    ));
+                }
+                if self.constraints.max_homopolymer < 3 {
+                    return Err(DnaError::InvalidConfig(
+                        "le schéma hedges garantit des suites d'au plus 3 bases : \
+                         --max-homopolymer doit valoir 3 ou plus"
+                            .to_string(),
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -223,7 +258,7 @@ pub struct EncodeStats {
     /// Longueur de l'enveloppe, répartie dans les oligos.
     pub body_len: u64,
     pub compression: Compression,
-    /// Blocs (DNA Fountain) ou brins de données (brins codés, goldman, grass, ldpc).
+    /// Blocs (DNA Fountain) ou brins de données (brins codés, goldman, grass, ldpc, hedges).
     pub units: u32,
     pub data_oligos: usize,
     pub manifest_copies: usize,
@@ -405,19 +440,43 @@ pub fn encode(data: &[u8], options: &EncodeOptions) -> Result<Encoded> {
             };
             (manifest, oligos, stats.data_strands, stats.salts_tried)
         }
+        Scheme::Hedges => {
+            let (oligos, stats) = hedges::encode(&body, &options.hedges)?;
+            // Le rendement prend la place de l'identifiant de fichier.
+            let manifest = manifest::Manifest {
+                scheme: manifest::SchemeId::Hedges,
+                rs_parity: 0,
+                compression,
+                body_len,
+                chunks: 0,
+                c: 0.0,
+                delta: 0.0,
+                file_id: options.hedges.rate.code(),
+            };
+            // Pas de criblage : les contraintes sont dans le code.
+            (manifest, oligos, stats.data_strands, 0)
+        }
     };
 
     let data_oligo_count = data_oligos.len();
     let copies = manifest_copies(data_oligo_count);
-    let rs = crate::rs::RsCode::new(usize::from(manifest.rs_parity))?;
     let mut oligos = Vec::with_capacity(data_oligos.len() + copies);
-    for copy in 0..copies {
-        oligos.push(manifest::oligo(
-            &manifest,
-            &rs,
-            &options.constraints,
-            copy as u32 * 997,
-        )?);
+    if manifest.scheme == manifest::SchemeId::Hedges {
+        // L'oligo manifeste d'une archive hedges est codé par HEDGES derrière l'étiquette
+        // HEDG : lui aussi traverse les insertions et les suppressions.
+        for copy in 0..copies {
+            oligos.push(hedges::manifest_oligo(&manifest, copy as u16));
+        }
+    } else {
+        let rs = crate::rs::RsCode::new(usize::from(manifest.rs_parity))?;
+        for copy in 0..copies {
+            oligos.push(manifest::oligo(
+                &manifest,
+                &rs,
+                &options.constraints,
+                copy as u32 * 997,
+            )?);
+        }
     }
     oligos.extend(data_oligos);
 
@@ -507,6 +566,7 @@ where
         manifest::SchemeId::Goldman => Scheme::Goldman,
         manifest::SchemeId::Grass => Scheme::Grass,
         manifest::SchemeId::Ldpc => Scheme::Ldpc,
+        manifest::SchemeId::Hedges => Scheme::Hedges,
     };
     if options.scheme.is_some_and(|forced| forced != scheme) {
         return Err(DnaError::UnsupportedFormat(format!(
@@ -572,6 +632,19 @@ where
             stats.strands_repaired = inner.strands_repaired;
             (body, inner.reads_used)
         }
+        Scheme::Hedges => {
+            let rate = hedges::rate_of(&manifest).ok_or_else(|| {
+                DnaError::UnsupportedFormat("rendement hedges du manifeste invalide".to_string())
+            })?;
+            let (body, inner) = hedges::decode(&data_reads, body_len, rate)?;
+            stats.corrected = inner.corrected;
+            stats.uncorrectable = inner.uncorrectable + inner.outvoted;
+            stats.units_used = inner.strands;
+            stats.contested = inner.contested;
+            stats.blocks_repaired = inner.blocks_repaired;
+            stats.strands_repaired = inner.strands_repaired;
+            (body, inner.reads_used)
+        }
     };
     stats.reads_bad_length = data_reads.len().saturating_sub(reads_used);
 
@@ -621,11 +694,14 @@ mod tests {
                 Scheme::Goldman => TWO_BYTE_MANIFEST_PARITY,
                 Scheme::Grass => options.grass.parity as u8,
                 Scheme::Ldpc => TWO_BYTE_MANIFEST_PARITY,
+                // L'oligo manifeste du schéma hedges est codé par HEDGES, sans parité.
+                Scheme::Hedges => 0,
             };
             for (rank, oligo) in encoded.oligos.iter().enumerate() {
-                // Les manifestes sont en 2 bits par nucléotide ; les brins des deux derniers
-                // schémas portent autre chose (un trit ou un symbole de GF(47) par groupe).
-                let expected = if rank < copies {
+                // Les manifestes sont en 2 bits par nucléotide, sauf celui du schéma hedges ;
+                // les brins des deux schémas goldman et grass portent autre chose (un trit ou
+                // un symbole de GF(47) par groupe).
+                let expected = if rank < copies && scheme != Scheme::Hedges {
                     manifest::oligo_length(manifest_parity)
                 } else {
                     oligo_length(scheme)
@@ -896,6 +972,22 @@ mod tests {
         ));
         options.grass.parity = 30;
         assert!(encode(b"x", &options).is_ok());
+        // Le schéma hedges garantit 45 % à 55 % de GC et des suites d'au plus 3 bases : des
+        // contraintes plus étroites sont refusées, des contraintes plus larges admises.
+        options = EncodeOptions::for_scheme(Scheme::Hedges);
+        assert!(encode(b"x", &options).is_ok());
+        options.constraints = DnaConstraints::new(0.40, 0.60, 3);
+        assert!(encode(b"x", &options).is_ok());
+        options.constraints = DnaConstraints::new(0.48, 0.55, 3);
+        assert!(matches!(
+            encode(b"x", &options),
+            Err(DnaError::InvalidConfig(_))
+        ));
+        options.constraints = DnaConstraints::new(0.40, 0.60, 2);
+        assert!(matches!(
+            encode(b"x", &options),
+            Err(DnaError::InvalidConfig(_))
+        ));
     }
 
     /// Abîme une archive goldman par des substitutions tirées au hasard dans chaque lecture.

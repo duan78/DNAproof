@@ -317,5 +317,8 @@ ce que le serveur a produit.
 - **Erreurs de lecture** : ce que chaque schéma tolère est mesuré dans
   [les schémas d'encodage](docs/encoding_schemes.md#tolérance-aux-erreurs). En bref, DNA Fountain
   ne corrige qu'une erreur par oligo avec sa parité par défaut, et `strands` ne traverse ni les
-  insertions et suppressions, ni plus de 8 % de perte. Le serveur web n'offre ni marge ni parité
-  réglables : pour un canal difficile, passez par la ligne de commande.
+  insertions et suppressions, ni plus de 5 % de perte sur un gros fichier. Seul `hedges` corrige
+  les insertions et les suppressions : 4,5 % d'erreurs des trois sortes réunies par base à son
+  rendement ½, 15 % à ¼. Le serveur web règle la marge de perte et le rendement de `hedges`,
+  mais pas la parité :
+  pour un canal difficile, passez par la ligne de commande.

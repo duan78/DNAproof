@@ -184,7 +184,12 @@ fn synthesis_errors_carried_by_every_read_are_corrected() {
     let data = pseudo_random(10_000, 6);
     let synthesis = ErrorRates::new(0.001, 0.0, 0.0);
     for scheme in Scheme::ALL {
-        let config = channel(ILLUMINA, synthesis, 0.0, 5.0);
+        // Le schéma goldman n'a pas de code correcteur : une erreur de synthèse dans l'index
+        // d'un brin le perd, et il ne compte que sur ses lectures. À couverture 5, un tirage
+        // sur six s'en sort ; à 10, six sur sept ; à 15, tous. Les autres schémas n'ont
+        // besoin que de cinq lectures par oligo.
+        let coverage = if scheme == Scheme::Goldman { 20.0 } else { 5.0 };
+        let config = channel(ILLUMINA, synthesis, 0.0, coverage);
         assert!(
             run(&data, EncodeOptions::for_scheme(scheme), config).unwrap(),
             "{scheme:?}"

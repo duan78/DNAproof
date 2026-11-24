@@ -637,7 +637,18 @@ fn encode_options(fields: &[(String, String)]) -> Result<EncodeOptions, HttpResp
                     )
                 })?
             }
-            "scheme" | "compression" | "redundancy" => {}
+            "code_rate" if !value.is_empty() => {
+                options.hedges.rate =
+                    adn_core::hedges::Rate::from_name(value).ok_or_else(|| {
+                        refusal(
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "rendement HEDGES inconnu : « {value} » (1/4, 1/3, 1/2 ou 3/4)"
+                            ),
+                        )
+                    })?;
+            }
+            "scheme" | "compression" | "redundancy" | "code_rate" => {}
             other => {
                 return Err(refusal(
                     StatusCode::BAD_REQUEST,
@@ -843,13 +854,23 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "un schéma retiré est refusé, pas ignoré"
         );
-        // Les schémas de la littérature et le schéma ldpc sont proposés, avec leurs paramètres
+        // Les schémas de la littérature, ldpc et hedges sont proposés, avec leurs paramètres
         // par défaut.
-        for name in ["goldman", "grass", "ldpc"] {
+        for name in ["goldman", "grass", "ldpc", "hedges"] {
             let options = encode_options(&[field("scheme", name)]).unwrap();
             assert_eq!(options.scheme.name(), name);
             assert_eq!(options, EncodeOptions::for_scheme(options.scheme));
         }
+        // Le rendement de HEDGES vient du formulaire ; un rendement inconnu est refusé.
+        let options =
+            encode_options(&[field("scheme", "hedges"), field("code_rate", "1/4")]).unwrap();
+        assert_eq!(options.hedges.rate, adn_core::hedges::Rate::QUARTER);
+        let options = encode_options(&[field("code_rate", " 3/4 ")]).unwrap();
+        assert_eq!(options.hedges.rate, adn_core::hedges::Rate::THREE_QUARTERS);
+        assert_eq!(
+            refused(vec![field("code_rate", "1/6")]),
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(
             refused(vec![field("scheme", "inconnu")]),
             StatusCode::BAD_REQUEST
