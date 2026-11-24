@@ -1,5 +1,6 @@
 //! Mesures des codecs : encodage et décodage par schéma et par taille, avec et sans erreurs de
-//! lecture, et coût des briques (compression, Reed-Solomon, contraintes).
+//! lecture, et coût des briques (compression, Reed-Solomon, code convolutif, LDPC,
+//! contraintes).
 //!
 //!     cargo bench -p adn-core
 //!
@@ -9,12 +10,14 @@
 use adn_core::codec::lt::LayoutSampler;
 use adn_core::codec::rng::SeededRng;
 use adn_core::codec::soliton::RobustSoliton;
+use adn_core::ldpc::LdpcCode;
 use adn_core::rs::RsCode;
 use adn_core::rs47::gf2209::Gf2209;
 use adn_core::rs47::gf47::Gf47;
 use adn_core::rs47::{Field, Rs2209Code, Rs47Code};
 use adn_core::{
-    checksum, decode, encode, envelope, DecodeOptions, DnaConstraints, EncodeOptions, Scheme,
+    checksum, convolutional, decode, encode, envelope, DecodeOptions, DnaConstraints,
+    EncodeOptions, Scheme,
 };
 use criterion::{
     criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode, Throughput,
@@ -41,12 +44,15 @@ type Scenario = (f64, usize);
 /// - Le schéma grass, par défaut, corrige sept symboles erronés par brin (vingt et une bases) :
 ///   à 0,5 % par nucléotide, un brin sur deux mille est irrécupérable, et le code externe le
 ///   répare.
+/// - Le schéma ldpc lit chaque brin sur le treillis d'un code convolutif, à sorties souples ;
+///   trois lectures par brin, additionnées, donnent au LDPC un canal presque sans erreur.
 fn scenario(scheme: Scheme) -> Scenario {
     match scheme {
         Scheme::Fountain => (0.001, 3),
         Scheme::Strands => (0.005, 1),
         Scheme::Goldman => (0.001, 3),
         Scheme::Grass => (0.005, 1),
+        Scheme::Ldpc => (0.01, 3),
     }
 }
 
@@ -245,6 +251,83 @@ fn bench_parts(c: &mut Criterion) {
             let mut block = intact.clone();
             black_box(solver.restore(&mut block).unwrap())
         })
+    });
+
+    // Code convolutif : un brin ldpc, 148 bits d'information et 308 de code, avec dix erreurs
+    // dans les bits de code. Encoder, relire par Viterbi, relire par log-MAP avec sorties
+    // souples.
+    let bits: Vec<u8> = random_bytes(148, 17).iter().map(|&byte| byte & 1).collect();
+    let coded = convolutional::encode(&bits);
+    let mut rng = SeededRng::new(3, 18);
+    let llrs: Vec<f32> = coded
+        .iter()
+        .map(|&bit| {
+            let bit = bit ^ u8::from(rng.next_f64() < 10.0 / 308.0);
+            if bit == 0 {
+                4.0
+            } else {
+                -4.0
+            }
+        })
+        .collect();
+    let no_prior = vec![0f32; 148];
+    group.bench_function("convolutif/encoder_148_bits", |b| {
+        b.iter(|| black_box(convolutional::encode(&bits).len()))
+    });
+    group.bench_function("convolutif/viterbi_308_bits", |b| {
+        b.iter(|| black_box(convolutional::viterbi(&llrs).unwrap().len()))
+    });
+    group.bench_function("convolutif/log-map_308_bits", |b| {
+        b.iter(|| black_box(convolutional::bcjr(&llrs, &no_prior).unwrap().llrs.len()))
+    });
+
+    // LDPC : le bloc d'une archive ldpc à la parité de 20 % — 819 brins de données, 164 de
+    // parité, 104 bits chacun. Construction de la matrice, parité, puis décodage d'un bloc
+    // intact, d'un bloc privé de 8 % de ses brins, et d'un bloc à 1 % d'erreurs.
+    let (data, parity) = (819, 164);
+    let (k, m) = (data * 104, parity * 104);
+    group.bench_function("ldpc/construction_85176+17056", |b| {
+        b.iter(|| black_box(LdpcCode::new(k, m, 5).codeword_len()))
+    });
+    let code = LdpcCode::new(k, m, 5);
+    let info: Vec<u8> = random_bytes(k, 19).iter().map(|&byte| byte & 1).collect();
+    group.bench_function("ldpc/parite_85176+17056", |b| {
+        b.iter(|| black_box(code.encode(&info).unwrap().len()))
+    });
+    let codeword = code.encode(&info).unwrap();
+    let intact: Vec<f32> = codeword
+        .iter()
+        .map(|&bit| if bit == 0 { 4.0 } else { -4.0 })
+        .collect();
+    group.bench_function("ldpc/decoder_intact", |b| {
+        b.iter(|| black_box(code.decode(&intact, 60).unwrap().success))
+    });
+    // Entrelacés comme dans l'archive : le bit `bit` du brin `strand` au rang bit · données
+    // + strand, la parité après les données.
+    let at = |strand: usize, bit: usize| {
+        if strand < data {
+            bit * data + strand
+        } else {
+            k + bit * parity + (strand - data)
+        }
+    };
+    let mut erased = intact.clone();
+    for strand in (0..data + parity).step_by(12) {
+        for bit in 0..104 {
+            erased[at(strand, bit)] = 0.0;
+        }
+    }
+    group.bench_function("ldpc/decoder_8_pour_cent_de_brins_effaces", |b| {
+        b.iter(|| black_box(code.decode(&erased, 60).unwrap().success))
+    });
+    let mut wrong = intact.clone();
+    for value in &mut wrong {
+        if rng.next_f64() < 0.01 {
+            *value = -*value;
+        }
+    }
+    group.bench_function("ldpc/decoder_1_pour_cent_d_erreurs", |b| {
+        b.iter(|| black_box(code.decode(&wrong, 60).unwrap().success))
     });
 
     // Distribution soliton robuste et tirage d'une goutte, pour une archive de 32 768 blocs.

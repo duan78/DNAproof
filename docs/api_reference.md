@@ -65,7 +65,7 @@ Encode un fichier. Requête `multipart/form-data` :
 | Champ | Requis | Contenu |
 |-------|--------|---------|
 | `file` | oui | le fichier à archiver ; un seul par requête |
-| `scheme` | non | `fountain` (défaut), `strands`, `goldman` ou `grass` |
+| `scheme` | non | `fountain` (défaut), `strands`, `goldman`, `grass` ou `ldpc` |
 | `compression` | non | `auto` (défaut), `none`, `lz4` ou `zstd` |
 | `redundancy` | non | marge de perte de DNA Fountain : un nombre de 1 à 100, `1.1` par défaut |
 
@@ -143,7 +143,7 @@ L'état du serveur :
   "started_at": "2026-11-23T15:04:46.1722536Z",
   "uptime_seconds": 33.4869678,
   "limits": {"upload_bytes": 26214400, "concurrent_jobs": 2, "retention_minutes": 1440},
-  "schemes": ["fountain", "strands", "goldman", "grass"],
+  "schemes": ["fountain", "strands", "goldman", "grass", "ldpc"],
   "jobs": {"queued": 0, "running": 0, "complete": 2, "failed": 0},
   "database": {"enabled": true, "archives": 1, "oligos": 127}
 }
@@ -191,7 +191,7 @@ aucun manifeste lisible, empreinte inattendue, corps incohérent…
 |-------|---------|
 | `scheme`, `compression` | tels qu'ils ont été appliqués |
 | `original_bytes`, `body_bytes` | taille du fichier d'origine, puis de l'enveloppe (compressée ou non) |
-| `units` | blocs (DNA Fountain), fenêtres (`goldman`) ou brins de données (`strands`, `grass`) |
+| `units` | blocs (DNA Fountain), fenêtres (`goldman`) ou brins de données (`strands`, `grass`, `ldpc`) |
 | `oligos`, `data_oligos`, `manifest_copies` | nombre d'oligos, au total, de données et de manifestes |
 | `oligo_length_nt` | longueur d'un oligo |
 | `nucleotides` | total |

@@ -60,6 +60,15 @@ pub(crate) fn run(
             adn_core::codec::grass::BLOCK_PARITY,
             adn_core::codec::grass::BLOCK
         ),
+        Scheme::Ldpc => format!(
+            "parité LDPC de {} % : {} brins de parité par bloc de {}",
+            options.ldpc.parity,
+            adn_core::codec::ldpc::parity_of(
+                adn_core::codec::ldpc::BLOCK_DATA,
+                options.ldpc.parity,
+            ),
+            adn_core::codec::ldpc::BLOCK_DATA
+        ),
     };
     let sha256 = adn_core::checksum::hex(&stats.sha256);
     let lengths = if manifest_length == oligo_length {

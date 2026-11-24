@@ -30,6 +30,7 @@ fn channel(
     ChannelConfig {
         synthesis,
         sequencing,
+        bursts: adn_simulation::BurstConfig::NONE,
         dropout,
         coverage,
         seed: 42,

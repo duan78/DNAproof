@@ -196,6 +196,9 @@ enum SchemeArg {
     /// Reed-Solomon sur GF(47), symboles en trimères (Grass et al., 2015)
     #[value(alias = "grass2015", alias = "grass_2015")]
     Grass,
+    /// Code convolutif par brin, LDPC par bloc, décodage à décisions souples
+    #[value(alias = "viterbi")]
+    Ldpc,
 }
 
 impl SchemeArg {
@@ -205,6 +208,7 @@ impl SchemeArg {
             SchemeArg::Strands => adn_core::Scheme::Strands,
             SchemeArg::Goldman => adn_core::Scheme::Goldman,
             SchemeArg::Grass => adn_core::Scheme::Grass,
+            SchemeArg::Ldpc => adn_core::Scheme::Ldpc,
         }
     }
 }
@@ -267,8 +271,9 @@ struct CodecArgs {
     /// à la moitié d'octets erronés et s'allonge de 4 nt par octet), symboles pour grass (14 par
     /// défaut, un nombre pair de 2 à 30 : un brin résiste à la moitié de symboles erronés).
     /// Utile devant des erreurs de synthèse, que toutes les lectures d'un oligo portent à
-    /// l'identique
-    #[arg(long, value_name = "1-32", value_parser = clap::value_parser!(u8))]
+    /// l'identique. Pour ldpc : brins de parité pour cent brins de données (20 par défaut, de
+    /// 5 à 100)
+    #[arg(long, value_name = "PARITÉ", value_parser = clap::value_parser!(u8))]
     rs_parity: Option<u8>,
 
     /// Identifiant du fichier, de 0 à 8 (goldman) : sépare plusieurs archives mélangées dans un
@@ -286,10 +291,10 @@ struct CodecArgs {
 
 impl CodecArgs {
     fn options(&self) -> anyhow::Result<adn_core::EncodeOptions> {
-        use adn_core::codec::{fountain, goldman, grass};
+        use adn_core::codec::{fountain, goldman, grass, ldpc};
         let scheme = self.algorithm.scheme();
         // La parité défaut est celle du schéma : deux octets pour DNA Fountain, quatorze
-        // symboles pour grass.
+        // symboles pour grass, vingt pour cent pour ldpc.
         let (rs_parity, accepted) = match scheme {
             adn_core::Scheme::Fountain => (
                 self.rs_parity.unwrap_or(fountain::DEFAULT_RS_PARITY as u8),
@@ -298,6 +303,10 @@ impl CodecArgs {
             adn_core::Scheme::Grass => (
                 self.rs_parity.unwrap_or(grass::DEFAULT_PARITY as u8),
                 grass::MIN_PARITY as u8..=grass::MAX_PARITY as u8,
+            ),
+            adn_core::Scheme::Ldpc => (
+                self.rs_parity.unwrap_or(ldpc::DEFAULT_PARITY as u8),
+                ldpc::MIN_PARITY as u8..=ldpc::MAX_PARITY as u8,
             ),
             _ => (0, 0..=0),
         };
@@ -331,6 +340,13 @@ impl CodecArgs {
             },
             grass: grass::GrassParams {
                 parity: usize::from(rs_parity),
+            },
+            ldpc: ldpc::LdpcParams {
+                parity: if scheme == adn_core::Scheme::Ldpc {
+                    usize::from(rs_parity)
+                } else {
+                    ldpc::DEFAULT_PARITY
+                },
             },
             constraints: self.limits.constraints()?,
         };
@@ -373,6 +389,18 @@ struct ChannelArgs {
     /// Nombre moyen de lectures par oligo
     #[arg(long, default_value_t = 1.0, value_name = "MOYENNE")]
     coverage: f64,
+
+    /// Probabilité, par nucléotide lu, qu'une salve d'erreurs commence (0 : aucune)
+    #[arg(long, default_value_t = 0.0, value_name = "TAUX")]
+    burst_rate: f64,
+
+    /// Longueur moyenne d'une salve, en nucléotides
+    #[arg(long, default_value_t = 10.0, value_name = "NUCLÉOTIDES")]
+    burst_length: f64,
+
+    /// Taux de substitution dans une salve
+    #[arg(long, default_value_t = 0.5, value_name = "TAUX")]
+    burst_error: f64,
 }
 
 /// Ce que reçoit une simulation : son entrée, ses tirages.

@@ -439,7 +439,7 @@ async fn a_file_round_trips_through_the_server() {
     assert_eq!(stats["database"]["enabled"], false);
     assert_eq!(
         stats["schemes"],
-        json!(["fountain", "strands", "goldman", "grass"])
+        json!(["fountain", "strands", "goldman", "grass", "ldpc"])
     );
 
     let health = get(&app, "/health").await;

@@ -1,6 +1,6 @@
 # Les schémas d'encodage
 
-Quatre schémas répartissent un fichier en oligos. Ils partagent la même enveloppe, les mêmes
+Cinq schémas répartissent un fichier en oligos. Ils partagent la même enveloppe, les mêmes
 manifestes et les mêmes contraintes biochimiques ([format](FORMAT.md)) ; ils diffèrent par la
 façon dont les oligos portent les données, donc par ce qu'ils savent traverser.
 
@@ -10,6 +10,7 @@ façon dont les oligos portent les données, donc par ce qu'ils savent traverser
   suite, chaque base lue dans quatre brins recouvrants.
 - **`grass`** — Grass et al., 2015 : Reed-Solomon sur le corps à 47 éléments, un symbole par
   groupe de trois bases.
+- **`ldpc`** — code convolutif par brin et LDPC par bloc, à décisions souples, entrelacés.
 
 Le schéma se choisit à l'encodage. Il est écrit dans le manifeste de l'archive, et le décodage le
 lit : il n'y a jamais à s'en souvenir.
@@ -141,6 +142,43 @@ est celui qui rend compte des chiffres de l'article (83 Ko dans 4 991 brins).
 - Le bloc de 713 brins coûte cher aux petits fichiers : un fichier de 75 octets donne 103 brins,
   dont 92 de parité externe. Pour les petits fichiers, `strands` reste l'économique (49 brins).
 
+## Code convolutif et LDPC
+
+### Principe
+
+Les quatre premiers schémas décident base à base, puis corrigent des octets ou des symboles
+faux. `ldpc` pèse chaque bit : un rapport de vraisemblance, `ln P(bit = 0) / P(bit = 1)`, nul
+pour un effacement. Deux codes en série échangent ces rapports :
+
+- **Code interne**, brin par brin : le code convolutif binaire (171, 133) en octal, longueur de
+  contrainte 7, rendement ½ — celui des normes de communication spatiale. Chaque bit
+  d'information donne deux bits de code, soit une base. Décodé par l'algorithme log-MAP, il
+  rend un rapport par bit, pas un verdict : une lecture à 5 % d'erreurs pèse encore.
+- **Entrelacement** : dans le mot de code d'un bloc, les bits de même rang passent
+  consécutivement. Un brin sans lecture est une salve de 104 effacements ; l'entrelacement la
+  disperse en effacements isolés.
+- **Code externe**, bloc par bloc : un LDPC de 819 brins de données, dont la matrice se
+  reconstruit d'une graine, décodé par propagation de croyances. Il répare les brins manquants
+  et les bits faux qui restent.
+
+Un brin fait 154 nt : un sel de 20 bits, un index de 24, une charge utile de 13 octets, et
+six zéros de queue. Le sel règle le masquage de tout le brin, et varie à l'encodage jusqu'à ce
+que le brin respecte les contraintes biochimiques.
+
+### Ce qu'il faut savoir
+
+- C'est le schéma qui traverse le plus d'erreurs dispersées : 5 % de substitution par
+  nucléotide à couverture 10, et 7 % à couverture 20. `grass` s'arrête à 5 %, à couverture 3.
+- C'est le seul qui traverse les erreurs de synthèse au-delà de 1 % : 5 % à couverture 10.
+  Elles frappent l'ADN lui-même, et le code convolutif les corrige comme des erreurs de
+  lecture : plusieurs lectures les confirment, au lieu de les voter.
+- Il demande de la couverture : 2,5 lectures par brin en moyenne au moins. À couverture 2,
+  13 % des brins manquent, et la parité par défaut n'en répare que 11 %.
+- La parité se règle (`--rs-parity`, de 5 à 100 pour cent) : à 50 %, 25 % de perte, mais la
+  densité tombe de 0,56 à 0,45 bit par nucléotide.
+- C'est le plus lent à décoder, de loin : chaque lecture passe sur un treillis de 64 états.
+- Comme les autres, il perd les lectures dont la longueur a changé.
+
 ## Choisir
 
 | Vous avez… | Prenez |
@@ -149,9 +187,9 @@ est celui qui rend compte des chiffres de l'article (83 Ko dans 4 991 brins).
 | un fichier de plus de 420 Mio | `fountain` |
 | un canal qui perd des oligos | `fountain`, en relevant la marge (`--redundancy 1.5` voire plus) |
 | un canal à substitutions, peu de pertes | `strands` : il traverse 2 % de substitution |
-| un canal à substitutions denses | `grass` : il traverse 5 % de substitution à couverture 3 |
+| un canal à substitutions denses | `grass` : il traverse 5 % de substitution à couverture 3 ; `ldpc` va plus loin, à couverture 10 |
 | un séquençage à insertions et suppressions | `fountain` avec une marge large et beaucoup de couverture, ou un séquençage meilleur : les lectures qui changent de longueur sont perdues, par les quatre schémas |
-| une synthèse bruitée | `fountain` avec `--rs-parity 8`, ou `grass` |
+| une synthèse bruitée | `ldpc` : 5 % d'erreurs de synthèse à couverture 10 ; sinon `fountain` avec `--rs-parity 8`, ou `grass` |
 | les schémas des articles, tels qu'ils sont publiés | `goldman` et `grass`, avec leurs limites propres |
 
 ## Tolérance aux erreurs
@@ -268,6 +306,114 @@ Mêmes conditions, sur un fichier de 256 Kio d'octets incompressibles (le schém
 - **Les insertions et suppressions perdent les deux** comme les autres : une lecture de 117 nt
   qui change de longueur est écartée, et il en reste environ un tiers à 0,5 % de chaque.
 
+### Décisions souples : `ldpc`
+
+Mêmes conditions, sur un fichier de 64 Kio d'octets incompressibles : 5 689 brins à la parité
+de 20 %, 7 096 à 50 %. Un tiret : le scénario n'a pas été mesuré à cette parité.
+
+| Scénario | `ldpc` parité 20 | `ldpc` parité 50 |
+|----------|:----------------:|:----------------:|
+| couverture 2 seule | 0/10 | — |
+| couverture 3 seule | 10/10 | — |
+| couverture 5 seule | 10/10 | — |
+| substitutions 0,5 %, couverture 2 | 0/10 | — |
+| substitutions 0,5 %, couverture 3 | 10/10 | — |
+| substitutions 1 %, couverture 3 | 10/10 | — |
+| substitutions 2 %, couverture 5 | 10/10 | 10/10 |
+| substitutions 2 %, couverture 10 | 10/10 | — |
+| substitutions 5 %, couverture 10 | 10/10 | 10/10 |
+| substitutions 5 %, couverture 20 | 10/10 | — |
+| substitutions 6 %, couverture 20 | 10/10 | — |
+| substitutions 7 %, couverture 10 | 0/10 | 0/10 |
+| substitutions 7 %, couverture 20 | 10/10 | — |
+| substitutions 10 %, couverture 20 | 0/10 | 0/10 |
+| substitutions 10 %, couverture 40 | 0/10 | 0/10 |
+| synthèse : substitutions 1 %, couverture 10 | 10/10 | — |
+| synthèse : substitutions 5 %, couverture 10 | 10/10 | — |
+| synthèse : substitutions 7 %, couverture 10 | 0/10 | — |
+| insertions et suppressions 0,5 %, couverture 10 | 0/10 | — |
+| insertions et suppressions 1 %, couverture 10 | 0/10 | — |
+| perte 5 %, couverture 5 | 10/10 | — |
+| perte 10 %, couverture 5 | 10/10 | — |
+| perte 11 %, couverture 5 | 10/10 | — |
+| perte 12 %, couverture 5 | 1/10 | — |
+| perte 15 %, couverture 5 | 0/10 | — |
+| perte 20 %, couverture 5 | — | 10/10 |
+| perte 22 %, couverture 5 | — | 10/10 |
+| perte 25 %, couverture 5 | — | 10/10 |
+| perte 28 %, couverture 5 | — | 0/10 |
+
+- **La couverture compte double** : elle multiplie les lectures, et chaque lecture pèse. À 5 %
+  d'erreurs, une lecture seule est à peine lisible ; dix, additionnées, donnent au LDPC un
+  canal presque sans erreur. À 7 %, il en faut vingt ; à 10 %, quarante ne suffisent plus.
+- **La perte s'arrête où la parité le dit** : 11 % pour 20 % de brins de parité, 25 % pour
+  50 %. Un bloc qui manque plus que la parité n'en porte est refusé sans décodage.
+- **Relever la parité n'aide pas contre les substitutions** : à 7 %, 50 % de parité ne sauvent
+  rien à couverture 10. Le goulot est alors la lecture elle-même, pas le code externe.
+- **Les rapports d'une lecture sont bornés** : une lecture mal décodée est affirmée, et sans
+  borne elle l'emporterait sur les lectures justes du même brin.
+
+### Erreurs en salves
+
+Sur un vrai séquençage, les erreurs se groupent : un contexte de bases en fait surgir
+plusieurs d'affilée. Le canal à salves (`--burst-rate`, `--burst-length`, `--burst-error`)
+les modélise. Au taux moyen égal, **une salve fait bien moins de mal qu'une erreur dispersée** :
+elle ruine une lecture, que chaque schéma traite en effacement, là où l'erreur dispersée
+atteint toutes les lectures.
+
+Même fichier de 64 Kio, 10 tirages par case. Dans une salve, une base sur deux est fausse.
+
+| Scénario, à couverture 10 | `fountain` | `strands` | `goldman` | `grass` | `ldpc` |
+|--------------------------|:----------:|:---------:|:---------:|:-------:|:-------:|
+| substitutions 1 % dispersées | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| substitutions 1 % en salves de 4, de 10, de 30 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| substitutions 2 % dispersées | 0/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| substitutions 2 % en salves de 4, de 10, de 30 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| substitutions 5 % dispersées | 0/10 | 0/10 | 9/10 | 10/10 | 10/10 |
+| substitutions 5 % en salves de 4 | 0/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| substitutions 5 % en salves de 6 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| substitutions 10 % en salves de 4 | 0/10 | 0/10 | 10/10 | 10/10 | 10/10 |
+| substitutions 10 % en salves de 6 | 0/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| substitutions 15 % en salves de 4 | 0/10 | 0/10 | 8/10 | 10/10 | 10/10 |
+| substitutions 20 % en salves de 4 | 0/10 | 0/10 | 0/10 | 10/10 | 10/10 |
+
+À couverture 5 :
+
+| Scénario, à couverture 5 | `fountain` | `strands` | `goldman` | `grass` | `ldpc` |
+|--------------------------|:----------:|:---------:|:---------:|:-------:|:-------:|
+| substitutions 5 % en salves de 4 | 0/10 | 10/10 | 9/10 | 10/10 | 10/10 |
+| substitutions 10 % en salves de 4 | 0/10 | 0/10 | 0/10 | 10/10 | 10/10 |
+| substitutions 10 % en salves de 30 | 8/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+
+- **`strands` bascule** : 0/10 à 5 % dispersées, 10/10 à 5 % en salves de 4. Son code
+  interne corrige deux octets par brin ; une salve de quatre bases en touche un ou deux,
+  l'erreur dispersée les touche tous.
+- **`grass` et `ldpc` vont aussi loin en salves** : 20 % d'erreurs en salves de quatre, à
+  couverture 10. Le code convolutif corrige d'office toute salve de moins de cinq bits — la
+  moitié de sa distance libre.
+- **`fountain` reste le plus fragile** aux substitutions, groupées ou non : sa parité par
+  défaut ne corrige qu'un octet par oligo.
+
+### L'entrelacement du schéma `ldpc`
+
+L'entrelacement se mesure en le retirant : même archive de 64 Kio, même canal, dix tirages.
+Sans lui, un brin sans lecture est une salve de 104 effacements d'affilée dans le mot de
+code ; quand elle tombe sur la chaîne de parité, la propagation ne la résout que bit à bit,
+le long de la chaîne, et n'en vient pas à bout en soixante allers-retours.
+
+| Scénario | brins sans lecture | avec | sans |
+|----------|:------------------:|:----:|:----:|
+| couverture 5, substitutions 0,5 % | 0,6 % | 10/10 | 9/10 |
+| couverture 3, substitutions 0,5 % | 5,0 % | 10/10 | 1/10 |
+| couverture 3 seule | 5,0 % | 10/10 | 1/10 |
+| couverture 2,5 seule | 8,3 % | 10/10 | 0/10 |
+| perte 8 %, couverture 5 | 8,5 % | 10/10 | 0/10 |
+| couverture 2 seule | 13,7 % | 0/10 | 0/10 |
+
+À 5 % de brins sans lecture, l'entrelacement fait passer le taux de restitution de 1 à 10 sur
+10 ; à 8 %, de 0 à 10. Les tirages réussis sans lui sont aussi plus lents : la propagation
+règle la salve bit à bit. À 13,7 %, la parité ne suffit plus, entrelacée ou non.
+
 ## Refaire ces mesures
 
 ```sh
@@ -282,7 +428,8 @@ de la chaîne complète sont dans [Bibliothèques Illumina](LIBRARY.md#mesures).
 
 Sans `--archive`, `simulate` encode le fichier avec les options données, puis le dégrade.
 `--synthesis-substitution-rate`, `--insertion-rate`, `--deletion-rate` et `--dropout` règlent le
-canal ; `--seed` rend un tirage reproductible.
+canal ; `--burst-rate`, `--burst-length` et `--burst-error` y ajoutent des salves ; `--seed`
+rend un tirage reproductible.
 
 ## Références
 
@@ -295,3 +442,10 @@ canal ; `--seed` rend un tirage reproductible.
   Digital Information on DNA in Silica with Error-Correcting Codes*, Angewandte Chemie
   International Edition 54:2552–2555, 2015.
 - Luby M. — *LT codes*, FOCS 2002.
+- Viterbi A. — *Error bounds for convolutional codes and an asymptotically optimum decoding
+  algorithm*, IEEE Transactions on Information Theory 13(2):260–269, 1967.
+- Bahl L. R., Cocke J., Jelinek F., Raviv J. — *Optimal decoding of linear codes for minimizing
+  symbol error rate*, IEEE Transactions on Information Theory 20(2):284–287, 1974.
+- Gallager R. G. — *Low-density parity-check codes*, MIT Press, 1963.
+- MacKay D. J. C., Neal R. M. — *Near Shannon limit performance of low density parity check
+  codes*, Electronics Letters 33(6):457–458, 1997.

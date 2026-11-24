@@ -71,6 +71,18 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
   [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 - **Documentation refaite** : spécification du format, schémas et tolérance aux erreurs mesurée,
   performances, guide de production, référence de l'API web.
+- **Schéma `ldpc`** : un code convolutif par brin — (171, 133) en octal, longueur de contrainte
+  7, rendement ½ —, décodé sur le treillis par l'algorithme log-MAP, avec un rapport de
+  vraisemblance par bit ; un LDPC par bloc de 819 brins, reconstruit d'une graine, décodé par
+  propagation de croyances (min-sum normalisé) ; un entrelacement entre les deux. Brins de
+  154 nt, parité réglable (`--rs-parity`, de 5 à 100 pour cent, 20 par défaut). C'est le
+  schéma qui traverse le plus d'erreurs dispersées : 5 % de substitution à couverture 10, et
+  5 % d'erreurs de synthèse — que nul autre ne traverse.
+- **Erreurs en salves** dans la simulation : `--burst-rate`, `--burst-length` et
+  `--burst-error` décrivent un canal à deux états, où les erreurs se groupent.
+- **Codes pris isolément** (`adn_core::convolutional`, `adn_core::ldpc`) : Viterbi à entrées
+  souples, log-MAP, LDPC de poids de colonne réglable ; `examples/ldpc_threshold.rs` mesure
+  leurs seuils.
 - Licence Apache 2.0 : le texte accompagne désormais la licence MIT.
 
 ### Modifié

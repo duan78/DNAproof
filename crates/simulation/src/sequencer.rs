@@ -26,8 +26,8 @@ use adn_core::{DnaError, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    apply_errors, poisson, ErrorCounts, ErrorRates, STREAM_DROPOUT, STREAM_POISSON,
-    STREAM_SEQUENCING, STREAM_SHUFFLE, STREAM_SYNTHESIS,
+    apply_bursts, apply_errors, poisson, BurstConfig, ErrorCounts, ErrorRates, STREAM_DROPOUT,
+    STREAM_POISSON, STREAM_SEQUENCING, STREAM_SHUFFLE, STREAM_SYNTHESIS,
 };
 
 const STREAM_INDEX: u64 = 0x0000_0000_0000_0026;
@@ -45,6 +45,8 @@ pub struct SequencerConfig {
     pub index_read_length: Option<usize>,
     /// Erreurs de séquençage des lectures 1 et 2, par nucléotide en moyenne.
     pub sequencing: ErrorRates,
+    /// Erreurs de séquençage en salves, dans les lectures 1 et 2.
+    pub bursts: BurstConfig,
     /// Erreurs de séquençage des lectures d'index, uniformes.
     pub index_sequencing: ErrorRates,
     /// Erreurs de synthèse, appliquées à l'insert de chaque molécule.
@@ -65,6 +67,7 @@ impl Default for SequencerConfig {
             read_length: 300,
             index_read_length: None,
             sequencing: ErrorRates::new(0.001, 0.0, 0.0),
+            bursts: BurstConfig::NONE,
             index_sequencing: ErrorRates::new(0.001, 0.0, 0.0),
             synthesis: ErrorRates::NONE,
             dropout: 0.0,
@@ -92,6 +95,7 @@ impl SequencerConfig {
             }
         }
         self.sequencing.validate("de séquençage")?;
+        self.bursts.validate()?;
         self.index_sequencing.validate("de séquençage des index")?;
         self.synthesis.validate("de synthèse")?;
         if self.sequencing.total() * RAMP_END >= 1.0 {
@@ -223,9 +227,10 @@ fn sequence_read(
     template: &[u8],
     rates: &ErrorRates,
     ramped: bool,
+    bursts: &BurstConfig,
     rng: &mut SeededRng,
 ) -> (Vec<u8>, Vec<u8>, ErrorCounts) {
-    if rates.total() == 0.0 {
+    if rates.total() == 0.0 && bursts.rate <= 0.0 {
         return (
             template.to_vec(),
             vec![MAX_PHRED; template.len()],
@@ -264,6 +269,10 @@ fn sequence_read(
             quality.push(score);
         }
     }
+    // Les salves frappent la lecture après coup : la qualité de chaque base reste celle du
+    // début, plus élevée qu'une salve ne le dirait.
+    let (read, burst_counts) = apply_bursts(&read, bursts, rng);
+    counts += burst_counts;
     (read, quality, counts)
 }
 
@@ -389,9 +398,9 @@ impl Sequencer {
                 // Une lecture plus courte que l'extrémité mosaïque s'arrête dans celle-ci.
                 r2.truncate(config.read_length);
                 let (r1, quality_r1, errors_r1) =
-                    sequence_read(&r1, &config.sequencing, true, &mut rng);
+                    sequence_read(&r1, &config.sequencing, true, &config.bursts, &mut rng);
                 let (r2, quality_r2, errors_r2) =
-                    sequence_read(&r2, &config.sequencing, true, &mut rng);
+                    sequence_read(&r2, &config.sequencing, true, &config.bursts, &mut rng);
                 let errors = errors_r1 + errors_r2;
                 stats.sequencing_errors += errors;
 
@@ -401,14 +410,20 @@ impl Sequencer {
                     .then(|| rng_hopping.below(molecules.len() as u64) as usize)
                     .filter(|&donor| donor != index);
                 let source = &templates[donor.unwrap_or(index)];
-                let (i7, quality_i7, errors_i7) =
-                    sequence_read(&source.i7, &config.index_sequencing, false, &mut rng_index);
+                let (i7, quality_i7, errors_i7) = sequence_read(
+                    &source.i7,
+                    &config.index_sequencing,
+                    false,
+                    &BurstConfig::NONE,
+                    &mut rng_index,
+                );
                 let (i5, quality_i5, errors_i5) = match &source.i5 {
                     Some(template) => {
                         let (bases, quality, errors) = sequence_read(
                             template,
                             &config.index_sequencing,
                             false,
+                            &BurstConfig::NONE,
                             &mut rng_index,
                         );
                         (Some(bases), Some(quality), errors)
@@ -818,6 +833,59 @@ mod tests {
         assert!(pairs.is_empty());
         assert_eq!(stats.lost_molecules, 200);
         assert_eq!(stats.copies_min, 0);
+    }
+
+    #[test]
+    fn bursts_strike_the_reads_and_spare_the_indexes() {
+        let (library, molecules) = pool(40, 117);
+        let config = SequencerConfig {
+            sequencing: ErrorRates::NONE,
+            index_sequencing: ErrorRates::NONE,
+            bursts: BurstConfig {
+                rate: 0.02,
+                length: 20.0,
+                error: 1.0,
+            },
+            coverage: 2.0,
+            ..SequencerConfig::default()
+        };
+        assert!(Sequencer::new(config).is_ok());
+        let (pairs, stats) = Sequencer::new(config)
+            .unwrap()
+            .run(&library, &molecules)
+            .unwrap();
+        assert_eq!(pairs.len(), stats.pairs);
+        // Environ 29 % des bases des lectures sont fausses ; les index, aucune.
+        let wrong: usize = pairs
+            .iter()
+            .map(|pair| {
+                let molecule = &molecules[pair.molecule as usize];
+                let (before, _) = library.primer_offsets(molecule.sample).unwrap();
+                let truth = &molecule.sequence[before..before + pair.r1.len()];
+                truth.iter().zip(&pair.r1).filter(|(a, b)| a != b).count()
+            })
+            .sum();
+        let bases: usize = pairs.iter().map(|pair| pair.r1.len()).sum();
+        let rate = wrong as f64 / bases as f64;
+        assert!((0.25..=0.33).contains(&rate), "{rate}");
+        for pair in &pairs {
+            let sample = library.sample(molecules[pair.molecule as usize].sample);
+            assert_eq!(
+                pair.i7,
+                reverse_complement(&sample.i7.bases),
+                "les lectures d'index ne prennent pas de salve"
+            );
+            assert!(pair.quality_r1.iter().all(|&score| score == MAX_PHRED));
+        }
+        // Une configuration incohérente est refusée.
+        let bad = SequencerConfig {
+            bursts: BurstConfig {
+                rate: 3.0,
+                ..BurstConfig::NONE
+            },
+            ..SequencerConfig::default()
+        };
+        assert!(Sequencer::new(bad).is_err());
     }
 
     #[test]

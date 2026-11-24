@@ -7,7 +7,8 @@
 //!    les portent, donc le consensus ne les efface pas.
 //! 3. **Couverture** : le nombre de lectures d'un oligo suit une loi de Poisson de moyenne
 //!    `coverage` ; un oligo sans lecture est perdu.
-//! 4. **Séquençage** : chaque lecture reçoit ses propres substitutions, insertions et délétions.
+//! 4. **Séquençage** : chaque lecture reçoit ses propres substitutions, insertions et délétions —
+//!    dispersées, et par salves quand le canal en a ([`BurstConfig`]).
 //!
 //! Les lectures sont produites dans un ordre aléatoire, sans information d'appoint : le décodage
 //! doit donc se suffire des séquences.
@@ -75,6 +76,64 @@ impl ErrorRates {
     }
 }
 
+/// Erreurs en salves du séquençage : un canal à deux états.
+///
+/// Sur un vrai séquençage, les erreurs se groupent : un contexte de bases en fait surgir
+/// plusieurs d'affilée. Le canal passe de l'état bon à l'état mauvais avec la probabilité
+/// `rate` par nucléotide, y reste `length` nucléotides en moyenne, et y substitue chaque
+/// base avec la probabilité `error`. Les erreurs dispersées continuent de s'appliquer.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BurstConfig {
+    /// Probabilité, par nucléotide, qu'une salve commence.
+    pub rate: f64,
+    /// Longueur moyenne d'une salve, en nucléotides : un au moins.
+    pub length: f64,
+    /// Taux de substitution dans une salve.
+    pub error: f64,
+}
+
+impl Default for BurstConfig {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl BurstConfig {
+    /// Aucune salve.
+    pub const NONE: Self = Self {
+        rate: 0.0,
+        length: 10.0,
+        error: 0.5,
+    };
+
+    /// Part des nucléotides écrits dans une salve.
+    pub fn share(&self) -> f64 {
+        self.rate * self.length / (1.0 + self.rate * self.length)
+    }
+
+    /// Taux de substitution moyen qu'ajoutent les salves, par nucléotide.
+    pub fn mean_rate(&self) -> f64 {
+        self.share() * self.error
+    }
+
+    fn validate(&self) -> Result<()> {
+        let valid = |value: f64| value.is_finite() && (0.0..1.0).contains(&value);
+        if valid(self.rate)
+            && self.error.is_finite()
+            && (0.0..=1.0).contains(&self.error)
+            && self.length.is_finite()
+            && self.length >= 1.0
+        {
+            Ok(())
+        } else {
+            Err(DnaError::InvalidConfig(format!(
+                "salves invalides : taux {}, longueur {}, erreur {}",
+                self.rate, self.length, self.error
+            )))
+        }
+    }
+}
+
 /// Configuration du canal.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChannelConfig {
@@ -82,6 +141,9 @@ pub struct ChannelConfig {
     pub synthesis: ErrorRates,
     /// Erreurs de séquençage, appliquées à chaque lecture.
     pub sequencing: ErrorRates,
+    /// Erreurs de séquençage en salves.
+    #[serde(default)]
+    pub bursts: BurstConfig,
     /// Probabilité qu'un oligo soit absent de la bibliothèque.
     pub dropout: f64,
     /// Nombre moyen de lectures par oligo présent.
@@ -95,6 +157,7 @@ impl Default for ChannelConfig {
         Self {
             synthesis: ErrorRates::NONE,
             sequencing: ErrorRates::new(0.005, 0.0, 0.0),
+            bursts: BurstConfig::NONE,
             dropout: 0.0,
             coverage: 1.0,
             seed: 42,
@@ -107,6 +170,7 @@ impl ChannelConfig {
     pub fn validate(&self) -> Result<()> {
         self.synthesis.validate("de synthèse")?;
         self.sequencing.validate("de séquençage")?;
+        self.bursts.validate()?;
         if !self.dropout.is_finite() || !(0.0..=1.0).contains(&self.dropout) {
             return Err(DnaError::InvalidConfig(format!(
                 "taux de perte invalide : {}",
@@ -188,6 +252,7 @@ pub(crate) const STREAM_SYNTHESIS: u64 = 0x0000_0000_0000_0022;
 pub(crate) const STREAM_POISSON: u64 = 0x0000_0000_0000_0023;
 pub(crate) const STREAM_SEQUENCING: u64 = 0x0000_0000_0000_0024;
 pub(crate) const STREAM_SHUFFLE: u64 = 0x0000_0000_0000_0025;
+const STREAM_BURSTS: u64 = 0x0000_0000_0000_0028;
 
 #[inline]
 fn rank_of(base: u8) -> u64 {
@@ -221,6 +286,39 @@ pub fn apply_errors(
             counts.insertions += 1;
         } else if roll < total {
             counts.deletions += 1;
+        } else {
+            out.push(base);
+        }
+    }
+    (out, counts)
+}
+
+/// Applique les erreurs en salves à une séquence : la séquence obtenue et le nombre de ses
+/// substitutions de salve. Sans effet, et sans tirage, quand aucune salve n'est demandée.
+pub fn apply_bursts(
+    sequence: &[u8],
+    bursts: &BurstConfig,
+    rng: &mut SeededRng,
+) -> (Vec<u8>, ErrorCounts) {
+    let mut counts = ErrorCounts::default();
+    if bursts.rate <= 0.0 {
+        return (sequence.to_vec(), counts);
+    }
+    let mut in_burst = false;
+    let mut out = Vec::with_capacity(sequence.len());
+    for &base in sequence {
+        // Une salve s'achève quand son prochain nucléotide ne suit pas : chaque base a une
+        // chance sur `length` d'être la dernière, et la salve dure en moyenne `length`
+        // nucléotides.
+        let roll = rng.next_f64();
+        in_burst = if in_burst {
+            roll < (bursts.length - 1.0) / bursts.length
+        } else {
+            roll < bursts.rate
+        };
+        if in_burst && rng.next_f64() < bursts.error {
+            out.push(BASES[((rank_of(base) + 1 + rng.below(3)) & 3) as usize]);
+            counts.substitutions += 1;
         } else {
             out.push(base);
         }
@@ -314,12 +412,16 @@ impl DnaChannel {
             stats.copies_max = stats.copies_max.max(copies);
 
             let mut rng = SeededRng::new(key, STREAM_SEQUENCING);
+            let mut burst_rng = SeededRng::new(key, STREAM_BURSTS);
             for _ in 0..copies {
                 let (sequence, errors) = if self.config.sequencing.total() > 0.0 {
                     apply_errors(&template, &self.config.sequencing, &mut rng)
                 } else {
                     (template.clone(), ErrorCounts::default())
                 };
+                let (sequence, burst_errors) =
+                    apply_bursts(&sequence, &self.config.bursts, &mut burst_rng);
+                let errors = errors + burst_errors;
                 stats.reads_wrong_length += usize::from(sequence.len() != oligo.len());
                 stats.reads_perfect +=
                     usize::from(errors.total() == 0 && synthesis_errors.total() == 0);
@@ -346,7 +448,9 @@ impl DnaChannel {
     /// Altère une seule séquence avec les erreurs de séquençage.
     pub fn transmit(&self, sequence: &[u8]) -> (Vec<u8>, ErrorCounts) {
         let mut rng = SeededRng::new(self.config.seed, STREAM_SEQUENCING);
-        apply_errors(sequence, &self.config.sequencing, &mut rng)
+        let (sequence, errors) = apply_errors(sequence, &self.config.sequencing, &mut rng);
+        let (sequence, burst_errors) = apply_bursts(&sequence, &self.config.bursts, &mut rng);
+        (sequence, errors + burst_errors)
     }
 }
 
@@ -443,6 +547,7 @@ mod tests {
         let config = ChannelConfig {
             synthesis: ErrorRates::new(0.0, 0.0, 0.002),
             sequencing: ErrorRates::new(0.01, 0.002, 0.003),
+            bursts: BurstConfig::NONE,
             dropout: 0.1,
             coverage: 4.0,
             seed: 7,
@@ -585,6 +690,155 @@ mod tests {
             .map(|read| &read.sequence)
             .collect();
         assert!(sequences.len() > 1, "les lectures d'un oligo diffèrent");
+    }
+
+    #[test]
+    fn bursts_are_validated_and_measured() {
+        assert_eq!(BurstConfig::default(), BurstConfig::NONE);
+        assert_eq!(BurstConfig::NONE.mean_rate(), 0.0);
+        // Un dixième des bases en salve, la moitié d'entre elles fausses.
+        let bursts = BurstConfig {
+            rate: 0.01,
+            length: 10.0,
+            error: 0.5,
+        };
+        assert!((bursts.mean_rate() - 0.04545).abs() < 1e-4);
+        for bad in [
+            BurstConfig {
+                rate: -1.0,
+                ..bursts
+            },
+            BurstConfig {
+                rate: 2.0,
+                ..bursts
+            },
+            BurstConfig {
+                length: 0.0,
+                ..bursts
+            },
+            BurstConfig {
+                error: 1.5,
+                ..bursts
+            },
+            BurstConfig {
+                rate: f64::NAN,
+                ..bursts
+            },
+        ] {
+            let config = ChannelConfig {
+                bursts: bad,
+                ..ChannelConfig::default()
+            };
+            assert!(DnaChannel::new(config).is_err(), "{bad:?}");
+        }
+        let config = ChannelConfig {
+            bursts,
+            ..ChannelConfig::default()
+        };
+        assert!(DnaChannel::new(config).is_ok());
+    }
+
+    #[test]
+    fn bursts_group_the_errors_and_leave_the_rest_alone() {
+        let sequence = oligos(1, 400_000).remove(0);
+        // Sans salve : rien ne change, et le générateur n'est pas touché.
+        let mut rng = SeededRng::new(3, 1);
+        let (out, counts) = apply_bursts(&sequence, &BurstConfig::NONE, &mut rng);
+        assert_eq!(out, sequence);
+        assert_eq!(counts.total(), 0);
+        assert_eq!(rng.next_u64(), SeededRng::new(3, 1).next_u64());
+
+        let bursts = BurstConfig {
+            rate: 0.01,
+            length: 10.0,
+            error: 0.5,
+        };
+        let (out, counts) = apply_bursts(&sequence, &bursts, &mut rng);
+        assert_eq!(out.len(), sequence.len());
+        // Le taux moyen est celui qu'annoncent les paramètres.
+        let measured = f64::from(counts.substitutions) / 400_000.0;
+        assert!((measured - bursts.mean_rate()).abs() < 0.004, "{measured}");
+        // Une salve dure bien `length` bases en moyenne : toutes ses bases étant fausses,
+        // ses runs les dessinent.
+        let flat = vec![b'A'; 200_000];
+        let (marked, counts) = apply_bursts(
+            &flat,
+            &BurstConfig {
+                error: 1.0,
+                ..bursts
+            },
+            &mut rng,
+        );
+        let bursts_seen = marked
+            .windows(2)
+            .filter(|pair| pair[0] == b'A' && pair[1] != b'A')
+            .count()
+            + 1;
+        let mean_length = f64::from(counts.substitutions) / bursts_seen as f64;
+        assert!((mean_length - bursts.length).abs() < 0.8, "{mean_length}");
+        assert!((f64::from(counts.substitutions) / 200_000.0 - bursts.share()).abs() < 0.006);
+        // Et les erreurs se groupent : une erreur a souvent une voisine immédiate, bien
+        // plus souvent que des erreurs dispersées au même taux.
+        let wrong: Vec<usize> = out
+            .iter()
+            .zip(&sequence)
+            .enumerate()
+            .filter(|(_, (&a, &b))| a != b)
+            .map(|(position, _)| position)
+            .collect();
+        let neighbours = wrong
+            .windows(2)
+            .filter(|pair| pair[1] == pair[0] + 1)
+            .count();
+        let grouped = neighbours as f64 / wrong.len() as f64;
+        assert!(grouped > 0.40 && grouped < 0.48, "{grouped}");
+    }
+
+    #[test]
+    fn bursts_reach_each_read_and_nothing_else() {
+        let pool = oligos(200, 160);
+        let config = ChannelConfig {
+            sequencing: ErrorRates::NONE,
+            bursts: BurstConfig {
+                rate: 0.02,
+                length: 20.0,
+                error: 1.0,
+            },
+            coverage: 5.0,
+            ..ChannelConfig::default()
+        };
+        let (first, stats) = DnaChannel::new(config).unwrap().simulate(&pool);
+        let (second, _) = DnaChannel::new(config).unwrap().simulate(&pool);
+        assert_eq!(first, second);
+        // Environ 29 % des bases sont fausses, et toutes dans des salves : les lectures gardent
+        // leur longueur, et seules celles qui tombent entre deux salves sont intactes (4 %).
+        assert_eq!(stats.reads_wrong_length, 0);
+        assert!(
+            stats.reads_perfect > 0 && stats.reads_perfect < stats.reads / 10,
+            "{}",
+            stats.reads_perfect
+        );
+        assert!(stats.sequencing_errors.substitutions > 200 * 5 * 160 * 25 / 100);
+        for read in &first {
+            let wrong = read
+                .sequence
+                .iter()
+                .zip(&pool[read.oligo as usize])
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(wrong, read.errors.substitutions as usize);
+            assert_eq!(wrong == 0, read.errors.total() == 0);
+        }
+        // Le modèle des oligos n'est pas touché : les salves sont du séquençage.
+        let clean = ChannelConfig {
+            sequencing: ErrorRates::NONE,
+            coverage: 5.0,
+            ..ChannelConfig::default()
+        };
+        let (reads, _) = DnaChannel::new(clean).unwrap().simulate(&pool);
+        for read in &reads {
+            assert_eq!(read.sequence, pool[read.oligo as usize]);
+        }
     }
 
     #[test]

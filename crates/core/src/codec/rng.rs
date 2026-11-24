@@ -103,6 +103,33 @@ pub fn scramble_u24(value: u32) -> u32 {
     x ^ (x >> 12)
 }
 
+/// L'inverse d'un nombre impair modulo 2⁶⁴, donc modulo 2²⁴ : itération de Newton.
+pub(crate) const fn inverse_odd(odd: u64) -> u64 {
+    let mut inverse = 1u64;
+    let mut round = 0;
+    while round < 6 {
+        inverse = inverse.wrapping_mul(2u64.wrapping_sub(odd.wrapping_mul(inverse)));
+        round += 1;
+    }
+    inverse
+}
+
+/// L'inverse de [`scramble_u24`].
+pub fn unscramble_u24(value: u32) -> u32 {
+    const MASK: u32 = (1 << 24) - 1;
+    let mut x = value & MASK;
+    // Chaque étape s'inverse : un ou exclusif avec un décalage de `shift` d'abord, la constante
+    // ensuite, une multiplication par son inverse.
+    x ^= x >> 12;
+    x = x.wrapping_mul(inverse_odd(0x6F_4F_2D) as u32) & MASK;
+    x ^= x >> 13;
+    x = x.wrapping_mul(inverse_odd(0x80_00_15) as u32) & MASK;
+    x ^= 0x5A_3C_7E;
+    x ^= x >> 11;
+    x ^= x >> 22;
+    x & MASK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +228,8 @@ mod tests {
         for i in 0..(1u32 << 24) {
             let mapped = scramble_u24(i) as usize;
             assert!(mapped < (1 << 24));
+            // Et l'inverse la défait.
+            assert_eq!(unscramble_u24(mapped as u32), i);
             assert!(
                 !std::mem::replace(&mut seen[mapped], true),
                 "collision pour {i}"

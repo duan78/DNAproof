@@ -89,7 +89,7 @@ fn json(output: &Output) -> serde_json::Value {
 }
 
 /// Tous les schémas, par leur nom de ligne de commande.
-const SCHEMES: [&str; 4] = ["fountain", "strands", "goldman", "grass"];
+const SCHEMES: [&str; 5] = ["fountain", "strands", "goldman", "grass", "ldpc"];
 
 #[test]
 fn encode_then_decode_restores_the_file_for_every_scheme() {

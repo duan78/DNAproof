@@ -10,12 +10,12 @@
 //! | décalage | taille | contenu |
 //! |----------|--------|---------|
 //! | 0        | 1      | version du format (2) |
-//! | 1        | 1      | schéma : 1 = DNA Fountain, 2 = brins codés, 3 = goldman, 4 = grass |
+//! | 1        | 1      | schéma : 1 = DNA Fountain, 2 = brins codés, 3 = goldman, 4 = grass, 5 = ldpc |
 //! | 2        | 1      | octets (fountain, strands) ou symboles (grass) de parité Reed-Solomon de chaque oligo |
 //! | 3        | 1      | compression de l'enveloppe |
 //! | 4        | 8      | longueur de l'enveloppe (octets, petit-boutiste) |
 //! | 12       | 4      | nombre de blocs (DNA Fountain) ou de fenêtres (goldman), 0 sinon |
-//! | 16       | 4      | `c` de la distribution soliton (f32, petit-boutiste) ; identifiant de fichier du schéma goldman (un octet) |
+//! | 16       | 4      | `c` de la distribution soliton (f32, petit-boutiste) ; sinon, au premier octet : identifiant de fichier du schéma goldman, parité du schéma ldpc (en pour cent) |
 //! | 20       | 4      | `δ` de la distribution soliton (f32, petit-boutiste) |
 //! | 24       | 4      | CRC-32 des 24 premiers octets |
 //!
@@ -54,6 +54,7 @@ pub enum SchemeId {
     Strands = 2,
     Goldman = 3,
     Grass = 4,
+    Ldpc = 5,
 }
 
 impl SchemeId {
@@ -63,6 +64,7 @@ impl SchemeId {
             2 => Some(SchemeId::Strands),
             3 => Some(SchemeId::Goldman),
             4 => Some(SchemeId::Grass),
+            5 => Some(SchemeId::Ldpc),
             _ => None,
         }
     }
@@ -78,8 +80,8 @@ pub struct Manifest {
     pub chunks: u32,
     pub c: f32,
     pub delta: f32,
-    /// Identifiant de fichier du schéma goldman (0 à 8) ; rangé dans le premier octet de `c`,
-    /// qui vaut alors 0.
+    /// Identifiant de fichier du schéma goldman (0 à 8), parité du schéma ldpc (5 à 100, pour
+    /// cent) ; rangé dans le premier octet de `c`, qui vaut alors 0.
     pub file_id: u8,
 }
 
@@ -106,7 +108,7 @@ pub fn encode(manifest: &Manifest) -> [u8; MANIFEST_LEN] {
     // `c` n'a de sens que pour DNA Fountain : son premier octet porte l'identifiant de fichier
     // du schéma goldman.
     match manifest.scheme {
-        SchemeId::Goldman => {
+        SchemeId::Goldman | SchemeId::Ldpc => {
             bytes[16] = manifest.file_id;
             bytes[17..20].fill(0);
         }
@@ -144,7 +146,7 @@ pub fn decode(bytes: &[u8]) -> Result<Manifest> {
         DnaError::UnsupportedFormat(format!("compression de manifeste inconnue: {}", bytes[3]))
     })?;
     let (c, file_id) = match scheme {
-        SchemeId::Goldman => (0.0, bytes[16]),
+        SchemeId::Goldman | SchemeId::Ldpc => (0.0, bytes[16]),
         _ => (
             f32::from_le_bytes(bytes[16..20].try_into().expect("4 octets")),
             0,

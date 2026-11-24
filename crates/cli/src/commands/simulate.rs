@@ -6,7 +6,7 @@
 
 use crate::output::{seconds, Fields, Printer};
 use adn_core::{decode, encode, DecodeOptions, Scheme};
-use adn_simulation::{ChannelConfig, DnaChannel, ErrorRates};
+use adn_simulation::{BurstConfig, ChannelConfig, DnaChannel, ErrorRates};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::time::Instant;
@@ -53,6 +53,9 @@ struct Canal {
     deletion_sequencement: f64,
     perte: f64,
     couverture: f64,
+    salve_taux: f64,
+    salve_longueur: f64,
+    salve_erreur: f64,
 }
 
 #[derive(Serialize)]
@@ -94,6 +97,11 @@ pub(crate) fn run(
             channel.insertion_rate,
             channel.deletion_rate,
         ),
+        bursts: BurstConfig {
+            rate: channel.burst_rate,
+            length: channel.burst_length,
+            error: channel.burst_error,
+        },
         dropout: channel.dropout,
         coverage: channel.coverage,
         seed,
@@ -191,6 +199,9 @@ pub(crate) fn run(
             deletion_sequencement: config.sequencing.deletion,
             perte: config.dropout,
             couverture: config.coverage,
+            salve_taux: config.bursts.rate,
+            salve_longueur: config.bursts.length,
+            salve_erreur: config.bursts.error,
         },
         tirages: results,
         bilan: Bilan {
@@ -217,7 +228,7 @@ pub(crate) fn run(
         );
         text.push_str(&format!(
             "Canal, par nucléotide : synthèse {} / {} / {}, séquençage {} / {} / {} \
-             (substitution / insertion / délétion) ; perte {} ; couverture {}\n\n",
+             (substitution / insertion / délétion) ; perte {} ; couverture {}",
             percent(config.synthesis.substitution),
             percent(config.synthesis.insertion),
             percent(config.synthesis.deletion),
@@ -227,6 +238,17 @@ pub(crate) fn run(
             percent(config.dropout),
             config.coverage
         ));
+        if config.bursts.rate > 0.0 {
+            text.push_str(&format!(
+                " ; salves sur {} des lectures (longueur moyenne {} nt, substitutions {} dans \
+                 une salve, soit {} en moyenne)",
+                percent(config.bursts.share()),
+                config.bursts.length,
+                percent(config.bursts.error),
+                percent(config.bursts.mean_rate())
+            ));
+        }
+        text.push_str("\n\n");
         text.push_str(&format!(
             "{:<7} {:>9} {:>13} {:>10} {:>12}  {}\n",
             "Tirage", "Lectures", "Oligos perdus", "Intactes", "Hors long.", "Résultat"

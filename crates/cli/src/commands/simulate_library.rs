@@ -12,7 +12,9 @@ use crate::output::{seconds, Fields, Printer};
 use adn_core::fasta::FastqWriter;
 use adn_core::library::{read_pool, Library, PoolMolecule};
 use adn_core::{decode, DecodeOptions};
-use adn_simulation::{read_header, read_id, ErrorRates, ReadPair, Sequencer, SequencerConfig};
+use adn_simulation::{
+    read_header, read_id, BurstConfig, ErrorRates, ReadPair, Sequencer, SequencerConfig,
+};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::path::Path;
@@ -54,6 +56,9 @@ struct SequencerSettings {
     perte: f64,
     couverture: f64,
     sauts_index: f64,
+    salve_taux: f64,
+    salve_longueur: f64,
+    salve_erreur: f64,
 }
 
 #[derive(Serialize)]
@@ -94,6 +99,11 @@ pub(crate) fn run(
             channel.insertion_rate,
             channel.deletion_rate,
         ),
+        bursts: BurstConfig {
+            rate: channel.burst_rate,
+            length: channel.burst_length,
+            error: channel.burst_error,
+        },
         index_sequencing: ErrorRates::new(sequencer.index_substitution_rate, 0.0, 0.0),
         synthesis: ErrorRates::new(
             channel.synthesis_substitution_rate,
@@ -225,6 +235,9 @@ pub(crate) fn run(
             perte: config.dropout,
             couverture: config.coverage,
             sauts_index: config.index_hopping,
+            salve_taux: config.bursts.rate,
+            salve_longueur: config.bursts.length,
+            salve_erreur: config.bursts.error,
         },
         tirages: results,
         bilan: Bilan {

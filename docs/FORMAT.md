@@ -36,7 +36,7 @@ oligos manifestes ──┘
 À l'encodage, le fichier est d'abord enveloppé ([section 4](#4-enveloppe)). L'enveloppe, ou
 *corps*, est répartie dans des oligos selon un schéma : [DNA Fountain](#6-schéma-dna-fountain),
 [brins codés](#7-schéma-brins-codés), [goldman](#8-schéma-goldman) ou
-[grass](#9-schéma-grass). Enfin, 12 à 64 oligos manifestes ([section 5](#5-manifeste)) sont
+[grass](#9-schéma-grass) ou [ldpc](#10-schéma-ldpc). Enfin, 12 à 64 oligos manifestes ([section 5](#5-manifeste)) sont
 placés en tête.
 
 Au décodage, l'ordre est inverse : reconnaître le manifeste, reconstituer le corps selon son
@@ -57,8 +57,10 @@ schéma, puis vérifier et rouvrir l'enveloppe.
 - **Trits et symboles de GF(47)** : les schémas goldman et grass n'écrivent pas deux bits par
   nucléotide. L'un écrit un trit (chiffre de 0 à 2) par base, l'autre un symbole (de 0 à 46) par
   groupe de trois bases. Leurs conventions sont données dans leur section.
-- **Générateur pseudo-aléatoire** : voir la [section 12](#12-générateur-pseudo-aléatoire). Tous
+- **Générateur pseudo-aléatoire** : voir la [section 13](#13-générateur-pseudo-aléatoire). Tous
   les masques et tous les tirages en dérivent.
+- **Rapports de vraisemblance** : le schéma ldpc ne tranche pas base à base ; il pèse chaque
+  bit du rapport `ln P(bit = 0) / P(bit = 1)`, positif pour un bit à zéro, nul pour un effacement.
 
 ## 4. Enveloppe
 
@@ -96,14 +98,14 @@ Un oligo manifeste est toujours écrit en deux bits par nucléotide :
 
 Avec DNA Fountain et sa parité par défaut, cela fait 36 + 2 = 38 octets, soit 152 nt ; avec les
 brins codés, 36 + 4 = 40 octets, soit 160 nt ; avec grass et sa parité par défaut, 36 + 14 = 50
-octets, soit 200 nt ; avec goldman, 152 nt. Le nombre d'octets de parité est celui du schéma
-(deux pour goldman, qui n'en a pas). Les manifestes des deux derniers schémas sont donc plus
-longs que leurs brins, qui portent autre chose que deux bits par nucléotide.
+octets, soit 200 nt ; avec goldman ou ldpc, 152 nt. Le nombre d'octets de parité est celui du
+schéma (deux pour goldman et ldpc, dont les brins n'en portent pas). Les manifestes du schéma
+grass sont donc plus longs que ses brins, qui portent autre chose que deux bits par nucléotide.
 
 - **Étiquette** : les quatre octets ASCII `ADNF`, en clair, soit les 16 premiers nucléotides
   `CAACCACACATGCACG`. Elle permet de reconnaître un oligo manifeste parmi les lectures.
 - **Nonce** : un numéro de série, de 4 octets en petit-boutiste, transmis sous une forme
-  dispersée par [`scramble_u32`](#12-générateur-pseudo-aléatoire).
+  dispersée par [`scramble_u32`](#13-générateur-pseudo-aléatoire).
 - **Manifeste masqué** : le manifeste ci-dessous, dont chaque octet est combiné par OU exclusif
   avec un flux pseudo-aléatoire dérivé du nonce transmis (flux `0x10`). Le masquage évite
   qu'un contenu très structuré — des octets nuls — ne donne en ADN de longues suites de A,
@@ -116,12 +118,12 @@ Le manifeste compte 28 octets :
 | décalage | taille | contenu |
 |----------|--------|---------|
 | 0        | 1      | version du format (`2`) |
-| 1        | 1      | schéma : `1` = DNA Fountain, `2` = brins codés, `3` = goldman, `4` = grass |
-| 2        | 1      | parité Reed-Solomon de chaque oligo : en octets (DNA Fountain, brins codés), en symboles (grass), `2` pour goldman (ses manifestes) |
+| 1        | 1      | schéma : `1` = DNA Fountain, `2` = brins codés, `3` = goldman, `4` = grass, `5` = ldpc |
+| 2        | 1      | parité Reed-Solomon de chaque oligo : en octets (DNA Fountain, brins codés), en symboles (grass), `2` pour goldman et ldpc (leurs manifestes) |
 | 3        | 1      | compression de l'enveloppe |
 | 4        | 8      | longueur de l'enveloppe, en octets (petit-boutiste) |
 | 12       | 4      | nombre de blocs (DNA Fountain) ou de fenêtres (goldman), `0` sinon |
-| 16       | 4      | `c` de la distribution soliton (flottant 32 bits, petit-boutiste) ; pour goldman, l'identifiant de fichier dans le premier octet, le reste à zéro |
+| 16       | 4      | `c` de la distribution soliton (flottant 32 bits, petit-boutiste) ; pour goldman, l'identifiant de fichier dans le premier octet ; pour ldpc, la parité en pour cent dans le premier octet ; le reste à zéro |
 | 20       | 4      | `δ` de la distribution soliton (flottant 32 bits, petit-boutiste), `0` sinon |
 | 24       | 4      | CRC-32 des 24 premiers octets |
 
@@ -163,7 +165,7 @@ Par défaut la parité compte 2 octets, comme dans l'article : l'oligo fait 38 o
 1. Le corps est complété par des octets nuls jusqu'à un multiple de 32 octets, puis coupé en
    *K* blocs de 32 octets. *K* vaut au moins 1.
 2. Les gouttes sont numérotées `0, 1, 2…`. La **graine** d'une goutte est son numéro passé dans
-   la bijection [`scramble_u32`](#12-générateur-pseudo-aléatoire), inscrite en gros-boutiste.
+   la bijection [`scramble_u32`](#13-générateur-pseudo-aléatoire), inscrite en gros-boutiste.
 3. Le **degré** *d* de la goutte est tiré de la distribution soliton robuste avec le flux `1`.
 4. Les *d* blocs qu'elle mélange sont tirés sans remise par l'algorithme de Floyd, avec le flux
    `2`, et rangés par index croissant.
@@ -278,7 +280,7 @@ Un brin fait 40 octets, soit 160 nt.
   transmis. La parité est calculée avant masquage.
 - **Nonce** : les nonces sont essayés à partir de `0`, et le premier qui donne un brin conforme
   aux contraintes est retenu. Il est transmis sous une forme dispersée par
-  [`scramble_u24`](#12-générateur-pseudo-aléatoire), en petit-boutiste. Les 24 bits offrent plus
+  [`scramble_u24`](#13-générateur-pseudo-aléatoire), en petit-boutiste. Les 24 bits offrent plus
   de 16 millions de candidats par brin.
 
 ### Code externe
@@ -531,7 +533,104 @@ plus par symbole.
 
 L'index tient sur 47⁴ = 4 879 681 numéros : 6 843 blocs, soit 4 249 503 brins de données — 55 Mo
 avec la parité par défaut, 81 Mo avec une parité de 6.
-## 10. Fichiers FASTA et FASTQ
+## 10. Schéma ldpc
+
+Un schéma à décisions souples : deux codes en série sur l'image binaire du canal — un code
+convolutif par brin, un LDPC par bloc —, reliés par un entrelacement. Il ne suit aucun article
+en particulier : il met en œuvre pour l'archivage sur ADN le code convolutif le plus répandu,
+celui des normes de communication spatiale, et les codes LDPC de Gallager.
+
+### Brin
+
+Un brin fait 154 nt, soit 308 bits de code, poids fort en tête deux par base :
+
+| sel, 20 bits | index, 24 bits | charge utile, 104 bits (13 octets) | queue, 6 zéros |
+|---|---|---|---|
+| dispersé, en clair | dispersé, masqué par le sel | masquée par un flux dérivé de l'index et du sel | ramène l'encodeur à l'état nul |
+
+Les 148 bits d'information entrent dans le **code convolutif binaire** de longueur de
+contrainte 7 et de rendement ½, de polynômes générateurs (171, 133) en octal. À chaque bit
+d'entrée, le registre vaut `(entrée << 6) | état`, où l'état compte les six entrées
+précédentes, de la plus récente en poids fort à la plus ancienne ; le code donne
+`parité(registre & 0o171)`, puis `parité(registre & 0o133)`, et l'état devient
+`(état >> 1) | (entrée << 5)`. L'état initial est nul, et six zéros de queue ramènent l'encodeur
+à zéro : le décodeur sait où finir. Un un isolé en entrée fait lire `1111001` puis `1011011`.
+La distance libre du code vaut 10.
+
+- **Sel** : un entier de 20 bits, transmis dispersé par la bijection
+  `x ↦ ((x · 0x6E5D1 + 0x27F3A) mod 2²⁰) ⊕ (x >> 10)`. Il règle le criblage et, par là, tout le
+  brin.
+- **Index** : dispersé par `scramble_u24`, puis masqué par 24 bits dérivés du seul sel (flux
+  `0x15`, graine = sel).
+- **Charge utile** : masquée octet par octet par un flux dérivé de l'index et du sel (flux
+  `0x14`, graine = `index · 2²⁰ + sel`).
+
+### Blocs et code externe
+
+Les brins se rangent par blocs : jusqu'à 819 brins de données, suivis de
+⌈d · p / 100⌉ brins de parité, où `d` est le nombre de brins de données du bloc et `p` la
+parité. Les brins d'un bloc se suivent dans l'espace des index : le premier du bloc *b* a le
+rang *b* · (819 + ⌈819 · p / 100⌉).
+
+Le code externe est un **LDPC systématique**, dont la matrice de contrôle se reconstruit d'une
+graine fixe (`0x4C445043`), à l'identique chez l'encodeur et chez le décodeur :
+
+- le mot de code compte *k* = d · 104 bits d'information puis *m* = ⌈d · p / 100⌉ · 104 bits de
+  parité ;
+- chaque bit d'information participe à quatre contrôles, tirés au hasard (flux `0x13`) sans
+  cycle de longueur quatre — deux variables aux mêmes deux contrôles, un bit de parité
+  comptant pour ses contrôles —, en chargeant de préférence les contrôles les moins remplis ;
+- le bit de parité *j* participe aux contrôles *j* et *j + 1* ; le premier contrôle n'a que le
+  bit de parité 0.
+
+L'encodage est une accumulation : la parité *j* vaut la parité *j − 1*, plus la somme modulo 2
+des bits d'information du contrôle *j*. Le décodage est une propagation de croyances, min-sum
+normalisé d'un facteur 0,8, en au plus 60 allers-retours entre variables et contrôles ; elle
+s'arrête dès que chaque contrôle est satisfait.
+
+### Entrelacement
+
+Dans le mot de code d'un bloc, le bit de rang *b* du brin de données *s* occupe le rang
+*b* · d + *s* ; celui du brin de parité *s*, le rang k + *b* · m/104 + *s*. Les bits d'un même
+rang passent donc consécutivement, et ceux d'un même brin se trouvent à *d* (ou *m*/104)
+positions les uns des autres : un brin manquant, salve de 104 effacements, devient 104
+effacements isolés.
+
+### Lecture d'un brin
+
+1. Chaque base lue pèse ses deux bits par un rapport de vraisemblance de +4 ou −4.
+2. Le décodage de Viterbi donne le chemin le plus probable. Si ce chemin redonne la lecture à
+   l'identique, la lecture est un mot de code : ses rapports a posteriori dépassent tous la borne,
+   et valent donc, bornés, +4 ou −4 selon chaque bit. Sinon, l'algorithme log-MAP (BCJR) parcourt
+   le treillis dans les deux sens et rend le rapport a posteriori de chacun des 148 bits
+   d'information, borné à ±4.
+3. Les 20 premiers bits donnent le sel, qui démasque l'index. Une lecture d'index hors de
+   l'archive est écartée.
+4. Les 104 bits de charge utile sont démasqués : leur rapport change de signe où le flux
+   vaut 1.
+5. Les lectures d'un même brin s'additionnent. Un brin sans lecture garde des rapports nuls :
+   ce sont des effacements.
+6. Bloc par bloc, la propagation de croyances tranche. Un bloc où manquent plus de brins
+   que la parité n'en porte est refusé sans décodage ; de même un bloc qui n'a pas convergé.
+
+Les rapports sont pris à une échelle fixe, qui n'importe pas : le min-sum est invariant par
+homothétie, et les décisions du treillis aussi.
+
+### Paramètres
+
+| Paramètre | Défaut | Rôle |
+|-----------|--------|------|
+| `parity`  | `20`   | brins de parité pour cent brins de données, de 5 à 100 |
+
+Le manifeste porte la parité au premier octet de `c`, où goldman range son identifiant de
+fichier. Ses oligos comptent deux octets de parité Reed-Solomon, soit 152 nt.
+
+### Taille maximale
+
+L'index tient sur 2²⁴ brins, données et parité : 13 981 013 brins de données à la parité de
+20 %, soit environ 173 Mio.
+
+## 11. Fichiers FASTA et FASTQ
 
 Une archive s'écrit dans un fichier FASTA ordinaire, une séquence repliée à 60 nucléotides par
 ligne. **Les en-têtes sont purement informatifs** : le décodage ne les lit pas.
@@ -565,18 +664,18 @@ ignorée, les décodeurs ne s'en servent pas. Les mêmes tolérances s'appliquen
 (CRLF, minuscules, blancs) ; un enregistrement incomplet, un en-tête vide ou une ligne `+`
 manquante est refusé, avec son numéro de ligne.
 
-## 11. Décodage
+## 12. Décodage
 
 1. **Normalisation.** Majuscules et blancs tolérés ; tout autre caractère écarte la lecture.
 2. **Manifeste.** Il donne le schéma et les paramètres de l'archive
    ([section 5](#5-manifeste)).
 3. **Corps**, selon le schéma ([6](#6-schéma-dna-fountain), [7](#7-schéma-brins-codés),
-   [8](#8-schéma-goldman) ou [9](#9-schéma-grass)).
+   [8](#8-schéma-goldman), [9](#9-schéma-grass) ou [10](#10-schéma-ldpc)).
 4. **Enveloppe.** CRC-32, décompression, puis comparaison de l'empreinte SHA-256.
 
 Un schéma attendu peut être imposé ; une archive d'un autre schéma est alors refusée.
 
-## 12. Générateur pseudo-aléatoire
+## 13. Générateur pseudo-aléatoire
 
 Le décodeur recalcule la structure des gouttes en rejouant les tirages de l'encodeur.
 L'algorithme fait donc partie du format : il est figé, et il ne doit jamais changer.
@@ -630,19 +729,19 @@ Les deux bijections donnent à un compteur une apparence aléatoire : un compteu
 s'écrirait en ADN comme de longues suites de A, rejetées par le criblage. L'implémentation de
 référence est le fichier `crates/core/src/codec/rng.rs`.
 
-## 13. Limites récapitulatives
+## 14. Limites récapitulatives
 
-| | DNA Fountain | Brins codés | goldman | grass |
-|---|---|---|---|---|
-| Oligo | 152 nt (par défaut) | 160 nt | 117 nt | 117 nt |
-| Corps maximal | ≈ 137 Gio | ≈ 420 Mio | ≈ 2,6 Mo | ≈ 55 Mo (parité 14) |
-| Sans ordre | oui | non : les brins sont adressés | non : les brins sont adressés | non : les brins sont adressés |
-| Perte aléatoire supportée | `1 − 1/r` des oligos, par construction (`r` = marge) | 32 brins manquants sur 255, soit 12,5 % d'un bloc | chaque base doit rester dans l'un de ses quatre brins : environ 2 % de brins perdus | 92 brins manquants sur 713, soit 13 % d'un bloc |
-| Substitutions | dépend de la parité : avec 2 octets, une seule erreur par lecture est corrigée | 2 octets erronés par brin | quatre lectures par base, sans code correcteur | 7 symboles (21 nt) erronés par lecture, avec la parité par défaut |
-| GC | 45 à 55 % garanti | 45 à 55 % garanti | non garanti (50 % en moyenne) | 45 à 55 % garanti |
-| Limite pratique | vitesse d'encodage | taille | taille ; couverture nécessaire | densité |
+| | DNA Fountain | Brins codés | goldman | grass | ldpc |
+|---|---|---|---|---|---|
+| Oligo | 152 nt (par défaut) | 160 nt | 117 nt | 117 nt | 154 nt |
+| Corps maximal | ≈ 137 Gio | ≈ 420 Mio | ≈ 2,6 Mo | ≈ 55 Mo (parité 14) | ≈ 173 Mio (parité 20) |
+| Sans ordre | oui | non : les brins sont adressés | non : les brins sont adressés | non : les brins sont adressés | non : les brins sont adressés |
+| Perte aléatoire supportée | `1 − 1/r` des oligos, par construction (`r` = marge) | 32 brins manquants sur 255, soit 12,5 % d'un bloc | chaque base doit rester dans l'un de ses quatre brins : environ 2 % de brins perdus | 92 brins manquants sur 713, soit 13 % d'un bloc | 11 % des brins (parité 20), 25 % (parité 50) |
+| Substitutions | dépend de la parité : avec 2 octets, une seule erreur par lecture est corrigée | 2 octets erronés par brin | quatre lectures par base, sans code correcteur | 7 symboles (21 nt) erronés par lecture, avec la parité par défaut | 5 % par lecture, à couverture 10 |
+| GC | 45 à 55 % garanti | 45 à 55 % garanti | non garanti (50 % en moyenne) | 45 à 55 % garanti | 45 à 55 % garanti |
+| Limite pratique | vitesse d'encodage | taille | taille ; couverture nécessaire | densité | vitesse de décodage ; couverture de 3 au moins |
 
-## 14. Version 1
+## 15. Version 1
 
 Les archives produites par la version 0.1 ne sont plus lues : leurs en-têtes portent la marque
 `|scheme:`, et les schémas qu'elles annonçaient ne mettaient pas en œuvre ce que leur nom
@@ -651,7 +750,7 @@ Les noms `goldman` et `grass` désignent désormais les schémas des sections 8 
 `goldman2013` et `grass2015` en sont des alias. Pour relire une archive de la version 0.1,
 utiliser le code du commit `09df4f8`.
 
-## 15. Pool de bibliothèque
+## 16. Pool de bibliothèque
 
 Hors du format d'archive : un pool de molécules pour séquenceur, écrit par `adn library`,
 est un FASTA à un enregistrement par molécule. Son en-tête dit l'échantillon et ses index :
@@ -665,6 +764,14 @@ en-têtes sont lus par `adn simulate --library` et `adn demux --library` ; ils n
 décoder une archive. Le détail est dans [`LIBRARY.md`](LIBRARY.md).
 
 ## Références
+
+- Viterbi A. — *Error bounds for convolutional codes and an asymptotically optimum decoding
+  algorithm*, IEEE Transactions on Information Theory 13(2):260–269, 1967.
+- Bahl L. R., Cocke J., Jelinek F., Raviv J. — *Optimal decoding of linear codes for minimizing
+  symbol error rate*, IEEE Transactions on Information Theory 20(2):284–287, 1974.
+- Gallager R. G. — *Low-density parity-check codes*, MIT Press, 1963.
+- MacKay D. J. C., Neal R. M. — *Near Shannon limit performance of low density parity check
+  codes*, Electronics Letters 33(6):457–458, 1997.
 
 - Erlich Y., Zielinski D. — *DNA Fountain enables a robust and efficient storage architecture*,
   Science 355(6328):950–952, 2017.

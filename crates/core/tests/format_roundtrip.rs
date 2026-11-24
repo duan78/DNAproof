@@ -321,6 +321,7 @@ fn every_oligo_has_the_length_of_its_scheme() {
             Scheme::Strands => 4,
             Scheme::Goldman => 2,
             Scheme::Grass => options.grass.parity as u8,
+            Scheme::Ldpc => 2,
         };
         assert!(encoded.oligos[..copies]
             .iter()

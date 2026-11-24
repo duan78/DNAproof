@@ -64,9 +64,9 @@ Une lecture s'arrête au bout de la molécule.
 **Longueur de lecture.** Pour qu'une archive se décode, chaque oligo doit être lu en entier :
 la longueur de lecture doit atteindre le plus long insert du pool, manifestes compris. Avec les
 réglages par défaut : 152 nt pour `fountain` et les manifestes de `goldman`, 160 pour `strands`,
-200 pour les manifestes de `grass`. Une lecture de 300 bases, courant sur les machines de la
-gamme, couvre tout. En dessous, les lectures partielles ne s'assemblent pas : elles sont écrites
-telles quelles, et le décodeur en rejette la longueur.
+154 pour `ldpc`, 200 pour les manifestes de `grass`. Une lecture de 300 bases, courant sur les
+machines de la gamme, couvre tout. En dessous, les lectures partielles ne s'assemblent pas :
+elles sont écrites telles quelles, et le décodeur en rejette la longueur.
 
 **La coupe des adaptateurs.** `adn demux` rend chaque lecture dans le sens de l'insert :
 

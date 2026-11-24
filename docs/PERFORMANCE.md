@@ -18,14 +18,17 @@ du processeur et de la mémoire.
 | Encodage `strands` | 39 ms | 39 ms | 45 ms |
 | Encodage `goldman` | 31 ms | 47 ms | 114 ms |
 | Encodage `grass` | 68 ms | 103 ms | 267 ms |
+| Encodage `ldpc` | 80 ms | 113 ms | 175 ms |
 | Décodage `fountain`, archive intacte | 4,3 ms | 13 ms | 65 ms |
 | Décodage `strands`, archive intacte | 3,0 ms | 10 ms | 31 ms |
 | Décodage `goldman`, archive intacte | 19 ms | 76 ms | 292 ms |
 | Décodage `grass`, archive intacte | 11 ms | 23 ms | 75 ms |
+| Décodage `ldpc`, archive intacte | 69 ms | 121 ms | 289 ms |
 | Décodage `fountain`, 0,1 % de substitution, 3 lectures par oligo | 7,4 ms | 25 ms | 113 ms |
 | Décodage `strands`, 0,5 % de substitution | 5,3 ms | 14 ms | 46 ms |
 | Décodage `goldman`, 0,1 % de substitution, 3 lectures par brin | 45 ms | 179 ms | 693 ms |
 | Décodage `grass`, 0,5 % de substitution | 14 ms | 33 ms | 113 ms |
+| Décodage `ldpc`, 1 % de substitution, 3 lectures par brin | 283 ms | 934 ms | 3,55 s |
 
 Les archives abîmées se décodent toujours : le scénario d'erreurs est choisi pour rester
 décodable, et la mesure s'arrête sinon.
@@ -34,6 +37,14 @@ décodable, et la mesure s'arrête sinon.
 212 000 brins — et le scénario retenu y va de trois lectures par brin : 636 000 lectures à
 décoder, soit environ 1 µs chacune. `grass` écrit chaque brin en symboles de GF(47) puis le
 protège par un Reed-Solomon et un criblage : son encodage est le plus lent après DNA Fountain.
+
+Le schéma `ldpc` tient dans deux coûts. À l'encodage, la matrice de contrôle se construit une
+fois par taille de bloc (38 ms), puis chaque brin cherche un sel qui le rende conforme : onze
+essais en moyenne, un microseconde chacun. Au décodage, chaque lecture passe sur le treillis :
+0,2 ms quand elle est fautive — c'est le log-MAP, qui pèse chaque bit —, et 15 µs quand elle est
+intacte, que Viterbi reconnaît d'office. Une archive intacte se décode donc dix fois plus vite
+qu'une archive à 1 % d'erreurs ; c'est le seul schéma dont le décodage compte en secondes dès
+le mébioctet.
 
 ## Grandes tailles
 
@@ -93,6 +104,14 @@ Prises isolément, sur un mébioctet sauf mention :
 | Structure d'une goutte (32 768 blocs) | 0,25 µs |
 | Test des contraintes biochimiques d'un oligo de 152 nt | 0,13 µs |
 | Probabilité exacte qu'un oligo au hasard respecte les contraintes | 0,42 ms |
+| Code convolutif : encoder les 148 bits d'un brin `ldpc` | 0,26 µs |
+| Code convolutif : relire un brin par Viterbi (308 bits de code) | 15 µs |
+| Code convolutif : le relire par log-MAP, avec un rapport par bit | 193 µs |
+| LDPC : construire la matrice d'un bloc (85 176 bits d'information, 17 056 de parité) | 38 ms |
+| LDPC : parité d'un bloc | 0,33 ms |
+| LDPC : décoder un bloc intact | 2,2 ms |
+| LDPC : décoder un bloc privé de 8 % de ses brins | 12,9 ms |
+| LDPC : décoder un bloc à 1 % de bits erronés | 19,3 ms |
 
 Un bloc `grass` compte dix colonnes : quand il lui manque des brins, la préparation du
 rétablissement (141 µs, pour toutes les colonnes) domine, et chaque colonne revient ensuite à
@@ -117,6 +136,23 @@ Avec la ligne de commande, sur des fichiers d'octets au hasard :
 `adn demux` range environ 215 000 paires de lectures par seconde, écriture des lectures
 comprise. La tolérance de la chaîne complète est mesurée dans
 [Bibliothèques Illumina](LIBRARY.md#mesures).
+
+## Les codes pris isolément
+
+Hors de tout schéma, sur un canal binaire symétrique à décisions dures, un bloc de 102 400
+bits, dix tirages par case (`cargo run --release -p adn-core --example ldpc_threshold`) :
+
+| Rendement | erreurs corrigées | effacements corrigés |
+|-----------|-------------------|----------------------|
+| 0,80 | 2 % | 16 % |
+| 0,67 | 4 % | 25 % |
+| 0,50 | 7 % | 40 % |
+
+La capacité du canal binaire symétrique vaut 11 % d'erreurs au rendement 0,8 : ce LDPC
+s'en écarte beaucoup. Sa construction est régulière — quatre contrôles par bit, sans
+distribution de degrés optimisée — et son décodage, en min-sum normalisé, perd un peu sur la
+somme-produit. La matrice se reconstruisant d'une graine, une construction optimisée devrait
+être décrite par peu de paramètres : c'est le chantier qui rapporterait le plus ici.
 
 ## Refaire ces mesures
 

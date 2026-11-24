@@ -843,8 +843,9 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "un schéma retiré est refusé, pas ignoré"
         );
-        // Les deux schémas de la littérature sont proposés, avec leurs paramètres par défaut.
-        for name in ["goldman", "grass"] {
+        // Les schémas de la littérature et le schéma ldpc sont proposés, avec leurs paramètres
+        // par défaut.
+        for name in ["goldman", "grass", "ldpc"] {
             let options = encode_options(&[field("scheme", name)]).unwrap();
             assert_eq!(options.scheme.name(), name);
             assert_eq!(options, EncodeOptions::for_scheme(options.scheme));

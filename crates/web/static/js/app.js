@@ -44,6 +44,7 @@ window.ADN = (function () {
         strands: "brins codés",
         goldman: "Goldman et al., 2013",
         grass: "Grass et al., 2015",
+        ldpc: "code convolutif et LDPC",
     };
     const SCHEME_HELP = {
         fountain: "Sans adresse, marge de perte réglable : le schéma de l'article de référence.",
@@ -52,6 +53,9 @@ window.ADN = (function () {
             "Environ 2 Mo au plus, GC non garanti par brin.",
         grass: "Reed-Solomon sur le corps à 47 éléments, un symbole par groupe de trois bases : le plus robuste aux substitutions, " +
             "le moins dense.",
+        ldpc: "Code convolutif par brin, lu sur le treillis à décisions souples, et LDPC par bloc, " +
+            "entrelacés : le plus tolérant aux erreurs de lecture et aux brins manquants. " +
+            "Moins dense que les brins codés.",
     };
 
     function el(tag, className, text) {

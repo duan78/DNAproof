@@ -10,6 +10,7 @@
 pub mod fountain;
 pub mod goldman;
 pub mod grass;
+pub mod ldpc;
 pub mod lt;
 pub mod manifest;
 pub mod rng;
@@ -28,11 +29,10 @@ pub const RETIRED_SCHEMES: [&str; 3] = ["adaptive", "base3", "ultimate"];
 const MANIFEST_COPIES_MIN: usize = 12;
 /// Nombre maximal d'oligos manifestes dans une archive.
 const MANIFEST_COPIES_MAX: usize = 64;
-/// Parité des oligos manifestes d'une archive goldman (2 octets : 152 nt).
-const GOLDMAN_MANIFEST_PARITY: u8 = 2;
-
 /// Noms de tous les schémas, pour les messages d'erreur.
-const SCHEME_NAMES: &str = "fountain, strands, goldman, grass";
+const SCHEME_NAMES: &str = "fountain, strands, goldman, grass, ldpc";
+/// Parité des oligos manifestes d'une archive goldman ou ldpc (2 octets : 152 nt).
+const TWO_BYTE_MANIFEST_PARITY: u8 = 2;
 
 /// Schéma de codage du corps d'une archive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -46,15 +46,18 @@ pub enum Scheme {
     Goldman,
     /// Reed-Solomon sur GF(47), un symbole par trimère (Grass et al., 2015).
     Grass,
+    /// Code convolutif par brin, LDPC par bloc, décodage à décisions souples.
+    Ldpc,
 }
 
 impl Scheme {
     /// Tous les schémas.
-    pub const ALL: [Scheme; 4] = [
+    pub const ALL: [Scheme; 5] = [
         Scheme::Fountain,
         Scheme::Strands,
         Scheme::Goldman,
         Scheme::Grass,
+        Scheme::Ldpc,
     ];
 
     /// Nom utilisé en ligne de commande et dans l'API.
@@ -64,6 +67,7 @@ impl Scheme {
             Scheme::Strands => "strands",
             Scheme::Goldman => "goldman",
             Scheme::Grass => "grass",
+            Scheme::Ldpc => "ldpc",
         }
     }
 
@@ -74,6 +78,7 @@ impl Scheme {
             Scheme::Strands => "Brins codés (Reed-Solomon interne et externe)",
             Scheme::Goldman => "Goldman et al., 2013 (code ternaire sans base répétée)",
             Scheme::Grass => "Grass et al., 2015 (Reed-Solomon sur GF(47), symboles en trimères)",
+            Scheme::Ldpc => "Code convolutif et LDPC (décisions souples)",
         }
     }
 
@@ -94,6 +99,7 @@ impl Scheme {
             "strands" | "reed_solomon" | "rs" => Some(Scheme::Strands),
             "goldman" | "goldman2013" | "goldman_2013" => Some(Scheme::Goldman),
             "grass" | "grass2015" | "grass_2015" => Some(Scheme::Grass),
+            "ldpc" | "viterbi" => Some(Scheme::Ldpc),
             _ => None,
         }
     }
@@ -133,6 +139,8 @@ pub struct EncodeOptions {
     pub goldman: goldman::GoldmanParams,
     /// Paramètres du schéma grass.
     pub grass: grass::GrassParams,
+    /// Paramètres du schéma ldpc.
+    pub ldpc: ldpc::LdpcParams,
     /// Contraintes biochimiques que doit respecter chaque oligo.
     pub constraints: DnaConstraints,
 }
@@ -145,6 +153,7 @@ impl Default for EncodeOptions {
             fountain: fountain::FountainParams::default(),
             goldman: goldman::GoldmanParams::default(),
             grass: grass::GrassParams::default(),
+            ldpc: ldpc::LdpcParams::default(),
             constraints: DnaConstraints::default(),
         }
     }
@@ -167,6 +176,7 @@ impl EncodeOptions {
             Scheme::Strands => strands::STRAND_LEN,
             Scheme::Goldman => goldman::STRAND_LEN,
             Scheme::Grass => grass::STRAND_LEN,
+            Scheme::Ldpc => ldpc::STRAND_LEN,
         }
     }
 
@@ -199,6 +209,7 @@ impl EncodeOptions {
                 }
                 Ok(())
             }
+            Scheme::Ldpc => self.ldpc.validate(),
         }
     }
 }
@@ -212,7 +223,7 @@ pub struct EncodeStats {
     /// Longueur de l'enveloppe, répartie dans les oligos.
     pub body_len: u64,
     pub compression: Compression,
-    /// Blocs (DNA Fountain) ou brins de données (brins codés).
+    /// Blocs (DNA Fountain) ou brins de données (brins codés, goldman, grass, ldpc).
     pub units: u32,
     pub data_oligos: usize,
     pub manifest_copies: usize,
@@ -220,7 +231,7 @@ pub struct EncodeStats {
     pub nucleotides: u64,
     /// Bits du fichier original par nucléotide.
     pub bits_per_nucleotide: f64,
-    /// Candidats essayés par le criblage : graines (DNA Fountain) ou nonces (brins codés).
+    /// Candidats essayés par le criblage : graines (DNA Fountain), nonces (brins codés), sels (ldpc).
     pub candidates_tried: u64,
     pub sha256: [u8; 32],
 }
@@ -341,7 +352,7 @@ pub fn encode(data: &[u8], options: &EncodeOptions) -> Result<Encoded> {
             let (oligos, stats) = goldman::encode(&body, &options.goldman)?;
             let manifest = manifest::Manifest {
                 scheme: manifest::SchemeId::Goldman,
-                rs_parity: GOLDMAN_MANIFEST_PARITY,
+                rs_parity: TWO_BYTE_MANIFEST_PARITY,
                 compression,
                 body_len,
                 chunks: stats.segments,
@@ -375,6 +386,24 @@ pub fn encode(data: &[u8], options: &EncodeOptions) -> Result<Encoded> {
                 stats.data_strands as u32,
                 stats.nonces_tried,
             )
+        }
+        Scheme::Ldpc => {
+            // La parité, en pour cent, prend la place de l'identifiant de fichier ; les
+            // oligos manifestes gardent deux octets de parité Reed-Solomon.
+            let parity = u8::try_from(options.ldpc.parity)
+                .map_err(|_| DnaError::InvalidConfig("parité LDPC trop grande".to_string()))?;
+            let (oligos, stats) = ldpc::encode(&body, &options.ldpc, &options.constraints)?;
+            let manifest = manifest::Manifest {
+                scheme: manifest::SchemeId::Ldpc,
+                rs_parity: TWO_BYTE_MANIFEST_PARITY,
+                compression,
+                body_len,
+                chunks: 0,
+                c: 0.0,
+                delta: 0.0,
+                file_id: parity,
+            };
+            (manifest, oligos, stats.data_strands, stats.salts_tried)
         }
     };
 
@@ -477,6 +506,7 @@ where
         manifest::SchemeId::Strands => Scheme::Strands,
         manifest::SchemeId::Goldman => Scheme::Goldman,
         manifest::SchemeId::Grass => Scheme::Grass,
+        manifest::SchemeId::Ldpc => Scheme::Ldpc,
     };
     if options.scheme.is_some_and(|forced| forced != scheme) {
         return Err(DnaError::UnsupportedFormat(format!(
@@ -529,6 +559,19 @@ where
             stats.strands_repaired = inner.strands_repaired;
             (body, inner.reads_used)
         }
+        Scheme::Ldpc => {
+            let parity = usize::from(manifest.file_id);
+            ldpc::LdpcParams { parity }.validate().map_err(|error| {
+                DnaError::UnsupportedFormat(format!("parité LDPC du manifeste invalide : {error}"))
+            })?;
+            let (body, inner) = ldpc::decode(&data_reads, body_len, parity)?;
+            stats.corrected = inner.corrected;
+            stats.uncorrectable = inner.uncorrectable;
+            stats.units_used = inner.strands;
+            stats.blocks_repaired = inner.blocks_repaired;
+            stats.strands_repaired = inner.strands_repaired;
+            (body, inner.reads_used)
+        }
     };
     stats.reads_bad_length = data_reads.len().saturating_sub(reads_used);
 
@@ -575,8 +618,9 @@ mod tests {
             let manifest_parity = match scheme {
                 Scheme::Fountain => options.fountain.rs_parity as u8,
                 Scheme::Strands => strands::INNER_PARITY as u8,
-                Scheme::Goldman => GOLDMAN_MANIFEST_PARITY,
+                Scheme::Goldman => TWO_BYTE_MANIFEST_PARITY,
                 Scheme::Grass => options.grass.parity as u8,
+                Scheme::Ldpc => TWO_BYTE_MANIFEST_PARITY,
             };
             for (rank, oligo) in encoded.oligos.iter().enumerate() {
                 // Les manifestes sont en 2 bits par nucléotide ; les brins des deux derniers
