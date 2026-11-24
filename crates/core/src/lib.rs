@@ -25,9 +25,11 @@
 pub mod checksum;
 pub mod codec;
 pub mod constraints;
+pub mod convolutional;
 pub mod envelope;
 pub mod error;
 pub mod fasta;
+pub mod ldpc;
 pub mod library;
 pub mod rs;
 pub mod rs47;
