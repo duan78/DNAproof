@@ -1206,6 +1206,88 @@ mod tests {
         assert_eq!((long.outcome, long.hypotheses), (Outcome::Lost, 1));
     }
 
+    /// Somme de contrôle de ce que la recherche rend de lectures reproductibles : l'issue, le
+    /// score, les erreurs, le nombre d'hypothèses et le message de chaque lecture.
+    fn checksum(rate: Rate, each: f64, budget: usize, trials: usize) -> u64 {
+        let layout = Layout::strand(rate);
+        let search = Search {
+            budget,
+            ..Search::default()
+        };
+        let mut rng = SeededRng::new(0xC0FFEE, u64::from(rate.code()));
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut mix = |hash: &mut u64, byte: u8| {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+        };
+        for _ in 0..trials {
+            let mut free = vec![0u8; layout.free_bytes()];
+            rng.fill_bytes(&mut free);
+            let dna = encode(&layout, &free);
+            let read = damage(&dna, (each, each, each), &mut rng);
+            let decoded = decode(&layout, &read, search);
+            let outcome = match decoded.outcome {
+                Outcome::Solved => 1,
+                Outcome::Lost => 2,
+                Outcome::Exhausted => 3,
+                Outcome::Rival => 4,
+                Outcome::Invalid => 5,
+            };
+            mix(&mut hash, outcome);
+            for array in [
+                decoded.score.to_le_bytes(),
+                decoded.hypotheses.to_le_bytes(),
+                u32::from(decoded.errors).to_le_bytes(),
+            ] {
+                for byte in array {
+                    mix(&mut hash, byte);
+                }
+            }
+            for &byte in decoded.message.as_deref().unwrap_or(&[]) {
+                mix(&mut hash, byte);
+            }
+        }
+        hash
+    }
+
+    /// L'ordre dans lequel la recherche développe ses hypothèses fait partie de ses résultats :
+    /// quelle chaîne gagne, à quel prix. Ces sommes figent le décodage de lectures
+    /// reproductibles, pour qu'un changement de la recherche — une file plus rapide, un état plus
+    /// compact — ne le change pas à son insu.
+    #[test]
+    fn the_search_develops_its_hypotheses_in_a_pinned_order() {
+        let points = [
+            (Rate::QUARTER, 0.033),
+            (Rate::QUARTER, 0.05),
+            (Rate::THIRD, 0.02),
+            (Rate::THIRD, 0.04),
+            (Rate::HALF, 0.01),
+            (Rate::HALF, 0.02),
+            (Rate::THREE_QUARTERS, 0.005),
+            (Rate::THREE_QUARTERS, 0.015),
+        ];
+        let found: Vec<u64> = points
+            .iter()
+            .map(|&(rate, each)| checksum(rate, each, 2_500, 250))
+            .collect();
+        assert_eq!(
+            // Mesurées sur la recherche de référence : un tas binaire, un état de 32 bits
+            // pour les seize dernières bases. À recalculer délibérément, jamais par accident.
+            found,
+            [
+                0x32a2196d45abb942,
+                0xe0d6cdf2dfc77eef,
+                0xca788ee62a5a75df,
+                0x22ba802015e2d940,
+                0xd5c69f0e75ed2fb4,
+                0x43d5f2e2ca9a45be,
+                0x46b4d7321d929d7c,
+                0x185525d562be4c5d,
+            ],
+            "sommes de contrôle de la recherche : {found:#018x?}"
+        );
+    }
+
     /// La base suivante dans l'ordre A, C, G, T.
     fn next_base(base: u8) -> u8 {
         let rank = BASES.iter().position(|&known| known == base).unwrap_or(0);
