@@ -664,8 +664,8 @@ impl Iterator for Draining<'_> {
 /// Tant que la recherche va bon train, un tas binaire suffit : ses quelques milliers d'entrées
 /// tiennent dans le cache. Quand elle s'enlise, il cède la place à des seaux, où chaque opération
 /// est en travail constant : une recherche sans issue en compte des dizaines de milliers. Les
-/// seaux ne sont alloués que ce jour-là — un décodeur qui ne lit que des lectures saines reste
-/// bon marché à créer.
+/// seaux ne sont alloués qu'au moment du débordement — un décodeur qui ne lit que des lectures
+/// saines reste bon marché à créer.
 struct Pending {
     heap: BinaryHeap<Reverse<u64>>,
     /// Les seaux, pris la première fois que le tas a débordé [`HEAP_CAPACITY`].
