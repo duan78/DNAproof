@@ -31,7 +31,7 @@
 //! soient-elles, ces contraintes sont tenues pour rares (voir `State::allowed`).
 //!
 //! **Ce qui vient de l'article, ce qui est de ce module.** La construction, les motifs de bits,
-//! les récompenses par rendement, la recherche au tas et son budget, la queue de zéros et le sel
+//! les récompenses par rendement, la recherche best-first et son budget, la queue de zéros et le sel
 //! sont ceux de l'article et de son implémentation de référence. Le hachis, la longueur de
 //! l'historique (huit bits à ¼, douze à ⅓, seize à ½, quarante-huit à ¾, pour qu'une chaîne
 //! fausse doive franchir seize contrôles avant de se resynchroniser) et les trois garde-fous du
@@ -64,14 +64,14 @@ const POSITION_MASK: u32 = (1 << 12) - 1;
 const GC_SLACK: i32 = 6;
 /// Suite de bases identiques la plus longue admise.
 const MAX_RUN: u32 = 3;
-/// Les seize bases qui précèdent le brin : A, C, G, T alternés, sans suite et équilibrés.
-const WINDOW_INIT: u32 = 0x1B1B_1B1B;
 /// Coût d'une erreur, en millièmes de point.
 const PENALTY: i32 = 1000;
-/// Décalage qui rend les scores positifs dans les clés du tas.
+/// Décalage qui rend les scores positifs dans la clé du tas.
 const SCORE_BIAS: i64 = 1 << 20;
-/// Sa contrepartie dans la clé de la phase de contrôle, qui n'a que vingt bits pour le score.
+/// Son homologue dans la clé de la phase de contrôle, qui n'a que vingt bits pour le score.
 const RIVAL_BIAS: i64 = 1 << 19;
+/// Entrées au-delà desquelles le tas cède la place aux seaux.
+const HEAP_CAPACITY: usize = 1 << 12;
 /// Positions de queue, connues, qu'une lecture doit avoir lues pour être complétée : au-delà,
 /// les bases manquantes ne coûtent rien ; en deçà, une lecture qui s'arrête est perdue.
 ///
@@ -270,23 +270,26 @@ fn hash_key(history: u64, position: usize, salt: u32) -> u32 {
 /// Ce que l'encodeur et le décodeur savent d'un message en cours.
 #[derive(Clone, Copy)]
 struct State {
-    /// Les derniers bits du message.
+    /// Les derniers bits du message, le plus récent en poids faible.
     history: u64,
     salt: u32,
-    /// Les seize dernières bases, deux bits chacune, la plus récente en poids faible.
-    window: u32,
     /// Nombre de G et C émis.
     gc: u16,
+    /// La dernière base émise, et la longueur de la suite de bases identiques qu'elle prolonge.
+    last: u8,
+    run: u8,
 }
 
 impl State {
-    /// L'état d'avant la première base.
+    /// L'état d'avant la première base. Devant le brin, les bases sont réputées être `T`, `G`,
+    /// `C`, `A`, répétés : la dernière est un `T`, qui ne prolonge aucune suite.
     fn start(salt: u32) -> Self {
         Self {
             history: 0,
             salt,
-            window: WINDOW_INIT,
             gc: 0,
+            last: 3,
+            run: 1,
         }
     }
 
@@ -308,13 +311,6 @@ impl State {
     /// à la borne seulement ; une fenêtre glissante, qui la ferait mordre sans arrêt, a rendu le
     /// code aveugle sur les deux tiers du brin.
     fn allowed(&self, emitted: usize) -> ([u8; 4], u32) {
-        let last = self.window & 3;
-        let mut older = self.window >> 2;
-        let mut run = 1;
-        while older & 3 == last {
-            run += 1;
-            older >>= 2;
-        }
         // Écart actuel entre le nombre de G et C et la moitié des bases émises.
         let deviation = 2 * i32::from(self.gc) - emitted as i32;
         let slack = ((emitted as i32 + 1) / 10).max(GC_SLACK);
@@ -330,7 +326,7 @@ impl State {
         for base in 0..4u8 {
             let gc = base == 1 || base == 2;
             let fits = wanted.is_none_or(|only_gc| gc == only_gc)
-                && !(run >= MAX_RUN && u32::from(base) == last);
+                && !(u32::from(self.run) >= MAX_RUN && base == self.last);
             if fits {
                 allowed[count as usize] = base;
                 count += 1;
@@ -343,8 +339,10 @@ impl State {
     fn pushed(mut self, bits: u8, salt_bits: u8, value: u8, base: u8) -> Self {
         self.history = (self.history << bits) | u64::from(value);
         self.salt = (self.salt << salt_bits) | u32::from(value >> (bits - salt_bits));
-        self.window = self.window << 2 | u32::from(base);
         self.gc += u16::from(base == 1 || base == 2);
+        // Une quatrième base identique est interdite : la suite ne dépasse jamais trois.
+        self.run = if base == self.last { self.run + 1 } else { 1 };
+        self.last = base;
         self
     }
 }
@@ -445,40 +443,324 @@ impl Frame {
     }
 }
 
-/// La clé du tas : le score, puis le rang de création — les aînées d'abord à égalité.
-#[inline]
-fn heap_key(score: i32, id: u32) -> u64 {
-    ((i64::from(score) + SCORE_BIAS) as u64) << 32 | u64::from(id)
-}
-
 /// La clé du tas pendant la phase de contrôle : le score final escompté, puis la distance au bout
 /// — les plus avancées d'abord, qui sont les moins chères à vérifier et les rivales les plus
-/// plausibles —, puis le rang. Le rang reste en clair dans les 32 bits de poids faible, comme
-/// dans une clé ordinaire.
+/// plausibles —, puis le rang. Le rang reste en clair dans les 32 bits de poids faible.
 #[inline]
 fn rival_key(hopeful: i32, remaining: usize, id: u32) -> u64 {
     let score = ((i64::from(hopeful) + RIVAL_BIAS) as u64) & ((1 << 20) - 1);
     score << 44 | (u64::from(remaining as u16) & 0xFFF) << 32 | u64::from(id)
 }
 
-/// Une hypothèse de la recherche.
+/// Une hypothèse de la recherche : tout ce qu'il faut pour la développer.
 #[derive(Clone, Copy)]
-struct Hypothesis {
+struct Node {
     /// Prédécesseur, dans l'arène ; [`ROOT`] pour la racine.
     previous: u32,
+    /// Somme des coûts et des récompenses, en millièmes de point.
+    score: i32,
     state: State,
     /// Prochaine base de la lecture à comparer.
     at: u16,
     /// Position de la base émise, dans le code ; `u16::MAX` pour la racine.
     position: u16,
-    /// Somme des coûts et des récompenses, en millièmes de point.
-    score: i32,
     /// Erreurs supposées.
     errors: u16,
-    /// Empreinte du message, pour reconnaître un rival.
-    digest: u64,
     /// Bits de message portés par cette base.
     value: u8,
+}
+
+/// La clé du tas : le score, puis le rang de création — les aînées d'abord à égalité.
+#[inline]
+fn heap_key(score: i32, id: u32) -> u64 {
+    ((i64::from(score) + SCORE_BIAS) as u64) << 32 | u64::from(id)
+}
+
+#[inline]
+fn key_score(key: u64) -> i32 {
+    ((key >> 32) as i64 - SCORE_BIAS) as i32
+}
+
+/// Un rang qui n'a pas de suivant dans son seau.
+const NO_NEXT: u32 = u32::MAX;
+
+/// Des hypothèses en attente dans des seaux : un par score et, dans un seau, les aînées d'abord.
+/// C'est l'ordre d'un tas trié sur le score puis le rang de création, en travail constant par
+/// hypothèse.
+struct Waiting {
+    /// Score du seau de rang zéro : celui d'une lecture entièrement correspondante.
+    origin: i32,
+    /// Têtes et queues des seaux. Les huit bits de poids fort portent l'époque de la lecture, les
+    /// vingt-quatre autres le rang de l'hypothèse : un seau d'une autre époque est vide, et il
+    /// n'y a rien à effacer d'une lecture à l'autre.
+    heads: Vec<u32>,
+    tails: Vec<u32>,
+    /// L'hypothèse qui suit dans son seau, par rang.
+    following: Vec<u32>,
+    /// Un bit par seau : non vide. Seuls les seaux touchés par la lecture sont remis à zéro.
+    occupied: Vec<u64>,
+    /// Premier et dernier seau devenus non vides pendant la lecture.
+    span: (usize, usize),
+    epoch: u32,
+    /// Seau de la moins chère hypothèse en attente, ou celui de la dernière sortie : la suivante
+    /// n'est jamais en dessous.
+    lowest: usize,
+    len: usize,
+}
+
+impl Waiting {
+    fn new(origin: i32, width: usize, budget: usize) -> Self {
+        Self {
+            origin,
+            heads: vec![0; width],
+            tails: vec![0; width],
+            following: vec![NO_NEXT; budget.max(1)],
+            occupied: vec![0; width.div_ceil(64)],
+            span: (usize::MAX, 0),
+            epoch: 1,
+            lowest: 0,
+            len: 0,
+        }
+    }
+
+    /// Ajuste la mémoire à de nouvelles règles, entre deux lectures.
+    fn fit(&mut self, origin: i32, width: usize, budget: usize) {
+        if origin != self.origin || self.heads.len() < width {
+            self.heads.resize(width, 0);
+            self.tails.resize(width, 0);
+            self.occupied.resize(width.div_ceil(64), 0);
+            self.origin = origin;
+            self.span = (usize::MAX, 0);
+            self.lowest = 0;
+            self.len = 0;
+            // Les seaux sont vides, à l'époque zéro : la prochaine lecture en change.
+            self.epoch = 0;
+        }
+        if self.following.len() < budget.max(1) {
+            self.following.resize(budget.max(1), NO_NEXT);
+        }
+    }
+
+    /// Oublie la lecture précédente.
+    fn reset(&mut self) {
+        let (low, high) = self.span;
+        if low <= high {
+            self.occupied[low >> 6..=high >> 6].fill(0);
+        }
+        self.span = (usize::MAX, 0);
+        self.lowest = 0;
+        self.len = 0;
+        self.epoch += 1;
+        if self.epoch > 0xFF {
+            self.epoch = 1;
+            self.heads.fill(0);
+            self.tails.fill(0);
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, score: i32, id: u32) {
+        let bucket = (score - self.origin) as usize;
+        let head = &mut self.heads[bucket];
+        if *head >> 24 != self.epoch {
+            *head = self.epoch << 24 | id;
+            self.occupied[bucket >> 6] |= 1 << (bucket & 63);
+            if bucket < self.span.0 {
+                self.span.0 = bucket;
+            }
+            if bucket > self.span.1 {
+                self.span.1 = bucket;
+            }
+            if bucket < self.lowest {
+                self.lowest = bucket;
+            }
+        } else {
+            self.following[(self.tails[bucket] & 0x00FF_FFFF) as usize] = id;
+        }
+        self.tails[bucket] = self.epoch << 24 | id;
+        self.following[id as usize] = NO_NEXT;
+        self.len += 1;
+    }
+
+    /// La moins chère hypothèse, et son score.
+    #[inline]
+    fn pop(&mut self) -> Option<(i32, u32)> {
+        if self.len == 0 {
+            return None;
+        }
+        // Tout ce qui reste est au-dessus du dernier sorti.
+        let mut bucket = self.lowest;
+        let mut bits = self.occupied[bucket >> 6] >> (bucket & 63);
+        while bits == 0 {
+            bucket = (bucket & !63) + 64;
+            bits = *self
+                .occupied
+                .get(bucket >> 6)
+                .expect("une hypothèse en attente a un seau");
+        }
+        bucket += bits.trailing_zeros() as usize;
+        let id = self.heads[bucket] & 0x00FF_FFFF;
+        let next = self.following[id as usize];
+        if next == NO_NEXT {
+            self.heads[bucket] = 0;
+            self.occupied[bucket >> 6] &= !(1 << (bucket & 63));
+        } else {
+            self.heads[bucket] = self.epoch << 24 | next;
+        }
+        self.lowest = bucket;
+        self.len -= 1;
+        Some((self.origin + bucket as i32, id))
+    }
+
+    /// Vide la file : les hypothèses du seau le plus bas au plus haut.
+    fn drain(&mut self) -> Draining<'_> {
+        let (low, high) = self.span;
+        Draining {
+            waiting: self,
+            word: if low <= high { low >> 6 } else { 0 },
+            last_word: high >> 6,
+            bits: 0,
+            id: NO_NEXT,
+        }
+    }
+}
+
+/// Le parcours d'une file qu'on vide.
+struct Draining<'a> {
+    waiting: &'a mut Waiting,
+    word: usize,
+    last_word: usize,
+    bits: u64,
+    id: u32,
+}
+
+impl Iterator for Draining<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        loop {
+            if self.id != NO_NEXT {
+                let id = self.id;
+                self.id = self.waiting.following[id as usize];
+                return Some(id);
+            }
+            while self.bits == 0 {
+                if self.word > self.last_word {
+                    self.waiting.len = 0;
+                    return None;
+                }
+                self.bits = self.waiting.occupied[self.word];
+                self.word += 1;
+            }
+            let bucket = (self.word - 1) * 64 + self.bits.trailing_zeros() as usize;
+            self.bits &= self.bits - 1;
+            self.id = self.waiting.heads[bucket] & 0x00FF_FFFF;
+        }
+    }
+}
+
+/// Les hypothèses en attente, la moins chère d'abord : le score, puis le rang de création.
+///
+/// Tant que la recherche va bon train, un tas binaire suffit : ses quelques milliers d'entrées
+/// tiennent dans le cache. Quand elle s'enlise, il cède la place à des seaux, où chaque opération
+/// est en travail constant : une recherche sans issue en compte des dizaines de milliers. Les
+/// seaux ne sont alloués que ce jour-là — un décodeur qui ne lit que des lectures saines reste
+/// bon marché à créer.
+struct Pending {
+    heap: BinaryHeap<Reverse<u64>>,
+    /// Les seaux, pris la première fois que le tas a débordé [`HEAP_CAPACITY`].
+    buckets: Option<Waiting>,
+    bucketed: bool,
+    origin: i32,
+    width: usize,
+}
+
+impl Pending {
+    fn new(origin: i32, width: usize) -> Self {
+        Self {
+            heap: BinaryHeap::new(),
+            buckets: None,
+            bucketed: false,
+            origin,
+            width,
+        }
+    }
+
+    /// Oublie la lecture précédente.
+    fn reset(&mut self) {
+        self.heap.clear();
+        self.bucketed = false;
+        if let Some(buckets) = &mut self.buckets {
+            buckets.reset();
+        }
+    }
+
+    /// Agrandit les seaux pour un budget plus large, entre deux lectures.
+    fn fit(&mut self, budget: usize) {
+        if let Some(buckets) = &mut self.buckets {
+            buckets.fit(self.origin, self.width, budget);
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, score: i32, id: u32, budget: usize) {
+        if self.bucketed {
+            self.buckets
+                .as_mut()
+                .expect("les seaux sont pris avant que la file y passe")
+                .push(score, id);
+        } else {
+            self.heap.push(Reverse(heap_key(score, id)));
+            if self.heap.len() >= HEAP_CAPACITY {
+                self.spill(budget);
+            }
+        }
+    }
+
+    /// Le tas a débordé : ses hypothèses passent dans les seaux, qui ne coûtent rien tant que
+    /// la recherche ne s'enlise pas.
+    ///
+    /// Dans un seau, l'ordre est celui d'arrivée : il faut lui donner celui du tas, le rang à
+    /// score égal — sinon, à égalité, la recherche ne développerait plus les aînées d'abord.
+    #[cold]
+    fn spill(&mut self, budget: usize) {
+        let mut entries = std::mem::take(&mut self.heap).into_vec();
+        entries.sort_unstable_by_key(|entry| entry.0);
+        let buckets = self
+            .buckets
+            .get_or_insert_with(|| Waiting::new(self.origin, self.width, budget));
+        for Reverse(key) in entries {
+            buckets.push(key_score(key), key as u32);
+        }
+        self.bucketed = true;
+    }
+
+    /// La moins chère hypothèse, et son score.
+    #[inline(always)]
+    fn pop(&mut self) -> Option<(i32, u32)> {
+        if self.bucketed {
+            self.buckets
+                .as_mut()
+                .expect("les seaux sont pris avant que la file y passe")
+                .pop()
+        } else {
+            self.heap
+                .pop()
+                .map(|Reverse(key)| (key_score(key), key as u32))
+        }
+    }
+
+    /// Vide la file, dans n'importe quel ordre.
+    fn drain(&mut self, mut give: impl FnMut(u32)) {
+        for Reverse(key) in std::mem::take(&mut self.heap) {
+            give(key as u32);
+        }
+        if let Some(buckets) = &mut self.buckets {
+            for id in buckets.drain() {
+                give(id);
+            }
+        }
+    }
 }
 
 /// La fin d'un décodage.
@@ -529,6 +811,17 @@ impl Decoded {
     }
 }
 
+/// Les scores qu'une hypothèse peut prendre : depuis la lecture entièrement correspondante
+/// jusqu'au plafond d'erreurs en fin de brin. Une erreur ne coûte jamais plus d'un point, une base
+/// qui correspond rapporte toujours sa récompense.
+fn score_range(frame: &Frame, search: &Search) -> (i32, usize) {
+    let rate = frame.layout.rate;
+    let chars = frame.layout.chars;
+    let top = 1000 * (search.base + rate.error_per_mille * (chars - 1) as u32 / 1000);
+    let origin = rate.reward * chars as i32;
+    (origin, (i64::from(top) - i64::from(origin) + 1) as usize)
+}
+
 /// Décodeur : les tables d'un layout et la mémoire de sa recherche, réutilisées d'une lecture à
 /// l'autre.
 pub struct Decoder {
@@ -538,8 +831,13 @@ pub struct Decoder {
     read: Vec<u8>,
     /// Les bits de message de chaque position, en remontant la chaîne retenue.
     values: Vec<u8>,
-    heap: BinaryHeap<Reverse<u64>>,
-    arena: Vec<Hypothesis>,
+    /// Les hypothèses créées.
+    arena: Vec<Node>,
+    pending: Pending,
+    /// Le tas de la phase de contrôle du gagnant.
+    rival: BinaryHeap<Reverse<u64>>,
+    /// Les rangs des hypothèses en attente, le temps de les ranger pour la phase de contrôle.
+    order: Vec<u32>,
 }
 
 impl Decoder {
@@ -550,19 +848,35 @@ impl Decoder {
 
     /// Un décodeur aux règles données.
     pub fn with_search(layout: Layout, search: Search) -> Self {
+        let frame = Frame::new(layout);
+        let (origin, width) = score_range(&frame, &search);
         Self {
-            frame: Frame::new(layout),
+            pending: Pending::new(origin, width),
+            frame,
             search,
             read: Vec::new(),
             values: vec![0; layout.chars],
-            heap: BinaryHeap::new(),
             arena: Vec::new(),
+            rival: BinaryHeap::new(),
+            order: Vec::new(),
         }
     }
 
     /// Les règles de la recherche.
     pub fn search(&self) -> Search {
         self.search
+    }
+
+    /// Change les règles de la recherche — le budget, la ligne d'abandon, la marge du rival —,
+    /// entre deux lectures. La mémoire s'agrandit s'il le faut.
+    pub fn set_search(&mut self, search: Search) {
+        let (origin, width) = score_range(&self.frame, &search);
+        if (origin, width) != (self.pending.origin, self.pending.width) {
+            self.pending = Pending::new(origin, width);
+        } else {
+            self.pending.fit(search.budget);
+        }
+        self.search = search;
     }
 
     /// Décode une lecture.
@@ -579,8 +893,10 @@ impl Decoder {
             search,
             read: bases,
             values,
-            heap,
             arena,
+            pending,
+            rival,
+            order,
         } = self;
         bases.clear();
         bases.extend(read.iter().map(|&base| match base {
@@ -614,27 +930,39 @@ impl Decoder {
             return Decoded::failed(Outcome::Lost, 1);
         }
 
-        heap.clear();
         arena.clear();
-        arena.push(Hypothesis {
+        rival.clear();
+        pending.reset();
+        arena.push(Node {
             previous: ROOT,
+            score: 0,
             state: State::start(frame.layout.salt.unwrap_or(0)),
             at: 0,
             position: u16::MAX,
-            score: 0,
             errors: 0,
-            digest: 0,
             value: 0,
         });
-        heap.push(Reverse(heap_key(0, 0)));
+        pending.push(0, 0, search.budget);
         // La première chaîne arrivée au bout, et son score.
         let mut winner: Option<(u32, i32)> = None;
         let mut exhausted = false;
         // Développements faits pendant la phase de contrôle.
         let mut expansions = 0usize;
-
-        while let Some(Reverse(key)) = heap.pop() {
-            let id = key as u32;
+        // Vrai pendant le contrôle du gagnant : les hypothèses en attente sont alors au tas, par
+        // score final escompté.
+        let mut rivalry = false;
+        loop {
+            let id = if rivalry {
+                let Some(Reverse(key)) = rival.pop() else {
+                    break;
+                };
+                key as u32
+            } else {
+                let Some((_, id)) = pending.pop() else {
+                    break;
+                };
+                id
+            };
             let hypothesis = arena[id as usize];
             let remaining = usize::from((last as u16).wrapping_sub(hypothesis.position));
             if usize::from(hypothesis.position) == last {
@@ -647,12 +975,23 @@ impl Decoder {
                             break;
                         }
                         // Désormais le tas est ordonné par le score final le plus bas que chaque
-                        // hypothèse peut encore atteindre : le sien si tout le reste de la lecture
-                        // correspondait. Un rival en attente n'est plus pénalisé par les récompenses
-                        // qui lui restent à prendre.
-                        key_by_future(heap, arena, reward, last);
+                        // hypothèse peut encore atteindre : le sien si tout le reste de la
+                        // lecture correspondait. Un rival en attente n'est plus pénalisé par les
+                        // récompenses qui lui restent à prendre.
+                        order.clear();
+                        pending.drain(|id| order.push(id));
+                        rival.extend(order.drain(..).map(|id| {
+                            let node = arena[id as usize];
+                            let remaining = usize::from((last as u16).wrapping_sub(node.position));
+                            Reverse(rival_key(
+                                node.score + reward * remaining as i32,
+                                remaining,
+                                id,
+                            ))
+                        }));
+                        rivalry = true;
                     }
-                    Some((first, _)) if arena[first as usize].digest != hypothesis.digest => {
+                    Some((first, _)) if !same_message(arena, first, id) => {
                         return Decoded::failed(Outcome::Rival, arena.len() as u32);
                     }
                     Some(_) => {}
@@ -681,7 +1020,7 @@ impl Decoder {
                 if frame.masks[position] & (1 << value) == 0 {
                     continue;
                 }
-                let base = allowed[((key + u32::from(value)) % count) as usize];
+                let base = allowed[(key.wrapping_add(u32::from(value)) % count) as usize];
                 let state = hypothesis
                     .state
                     .pushed(bits, frame.salt_bits[position], value, base);
@@ -720,35 +1059,31 @@ impl Decoder {
                         continue;
                     }
                     if arena.len() >= search.budget {
-                        // Plus de place. Si personne n'est encore arrivé au bout, la bonne chaîne a
-                        // pu être coupée là : une chaîne qui achèvera plus tard n'en vaut rien.
+                        // Plus de place. Si personne n'est encore arrivé au bout, la bonne
+                        // chaîne a pu être coupée là : une chaîne qui achèvera plus tard n'en
+                        // vaut rien.
                         exhausted |= winner.is_none();
                         continue;
                     }
                     let child = arena.len() as u32;
-                    arena.push(Hypothesis {
+                    arena.push(Node {
                         previous: id,
+                        score,
                         state,
                         at: next as u16,
                         position: position as u16,
-                        score,
                         errors,
-                        // Empreinte injective : deux chaînes de même empreinte portent le même
-                        // message.
-                        digest: (hypothesis.digest
-                            ^ (u64::from(position as u32) << 2 | u64::from(value)))
-                        .wrapping_mul(0x0000_0100_0000_01B3),
                         value,
                     });
-                    let ranking = match winner {
-                        Some(_) => rival_key(
+                    if rivalry {
+                        rival.push(Reverse(rival_key(
                             score + reward * (last - position) as i32,
                             last - position,
                             child,
-                        ),
-                        None => heap_key(score, child),
-                    };
-                    heap.push(Reverse(ranking));
+                        )));
+                    } else {
+                        pending.push(score, child, search.budget);
+                    }
                 }
             }
         }
@@ -780,36 +1115,30 @@ fn comparison(read: &[u8], at: usize, base: u8, reward: i32) -> (i32, u16) {
     }
 }
 
-/// Réordonne le tas pour la phase de contrôle : par le score final le plus bas accessible à
-/// chaque hypothèse — le sien si tout le reste de la lecture correspondait —, puis par la
-/// distance au bout.
-fn key_by_future(
-    heap: &mut BinaryHeap<Reverse<u64>>,
-    arena: &[Hypothesis],
-    reward: i32,
-    last: usize,
-) {
-    let items: Vec<_> = heap
-        .drain()
-        .map(|Reverse(key)| {
-            let id = key as u32;
-            let hypothesis = &arena[id as usize];
-            let remaining = usize::from((last as u16).wrapping_sub(hypothesis.position));
-            let hopeful = hypothesis.score + reward * remaining as i32;
-            Reverse(rival_key(hopeful, remaining, id))
-        })
-        .collect();
-    *heap = BinaryHeap::from(items);
+/// Si deux chaînes parvenues au bout portent le même message.
+///
+/// Elles ont une base par position, de la première à la dernière : leurs bits se comparent
+/// en remontant l'une et l'autre. C'est rare — il faut qu'un rival finisse —, et ça dispense
+/// de tenir l'empreinte de chaque hypothèse.
+fn same_message(arena: &[Node], mut first: u32, mut other: u32) -> bool {
+    while first != 0 && other != 0 {
+        let (one, two) = (arena[first as usize], arena[other as usize]);
+        if one.position != two.position || one.value != two.value {
+            return false;
+        }
+        (first, other) = (one.previous, two.previous);
+    }
+    first == other
 }
 
 /// Remonte la chaîne retenue et en tire les octets libres.
-fn message_of(frame: &Frame, arena: &[Hypothesis], mut id: u32, values: &mut [u8]) -> Vec<u8> {
+fn message_of(frame: &Frame, arena: &[Node], mut id: u32, values: &mut [u8]) -> Vec<u8> {
     values.fill(0);
     // La racine, de rang nul, n'a pas de base.
     while id != 0 {
-        let hypothesis = &arena[id as usize];
-        values[usize::from(hypothesis.position)] = hypothesis.value;
-        id = hypothesis.previous;
+        let node = &arena[id as usize];
+        values[usize::from(node.position)] = node.value;
+        id = node.previous;
     }
     let layout = &frame.layout;
     let mut message = vec![0u8; layout.free_bytes()];
@@ -827,43 +1156,67 @@ fn message_of(frame: &Frame, arena: &[Hypothesis], mut id: u32, values: &mut [u8
     message
 }
 
-/// Encode les octets libres d'un layout en ADN.
-///
-/// Les autres bits du message — le sel quand il n'est pas connu, la queue — sont nuls.
-///
-/// # Panics
-///
-/// Si `free` n'a pas la longueur des octets libres du layout.
-pub fn encode(layout: &Layout, free: &[u8]) -> Vec<u8> {
-    assert_eq!(
-        free.len(),
-        layout.free_bytes(),
-        "longueur de message inattendue"
-    );
-    let frame = Frame::new(*layout);
-    let mut state = State::start(layout.salt.unwrap_or(0));
-    let mut dna = Vec::with_capacity(layout.chars);
-    let mut rank = 0;
-    for position in 0..layout.chars {
-        let bits = frame.bits[position];
-        let mut value = 0;
-        for _ in 0..bits {
-            let next = if layout.is_free(rank) {
-                let index = rank - layout.free_from;
-                free[index / 8] >> (7 - index % 8) & 1
-            } else {
-                0
-            };
-            value = value << 1 | next;
-            rank += 1;
+/// Encodeur : les tables d'un layout et le brin en cours, réutilisés d'un message à l'autre.
+pub struct Encoder {
+    frame: Frame,
+    dna: Vec<u8>,
+}
+
+impl Encoder {
+    /// Un encodeur pour ce layout.
+    pub fn new(layout: Layout) -> Self {
+        Self {
+            frame: Frame::new(layout),
+            dna: Vec::with_capacity(layout.chars),
         }
-        let (allowed, count) = state.allowed(position);
-        let base = allowed
-            [((state.key(frame.history_mask, position) + u32::from(value)) % count) as usize];
-        dna.push(BASES[usize::from(base)]);
-        state = state.pushed(bits, frame.salt_bits[position], value, base);
     }
-    dna
+
+    /// Le brin qui porte les octets libres d'un message.
+    ///
+    /// Les autres bits du message — le sel quand il n'est pas connu, la queue — sont nuls. Le
+    /// brin rendu se lit jusqu'au prochain encodage.
+    ///
+    /// # Panics
+    ///
+    /// Si `free` n'a pas la longueur des octets libres du layout.
+    pub fn encode(&mut self, free: &[u8]) -> &[u8] {
+        let frame = &self.frame;
+        let layout = &frame.layout;
+        assert_eq!(
+            free.len(),
+            layout.free_bytes(),
+            "longueur de message inattendue"
+        );
+        let mut state = State::start(layout.salt.unwrap_or(0));
+        self.dna.clear();
+        let mut rank = 0;
+        for position in 0..layout.chars {
+            let bits = frame.bits[position];
+            let mut value = 0;
+            for _ in 0..bits {
+                let next = if layout.is_free(rank) {
+                    let index = rank - layout.free_from;
+                    free[index / 8] >> (7 - index % 8) & 1
+                } else {
+                    0
+                };
+                value = value << 1 | next;
+                rank += 1;
+            }
+            let (allowed, count) = state.allowed(position);
+            let key = state.key(frame.history_mask, position);
+            let base = allowed[key.wrapping_add(u32::from(value)) as usize % count as usize];
+            self.dna.push(BASES[usize::from(base)]);
+            state = state.pushed(bits, frame.salt_bits[position], value, base);
+        }
+        &self.dna
+    }
+}
+
+/// Encode les octets libres d'un layout en ADN, sans réutiliser la mémoire d'un encodeur
+/// ([`Encoder::encode`]).
+pub fn encode(layout: &Layout, free: &[u8]) -> Vec<u8> {
+    Encoder::new(*layout).encode(free).to_vec()
 }
 
 /// Décode une lecture avec les règles données, sans réutiliser la mémoire d'un décodeur.
@@ -1216,7 +1569,7 @@ mod tests {
         };
         let mut rng = SeededRng::new(0xC0FFEE, u64::from(rate.code()));
         let mut hash = 0xcbf2_9ce4_8422_2325u64;
-        let mut mix = |hash: &mut u64, byte: u8| {
+        let mix = |hash: &mut u64, byte: u8| {
             *hash ^= u64::from(byte);
             *hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
         };
@@ -1285,6 +1638,31 @@ mod tests {
                 0x185525d562be4c5d,
             ],
             "sommes de contrôle de la recherche : {found:#018x?}"
+        );
+
+        // Même chose au-delà du seuil où le tas cède la place aux seaux : à égalité de score, les
+        // hypothèses doivent y garder l'ordre de leur rang.
+        let spills = [
+            (Rate::QUARTER, 0.01),
+            (Rate::THIRD, 0.01),
+            (Rate::HALF, 0.01),
+            (Rate::THREE_QUARTERS, 0.005),
+        ];
+        let found: Vec<u64> = spills
+            .iter()
+            .map(|&(rate, each)| checksum(rate, each, 5_000, 200))
+            .collect();
+        assert_eq!(
+            found,
+            // Mesurées une fois la recherche rendue identique à la précédente, lecture après
+            // lecture, sur 64 000 lectures.
+            [
+                0xc558cdb3718ff780,
+                0xa0db90b0babe9753,
+                0x171a1818d984896d,
+                0xfef1486b7612b4f6,
+            ],
+            "sommes de contrôle passé le seuil : {found:#018x?}"
         );
     }
 

@@ -33,7 +33,7 @@ use crate::codec::manifest::{Manifest, SchemeId, FORMAT_VERSION};
 use crate::envelope::Compression;
 use crate::error::{DnaError, Result};
 use crate::hedges::{
-    self, Decoder, Layout, Outcome, Rate, Search, HEADER_LEN, HEADER_TAG_LEN, SALT_BITS,
+    self, Decoder, Encoder, Layout, Outcome, Rate, Search, HEADER_LEN, HEADER_TAG_LEN, SALT_BITS,
 };
 use crate::rs::RsCode;
 use crate::sequence::bytes_to_dna;
@@ -177,15 +177,6 @@ pub struct DecodeStats {
     pub strands_repaired: usize,
 }
 
-/// Les octets libres d'un brin : son index sur trois octets (les trois de poids faible d'un mot
-/// de 32 bits), puis sa charge utile.
-fn strand_message(index: usize, payload: &[u8]) -> Vec<u8> {
-    let mut free = Vec::with_capacity(3 + payload.len());
-    free.extend_from_slice(&(index as u32).to_be_bytes()[1..]);
-    free.extend_from_slice(payload);
-    free
-}
-
 /// Encode le corps d'une archive en brins (manifestes non compris).
 pub fn encode(body: &[u8], params: &HedgesParams) -> Result<(Vec<Vec<u8>>, EncodeStats)> {
     let layout = HedgesLayout::for_body(body.len(), params.rate)?;
@@ -220,10 +211,22 @@ pub fn encode(body: &[u8], params: &HedgesParams) -> Result<(Vec<Vec<u8>>, Encod
         }
     }
 
+    // Les brins s'écrivent en parallèle, un encodeur par fraction : ses tables ne se
+    // construisent qu'une fois par fraction, et son brin se réutilise.
+    let share = (payloads.len() / (8 * rayon::current_num_threads())).max(1);
     let oligos: Vec<Vec<u8>> = payloads
         .par_iter()
         .enumerate()
-        .map(|(index, payload)| hedges::encode(&strand, &strand_message(index, payload)))
+        .with_min_len(share)
+        .map_init(
+            || (Encoder::new(strand), Vec::new()),
+            |(encoder, message), (index, payload)| {
+                message.clear();
+                message.extend_from_slice(&(index as u32).to_be_bytes()[1..]);
+                message.extend_from_slice(payload);
+                encoder.encode(message).to_vec()
+            },
+        )
         .collect();
     let stats = EncodeStats {
         data_strands: layout.data_strands,
@@ -317,8 +320,13 @@ pub fn decode(reads: &[Vec<u8>], body_len: usize, rate: Rate) -> Result<(Vec<u8>
     };
 
     // 1. Le code interne, lecture par lecture : un index, une charge utile, un compte d'erreurs.
+    // Une lecture coûte de quinze microsecondes à trois millisecondes. Le travail se partage en
+    // fractions assez grandes pour qu'un décodeur ne soit créé que par fraction, et assez
+    // nombreuses pour que les lectures sans issue de l'une ne retiennent pas les autres.
+    let share = (reads.len() / (8 * rayon::current_num_threads())).max(1);
     let solved: Vec<(u32, Box<[u8]>, u16)> = reads
         .par_iter()
+        .with_min_len(share)
         .map_init(
             || Decoder::new(Layout::strand(rate)),
             |decoder, read| {
@@ -333,6 +341,8 @@ pub fn decode(reads: &[Vec<u8>], body_len: usize, rate: Rate) -> Result<(Vec<u8>
                 Some((index, message[3..].into(), decoded.errors))
             },
         )
+        .collect::<Vec<_>>()
+        .into_iter()
         .flatten()
         .collect();
 
@@ -500,41 +510,116 @@ fn header_manifest(rate: Rate, content: &[u8]) -> Option<Manifest> {
     })
 }
 
-/// Cherche un manifeste dans une lecture : à chaque début possible du code, à chaque rendement.
-fn search_manifest_oligo(read: &[u8], search: Search) -> Option<Manifest> {
-    for start in [HEADER_TAG_LEN, HEADER_TAG_LEN - 1, HEADER_TAG_LEN + 1] {
-        let Some(code) = read.get(start..) else {
-            continue;
-        };
-        for rate in Rate::ALL {
-            let decoded = Decoder::with_search(Layout::header(rate), search).decode(code);
-            if decoded.outcome != Outcome::Solved {
-                continue;
-            }
-            let manifest = decoded
-                .message
-                .as_deref()
-                .and_then(|content| header_manifest(rate, content));
-            if manifest.is_some() {
-                return manifest;
-            }
-        }
-    }
-    None
+/// Les lectures d'un lot de manifestes : un décodeur par rendement, gardé d'une lecture à
+/// l'autre — sa mémoire est ce que la recherche a de plus cher à se donner.
+pub struct ManifestReader {
+    decoders: [Decoder; Rate::ALL.len()],
 }
 
-/// Lit un manifeste par la seule passe courte d'une lecture : de quoi lire un oligo intact ou
-/// légèrement abîmé, pas de quoi s'épuiser sur une lecture qui n'en est pas une. Les copies
-/// d'un manifeste sont toutes identiques : il suffit qu'une passe aboutisse, et les lectures
-/// qui résistent sont alors laissées là ([`super::manifest::find`]).
-pub fn probe_manifest_oligo(read: &[u8]) -> Option<Manifest> {
-    search_manifest_oligo(
-        read,
-        Search {
+impl Default for ManifestReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ManifestReader {
+    /// De nouveaux lecteurs, aux règles par défaut.
+    pub fn new() -> Self {
+        let probe = Search {
             budget: PROBE_BUDGET,
             ..Search::default()
-        },
-    )
+        };
+        Self {
+            decoders: std::array::from_fn(|rank| {
+                Decoder::with_search(Layout::header(Rate::ALL[rank]), probe)
+            }),
+        }
+    }
+
+    /// Cherche le manifeste d'une lecture, à un budget d'hypothèses donné : à chaque début
+    /// possible du code, à chaque rendement.
+    fn pass(&mut self, read: &[u8], search: Search) -> Option<Manifest> {
+        for decoder in &mut self.decoders {
+            decoder.set_search(search);
+        }
+        for start in [HEADER_TAG_LEN, HEADER_TAG_LEN - 1, HEADER_TAG_LEN + 1] {
+            let Some(code) = read.get(start..) else {
+                continue;
+            };
+            for (rate, decoder) in Rate::ALL.into_iter().zip(&mut self.decoders) {
+                let decoded = decoder.decode(code);
+                if decoded.outcome != Outcome::Solved {
+                    continue;
+                }
+                let manifest = decoded
+                    .message
+                    .as_deref()
+                    .and_then(|content| header_manifest(rate, content));
+                if manifest.is_some() {
+                    return manifest;
+                }
+            }
+        }
+        None
+    }
+
+    /// Lit un manifeste par la seule passe courte d'une lecture : de quoi lire un oligo intact ou
+    /// légèrement abîmé, pas de quoi s'épuiser sur une lecture qui n'en est pas une.
+    pub fn probe(&mut self, read: &[u8]) -> Option<Manifest> {
+        self.pass(
+            read,
+            Search {
+                budget: PROBE_BUDGET,
+                ..Search::default()
+            },
+        )
+    }
+
+    /// Lit un manifeste dans une lecture : la passe courte, puis la recherche entière si rien
+    /// n'a abouti.
+    pub fn read(&mut self, read: &[u8]) -> Option<Manifest> {
+        let full = Search::default();
+        self.probe(read).or_else(|| {
+            (full.budget > PROBE_BUDGET)
+                .then(|| self.pass(read, full))
+                .flatten()
+        })
+    }
+}
+
+/// Les manifestes que rend la passe courte sur un lot de lectures candidates : en parallèle, dans
+/// l'ordre du lot.
+///
+/// Les copies d'un manifeste sont toutes identiques : il suffit qu'une passe aboutisse, et les
+/// lectures qui résistent sont alors laissées là ([`super::manifest::find`]).
+pub fn probe_manifests(reads: &[&[u8]]) -> Vec<Manifest> {
+    read_all(reads, false)
+}
+
+/// Les manifestes d'un lot de lectures candidates : la passe courte sur chacune, puis la
+/// recherche entière sur celles qui y résistent — les [`MAX_SEARCHED_MANIFESTS`] premières
+/// seulement. En parallèle, dans l'ordre du lot.
+pub fn search_manifests(reads: &[&[u8]]) -> Vec<Manifest> {
+    read_all(&reads[..reads.len().min(MAX_SEARCHED_MANIFESTS)], true)
+}
+
+fn read_all(reads: &[&[u8]], entire: bool) -> Vec<Manifest> {
+    reads
+        .par_iter()
+        .map_init(ManifestReader::new, |reader, read| {
+            if entire {
+                reader.read(read)
+            } else {
+                reader.probe(read)
+            }
+        })
+        .flatten()
+        .collect()
+}
+
+/// Lit un manifeste par la seule passe courte d'une lecture (voir [`ManifestReader::probe`]).
+pub fn probe_manifest_oligo(read: &[u8]) -> Option<Manifest> {
+    ManifestReader::new().probe(read)
 }
 
 /// Décode l'oligo manifeste d'une archive hedges.
@@ -546,18 +631,11 @@ pub fn probe_manifest_oligo(read: &[u8]) -> Option<Manifest> {
 /// son budget. Une première passe courte les fait bon marché, et une lecture intacte ou
 /// légèrement abîmée y suffit ; la recherche entière ne vient que si rien n'a abouti.
 pub fn parse_manifest_oligo(read: &[u8]) -> Result<Manifest> {
-    let full = Search::default();
-    probe_manifest_oligo(read)
-        .or_else(|| {
-            (full.budget > PROBE_BUDGET)
-                .then(|| search_manifest_oligo(read, full))
-                .flatten()
-        })
-        .ok_or_else(|| {
-            DnaError::UnsupportedFormat(
-                "oligo manifeste hedges illisible : trop d'erreurs dans la lecture".to_string(),
-            )
-        })
+    ManifestReader::new().read(read).ok_or_else(|| {
+        DnaError::UnsupportedFormat(
+            "oligo manifeste hedges illisible : trop d'erreurs dans la lecture".to_string(),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -567,6 +645,15 @@ mod tests {
     use crate::codec::rng::SeededRng;
     use crate::constraints::DnaConstraints;
     use crate::sequence::BASES;
+
+    /// Les octets libres d'un brin : son index sur trois octets (les trois de poids faible d'un
+    /// mot de 32 bits), puis sa charge utile — comme l'écrit l'encodage.
+    fn strand_message(index: usize, payload: &[u8]) -> Vec<u8> {
+        let mut free = Vec::with_capacity(3 + payload.len());
+        free.extend_from_slice(&(index as u32).to_be_bytes()[1..]);
+        free.extend_from_slice(payload);
+        free
+    }
 
     fn pseudo_random(len: usize, seed: u64) -> Vec<u8> {
         let mut rng = SeededRng::new(seed, 5);

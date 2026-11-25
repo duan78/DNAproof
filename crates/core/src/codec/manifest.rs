@@ -381,24 +381,18 @@ pub fn find(reads: Vec<Vec<u8>>) -> Result<(Manifest, Vec<Vec<u8>>, ManifestStat
 
     // Les oligos manifestes des archives hedges. Leurs copies sont identiques : une passe
     // courte suffit sur chacune dès qu'une aboutit — une lecture qui résiste coûterait une
-    // recherche entière, et la recherche du manifeste ne se fait pas en parallèle. La
-    // recherche entière ne vient que si aucune passe n'a abouti, et sur les premières
-    // lectures seulement ([`super::hedges::MAX_SEARCHED_MANIFESTS`]).
-    let hedges_candidates: Vec<&Vec<u8>> = reads
+    // recherche entière. La recherche entière ne vient que si aucune passe n'a abouti, et sur les
+    // premières lectures seulement ([`super::hedges::MAX_SEARCHED_MANIFESTS`]).
+    let hedges_candidates: Vec<&[u8]> = reads
         .iter()
         .filter(|read| looks_like_manifest(read, &hedges_tag))
+        .map(Vec::as_slice)
         .collect();
     stats.candidates += hedges_candidates.len();
-    let mut probed: Vec<Manifest> = hedges_candidates
-        .iter()
-        .filter_map(|read| super::hedges::probe_manifest_oligo(read))
-        .collect();
+    // Les lectures candidates se lisent en parallèle.
+    let mut probed = super::hedges::probe_manifests(&hedges_candidates);
     if probed.is_empty() {
-        probed = hedges_candidates
-            .iter()
-            .take(super::hedges::MAX_SEARCHED_MANIFESTS)
-            .filter_map(|read| super::hedges::parse_manifest_oligo(read).ok())
-            .collect();
+        probed = super::hedges::search_manifests(&hedges_candidates);
     }
     manifests.extend(probed);
 
