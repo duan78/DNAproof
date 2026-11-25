@@ -226,6 +226,7 @@ DNAproof/
 │   ├── storage/      # miroir des archives : SQLite ou PostgreSQL (sqlx)
 │   └── simulation/   # canal d'erreurs et séquenceur Illumina
 ├── docs/             # FORMAT.md, schémas, bibliothèques Illumina, performances, API web
+├── measure/          # les scripts des mesures : tolérance, chaîne Illumina, durées (Python)
 ├── Cargo.toml        # manifeste du workspace (verrou suivi dans le dépôt)
 └── config.toml       # configuration du serveur, documentée ligne à ligne
 ```
@@ -582,7 +583,7 @@ Le test du dépôt PostgreSQL est ignoré par défaut : il lui faut un serveur e
 - **Code externe** : Reed-Solomon (255, 223) en diagonale entre les brins ; 32 brins de parité
   par bloc, les lectures d'un brin votent
 - **Limite** : l'index tient sur 24 bits, d'où le corps maximal d'environ 182 Mio à ¼ et 448 Mio
-  à ¾ ; une lecture qui résiste coûte une recherche entière : 4,3 ms, 310 fois une
+  à ¾ ; une lecture qui résiste coûte une recherche entière : 2,6 ms, 200 fois une
   lecture intacte
 
 ### Bibliothèques Illumina
@@ -625,7 +626,7 @@ cargo test --workspace --locked
 
 | Catégorie | Nombre | Ce qui est vérifié |
 |-----------|:------:|--------------------|
-| Cœur, unitaires | 195 | enveloppe, manifeste, gouttes, brins, fenêtres goldman, brins grass, brins ldpc, Reed-Solomon sur GF(256), GF(47) et GF(47²), code convolutif et LDPC, code à hachis et schéma hedges, contraintes, générateur, FASTA et FASTQ, bibliothèques Illumina |
+| Cœur, unitaires | 196 | enveloppe, manifeste, gouttes, brins, fenêtres goldman, brins grass, brins ldpc, Reed-Solomon sur GF(256), GF(47) et GF(47²), code convolutif et LDPC, code à hachis et schéma hedges, contraintes, générateur, FASTA et FASTQ, bibliothèques Illumina |
 | Aller-retour format | 10 | `encode → FASTA → decode == original` pour les six schémas, en-têtes renommés ou perdus, CRLF et minuscules, contraintes strictes |
 | Robustesse | 8 | substitutions corrigées, marge honorée puis refusée au-delà, brins manquants réparés, manifestes abîmés, altérations au hasard : jamais un fichier faux |
 | Propriétés (proptest) | 2 | aller-retour sur entrées au hasard (schéma × type × taille × mélange) et à contraintes aléatoires |
@@ -636,7 +637,7 @@ cargo test --workspace --locked
 | Serveur web | 38 | pages, API, refus, en-têtes, reprise, hôtes |
 | Exemple du README | 1 | le code montré plus haut, tel quel |
 | Exemple de la bibliothèque | 2 | les doc-tests de `adn-core` : l'archive, et une paire de lectures rangée |
-| **Total** | **333** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
+| **Total** | **334** | **0 échec** (+ 5 ignorés : 4 tests d'échelle, 1 PostgreSQL sans serveur) |
 
 ### Propriétés clés
 
@@ -664,7 +665,7 @@ Fichiers incompressibles — le détail, les grandes tailles et la mémoire dans
 | Encodage `goldman` | 31 ms | 47 ms | 114 ms |
 | Encodage `grass` | 68 ms | 103 ms | 267 ms |
 | Encodage `ldpc` | 80 ms | 113 ms | 175 ms |
-| Encodage `hedges` | 4,4 ms | 14,1 ms | 51,9 ms |
+| Encodage `hedges` | 4,3 ms | 12 ms | 44 ms |
 | Décodage `fountain`, archive intacte | 4,3 ms | 13 ms | 65 ms |
 | Décodage `strands`, archive intacte | 3,0 ms | 10 ms | 31 ms |
 | Décodage `goldman`, archive intacte | 19 ms | 76 ms | 292 ms |
@@ -675,17 +676,18 @@ Fichiers incompressibles — le détail, les grandes tailles et la mémoire dans
 | Décodage `goldman`, 0,1 % de substitution, 3 lectures par brin | 45 ms | 179 ms | 693 ms |
 | Décodage `grass`, 0,5 % de substitution | 14 ms | 33 ms | 113 ms |
 | Décodage `ldpc`, 1 % de substitution, 3 lectures par brin | 283 ms | 934 ms | 3,55 s |
-| Décodage `hedges`, archive intacte | 87 ms | 140 ms | 328 ms |
-| Décodage `hedges`, 1 % de substitution, 3 lectures par brin | 333 ms | 554 ms | 2,12 s |
+| Décodage `hedges`, archive intacte | 11 ms | 26 ms | 94 ms |
+| Décodage `hedges`, 1 % de substitution, 3 lectures par brin | 56 ms | 152 ms | 0,56 s |
 
 Le schéma `goldman` produit quatre fois plus de brins que les autres pour un même fichier, et
 ses lectures y vont de trois : c'est le nombre de lectures qui fait son coût. Le schéma `ldpc`
 est le plus lent à décoder : chaque lecture fautive passe sur un treillis de 64 états, et son
 décodage compte en secondes dès le mébioctet — intacte, l'archive se relit dix fois plus vite.
-Le schéma `hedges` paie ses lectures une par une : une recherche de 13,9 µs si elle est intacte,
-63,7 µs à 1 % d'erreur de chaque sorte, 143 µs au rendement ¾ — et 4,3 ms si elle résiste, 310
+Le schéma `hedges` paie ses lectures une par une : une recherche de 13 µs si elle est intacte,
+57 µs à 1 % d'erreur de chaque sorte, 150 µs au rendement ¾ — et 2,6 ms si elle résiste, 200
 fois plus : une lecture d'une autre archive, rangée dans la mauvaise par un saut d'index, ou
-plus abîmée que ce que son rendement corrige.
+plus abîmée que ce que son rendement corrige. Elles se décodent en parallèle, par fractions
+assez grandes pour qu'un décodeur ne soit créé qu'une fois par fraction.
 
 En grand : 32 Mio s'encodent en 6,9 s avec `fountain` (1,6 Go de mémoire), en 0,9 s avec
 `strands` (0,4 Go). Sur un fichier texte, la compression compte davantage que le schéma : 1,32 Mio
@@ -693,7 +695,7 @@ de texte tient en 9 982 oligos une fois compressé par zstd, contre 39 000 pour 
 hasard.
 
 La chaîne Illumina ajoute peu : `adn demux` range environ 215 000 paires de lectures par
-seconde, et `adn library` assemble 24 673 molécules en 40 ms —
+seconde, et `adn library` assemble 24 964 molécules en 42 ms —
 [Bibliothèques Illumina](docs/LIBRARY.md#mesures).
 
 ---
@@ -737,8 +739,8 @@ seconde, et `adn library` assemble 24 673 molécules en 40 ms —
   lectures n'entre pas dans le décodage
 - **Le schéma `hedges` a ses propres limites**. La perte s'arrête où la parité du code externe
   le dit : 12,5 % d'un bloc, 7 % en pratique. Ses brins font 200 ou 300 nt : la longueur de
-  lecture doit les couvrir. Une lecture qui résiste coûte une recherche entière : 4,3 ms,
-  310 fois une lecture intacte — c'est le prix d'une lecture d'une autre archive, et de
+  lecture doit les couvrir. Une lecture qui résiste coûte une recherche entière : 2,6 ms,
+  200 fois une lecture intacte — c'est le prix d'une lecture d'une autre archive, et de
   toute lecture plus abîmée que ce que son rendement corrige. Et le code ne garantit que les
   contraintes par défaut : des bornes de GC plus étroites, ou deux bases identiques au plus,
   lui sont refusées
@@ -819,7 +821,8 @@ git push origin feature/votre-fonction
 
 - Ajouter des tests aux nouvelles fonctions (aller-retours stricts de préférence)
 - Toute erreur doit être annoncée : un fichier n'est jamais rendu sans vérification
-- Documenter tout nouveau schéma d'encodage, et le mesurer (`adn simulate`, `cargo bench`)
+- Documenter tout nouveau schéma d'encodage, et le mesurer (`adn simulate`, `cargo bench`,
+  les scripts de [`measure/`](measure/README.md))
 
 ---
 
@@ -833,6 +836,7 @@ git push origin feature/votre-fonction
 - [Performances mesurées](docs/PERFORMANCE.md)
 - [Guide de production](PRODUCTION_GUIDE.md) · [Référence de l'API web](docs/api_reference.md)
 - [Journal des changements](CHANGELOG.md)
+- [Mesurer](measure/README.md) : les scripts des matrices de tolérance et des durées
 
 ### Articles de recherche
 

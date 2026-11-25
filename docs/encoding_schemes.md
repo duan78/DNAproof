@@ -236,7 +236,7 @@ La densité est mesurée sur 1 Mio d'octets au hasard, manifestes compris : 1,08
 - **La perte n'est pas réglable** : 7 % passent, 8 % ne passent que neuf fois sur dix. Pour un
   canal qui perd des oligos, `fountain` et sa marge, ou `ldpc` et sa parité.
 - **Une lecture qui résiste coûte cher** : elle va au bout de son budget, 65 536 hypothèses,
-  de 3,8 à 4,7 ms — là où une lecture intacte en prend 14 à 20 µs. C'est le prix d'une lecture
+  de 2,0 à 2,9 ms — là où une lecture intacte en prend 13 à 18 µs. C'est le prix d'une lecture
   d'une autre archive, rangée dans la mauvaise par un saut d'index, et de toute lecture par
   delà ce que le rendement corrige : à ¾, une lecture sur huit à 1,5 % d'erreurs.
 - **Au-delà de ce que le code corrige, le vrai chemin n'est plus toujours le moins cher.**
@@ -568,6 +568,10 @@ Sans `--archive`, `simulate` encode le fichier avec les options données, puis l
 `--synthesis-substitution-rate`, `--insertion-rate`, `--deletion-rate` et `--dropout` règlent le
 canal ; `--burst-rate`, `--burst-length` et `--burst-error` y ajoutent des salves ; `--seed`
 rend un tirage reproductible.
+
+La matrice de `hedges` et celles de la chaîne Illumina se refont d'un coup avec les scripts de
+[`measure/`](../measure/README.md) : chacun lance `adn simulate` sur ses cas, écrit un résultat
+par ligne, et `measure/tables.py` les met en tableau.
 
 ## Références
 

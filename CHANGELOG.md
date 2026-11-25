@@ -106,10 +106,22 @@ serveur web. Les archives produites par la 0.1 ne sont plus lues (voir *Retiré*
   passer un message faux. `cargo run --release -p adn-core --example hedges_messages` mesure
   ce que la recherche rend de lectures abîmées : à ¼, 1,9 lecture sur mille rend un message
   faux à 10 % d'erreurs, 3,8 à 12 % — le vote et le code externe les arrêtent.
+- **Mesures reproductibles** (`measure/`) : les scripts Python qui produisent la matrice de
+  `hedges` et celles de la chaîne Illumina, avec `tables.py` pour les mettre en tableau et
+  `check_docs.py` pour contrôler les liens et les tableaux des documents.
 - Licence Apache 2.0 : le texte accompagne désormais la licence MIT.
 
 ### Modifié
 
+- **Le décodage de `hedges` va trois à dix fois plus vite, à résultat identique.** Les lectures
+  se décodent en parallèle par fractions assez grandes pour qu'un décodeur ne soit créé qu'une
+  fois par fraction : créé à chaque fraction volée, la recherche ne passait pas huit fils, et
+  une archive intacte de 64 Kio prenait 87 ms — 11 ms aujourd'hui. La recherche garde ses
+  hypothèses dans un tas tant qu'elles sont peu nombreuses, dans des seaux — un par score, en
+  travail constant — dès qu'elles le deviennent trop : une lecture sans issue coûte 2,6 ms au
+  lieu de 4,3. Les manifestes se cherchent en parallèle, avec un décodeur par rendement gardé
+  d'une lecture à l'autre. L'ordre dans lequel la recherche développe ses hypothèses est figé
+  par des sommes de contrôle : rien ne change, ni le message rendu, ni son prix.
 - **Simulation : les tirages d'une même commande sont indépendants.** La clé des tirages
   d'un oligo était son rang combiné par OU exclusif avec la graine : d'une graine voisine à
   l'autre — d'un tirage à l'autre —, les oligos sans lecture ne faisaient que se déplacer, et

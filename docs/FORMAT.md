@@ -911,7 +911,7 @@ référence est le fichier `crates/core/src/codec/rng.rs`.
 | Substitutions | dépend de la parité : avec 2 octets, une seule erreur par lecture est corrigée | 2 octets erronés par brin | quatre lectures par base, sans code correcteur | 7 symboles (21 nt) erronés par lecture, avec la parité par défaut | 5 % par lecture, à couverture 10 | 1 % à ¾, 3 % à ½ et à ⅓, 5 % à ¼, par base à couverture 10 ; 6 % à ½ à couverture 20 |
 | Insertions et suppressions | non | non | non | non | non | oui, au même titre que les substitutions : 1,5 % des trois sortes réunies par base à ¾, 4,5 % à ½, 6 % à ⅓, 15 % à ¼, à couverture 10 ; le manifeste aussi |
 | GC | 45 à 55 % garanti | 45 à 55 % garanti | non garanti (50 % en moyenne) | 45 à 55 % garanti | 45 à 55 % garanti | 45 à 55 % garanti |
-| Limite pratique | vitesse d'encodage | taille | taille ; couverture nécessaire | densité | vitesse de décodage ; couverture de 3 au moins | vitesse de décodage : une recherche par lecture, 4,3 ms pour une lecture qui résiste |
+| Limite pratique | vitesse d'encodage | taille | taille ; couverture nécessaire | densité | vitesse de décodage ; couverture de 3 au moins | vitesse de décodage : une recherche par lecture, 2,6 ms pour une lecture qui résiste |
 
 ## 16. Version 1
 

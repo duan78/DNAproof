@@ -6,6 +6,7 @@ target/
 *.md
 !README.md
 docs/
+measure/
 
 # Résultats du serveur et bases locales
 crates/web/uploads/

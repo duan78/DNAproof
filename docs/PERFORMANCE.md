@@ -19,7 +19,7 @@ du processeur et de la mémoire.
 | Encodage `goldman` | 31 ms | 47 ms | 114 ms |
 | Encodage `grass` | 68 ms | 103 ms | 267 ms |
 | Encodage `ldpc` | 80 ms | 113 ms | 175 ms |
-| Encodage `hedges` (rendement ½) | 4,4 ms | 14,1 ms | 51,9 ms |
+| Encodage `hedges` (rendement ½) | 4,3 ms | 12 ms | 44 ms |
 | Décodage `fountain`, archive intacte | 4,3 ms | 13 ms | 65 ms |
 | Décodage `strands`, archive intacte | 3,0 ms | 10 ms | 31 ms |
 | Décodage `goldman`, archive intacte | 19 ms | 76 ms | 292 ms |
@@ -30,8 +30,8 @@ du processeur et de la mémoire.
 | Décodage `goldman`, 0,1 % de substitution, 3 lectures par brin | 45 ms | 179 ms | 693 ms |
 | Décodage `grass`, 0,5 % de substitution | 14 ms | 33 ms | 113 ms |
 | Décodage `ldpc`, 1 % de substitution, 3 lectures par brin | 283 ms | 934 ms | 3,55 s |
-| Décodage `hedges`, archive intacte | 87 ms | 140 ms | 328 ms |
-| Décodage `hedges`, 1 % de substitution, 3 lectures par brin | 333 ms | 554 ms | 2,12 s |
+| Décodage `hedges`, archive intacte | 11 ms | 26 ms | 94 ms |
+| Décodage `hedges`, 1 % de substitution, 3 lectures par brin | 56 ms | 152 ms | 0,56 s |
 
 Les archives abîmées se décodent toujours : le scénario d'erreurs est choisi pour rester
 décodable, et la mesure s'arrête sinon.
@@ -49,15 +49,20 @@ intacte, que Viterbi reconnaît d'office. Une archive intacte se décode donc di
 qu'une archive à 1 % d'erreurs ; c'est le seul schéma dont le décodage compte en secondes dès
 le mébioctet.
 
-Le schéma `hedges` paie ses lectures une par une. Une lecture intacte coûte 13,9 µs au
-rendement ½, et 63,7 µs à 1 % de chaque sorte d'erreur ; au rendement ¾, où la recherche hésite
-davantage, 143 µs. Une lecture qui résiste va au bout de son budget, 65 536 hypothèses : 4,3 ms,
-310 fois une lecture intacte. Ce sont les lectures d'une autre archive — rangée dans la mauvaise
-par un saut d'index — et celles qui dépassent ce que leur rendement corrige : à ¾, une lecture
-sur huit à 1,5 % d'erreurs. Les lectures des brins se décodent en parallèle ; la recherche du
-manifeste, non : chaque manifeste est cherché par une passe courte de 4 096 hypothèses, à chacun
-des deux rendements de sa longueur, et la recherche entière ne vient que si aucune passe n'a
-abouti — sur les 128 premières lectures candidates, au plus.
+Le schéma `hedges` paie ses lectures une par une, et elles se décodent en parallèle. Une lecture
+intacte coûte 12,5 µs au rendement ½, et 57 µs à 1 % de chaque sorte d'erreur ; au rendement ¾,
+où la recherche hésite davantage, 153 µs. Une lecture qui résiste va au bout de son budget,
+65 536 hypothèses : 2,6 ms, 200 fois une lecture intacte. Ce sont les lectures d'une autre
+archive — rangée dans la mauvaise par un saut d'index — et celles qui dépassent ce que leur
+rendement corrige : à ¾, une lecture sur huit à 1,5 % d'erreurs.
+
+Ce que le parallélisme doit aux fractions de travail. Les lectures d'un brin se décodent par
+fractions assez grandes pour qu'un décodeur — et sa mémoire — ne soit créé qu'une fois par
+fraction. Un décodeur créé à chaque fraction volée, comme il l'était, la recherche ne passait
+pas huit fils, et une archive intacte de 64 Kio prenait 87 ms. Les manifestes se cherchent en
+parallèle de la même façon : chacun par une passe courte de 4 096 hypothèses, à chacun des deux
+rendements de sa longueur, et la recherche entière ne vient que si aucune passe n'a abouti —
+sur les 128 premières lectures candidates, au plus.
 
 ## Grandes tailles
 
@@ -125,10 +130,10 @@ Prises isolément, sur un mébioctet sauf mention :
 | LDPC : décoder un bloc intact | 2,2 ms |
 | LDPC : décoder un bloc privé de 8 % de ses brins | 12,9 ms |
 | LDPC : décoder un bloc à 1 % de bits erronés | 19,3 ms |
-| Code à hachis : encoder un brin `hedges` — ¾, ½, ⅓, ¼ | 3,37 µs ; 3,19 µs ; 3,88 µs ; 3,77 µs |
-| Code à hachis : lire une lecture intacte — ¾, ½, ⅓, ¼ | 19,5 µs ; 13,9 µs ; 17,7 µs ; 17,3 µs |
-| Code à hachis : lire une lecture à 1 % de substitutions, d'insertions et de suppressions — ¾, ½, ⅓, ¼ | 143 µs ; 63,7 µs ; 40,3 µs ; 38,8 µs |
-| Code à hachis : lire une lecture d'une autre archive de même longueur — ¾, ½, ⅓, ¼ | 4,7 ms ; 4,3 ms ; 4,1 ms ; 3,8 ms |
+| Code à hachis : encoder un brin `hedges` — ¾, ½, ⅓, ¼ | 3,6 µs ; 3,1 µs ; 3,9 µs ; 3,8 µs |
+| Code à hachis : lire une lecture intacte — ¾, ½, ⅓, ¼ | 17 µs ; 13 µs ; 18 µs ; 16 µs |
+| Code à hachis : lire une lecture à 1 % de substitutions, d'insertions et de suppressions — ¾, ½, ⅓, ¼ | 153 µs ; 57 µs ; 40 µs ; 38 µs |
+| Code à hachis : lire une lecture d'une autre archive de même longueur — ¾, ½, ⅓, ¼ | 2,9 ms ; 2,6 ms ; 2,3 ms ; 2,0 ms |
 
 Un bloc `grass` compte dix colonnes : quand il lui manque des brins, la préparation du
 rétablissement (141 µs, pour toutes les colonnes) domine, et chaque colonne revient ensuite à
@@ -169,16 +174,19 @@ Avec la ligne de commande, sur des fichiers d'octets au hasard :
 
 | | Taille | Temps |
 |---|---|---|
-| `adn library` : assembler un pool | 4 archives de 64 Kio, un par schéma, 24 673 molécules | 40 ms |
-| `adn simulate --library` : un tirage, du séquenceur au décodage des quatre échantillons | 246 728 paires de lectures | 2,3 s |
-| `adn demux`, échantillons pris du pool | 246 728 paires | 1,15 s |
-| `adn demux`, index déclarés, sans lecture d'index i5 | 246 728 paires | 0,95 s |
-| `adn simulate --library`, pool de quatre archives `hedges` (un par rendement) : un tirage, du séquenceur au décodage | 21 962 paires | 0,8 s |
-| `adn demux` | 397 278 paires (1 Mio, un échantillon) | 1,84 s |
+| `adn library` : assembler un pool | 4 archives de 64 Kio, un par schéma, 24 964 molécules | 42 ms |
+| `adn simulate --library` : un tirage, du séquenceur au décodage des quatre échantillons | 250 084 paires de lectures | 2,6 s |
+| `adn demux`, échantillons pris du pool | 250 084 paires | 1,17 s |
+| `adn demux`, index déclarés, sans lecture d'index i5 | 250 084 paires | 0,94 s |
+| `adn simulate --library`, pool de quatre archives `hedges` (un par rendement) : un tirage, du séquenceur au décodage | 21 962 paires | 0,4 s |
+| `adn simulate --library` : un tirage, un échantillon seul | 398 921 paires (1 Mio) | 4,4 s |
+| `adn demux` | 398 921 paires (1 Mio, un échantillon) | 1,86 s |
 
 Le pool `hedges` compte des brins de 300 nt sous des lectures de 300 bases : leur lecture 2
 s'arrête dix-neuf bases avant le début du brin, et `adn demux` l'écarte. Avant qu'il le fasse, le
-décodeur la cherchait en vain, jusqu'au bout de son budget, et ce pool prenait 5,3 s par tirage.
+décodeur la cherchait en vain, jusqu'au bout de son budget, et ce pool prenait 5,3 s par tirage —
+0,8 s encore une fois la lecture 2 écartée, avant que la recherche et son parallélisme
+s'accélèrent.
 
 `adn demux` range environ 215 000 paires de lectures par seconde, écriture des lectures
 comprise. La tolérance de la chaîne complète est mesurée dans
@@ -206,6 +214,10 @@ somme-produit. La matrice se reconstruisant d'une graine, une construction optim
 ```sh
 cargo bench -p adn-core
 ```
+
+Les durées de la ligne de commande — décodage `hedges`, chaîne Illumina — viennent de
+`measure/timings.py`, et les tirages de la chaîne de `measure/library_pools.py`
+([`measure/`](../measure/README.md)).
 
 Les tests d'échelle du dépôt, ignorés par défaut, encodent et décodent des fichiers plus gros :
 

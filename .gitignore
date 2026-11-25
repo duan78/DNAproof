@@ -23,6 +23,10 @@ Thumbs.db
 
 # ZCode session files
 .zcode/
+.video_agent/
+
+# Mesures (Python)
+__pycache__/
 
 # Test files
 test_*.txt

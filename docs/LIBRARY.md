@@ -218,20 +218,20 @@ couverture de 10 (37 240 paires par tirage), cinq tirages par scénario. Constru
 | Scénario | Tirages entièrement restitués | Attributions fausses | Paires sans réponse |
 |---|:---:|---:|---:|
 | Référence (0,1 % d'erreur) | 5 sur 5 | 0 | 11 |
-| Sauts d'index de 0,1 % | 5 sur 5 | 126 | 11 |
-| Sauts d'index de 1 % | 5 sur 5 | 1 240 | 11 |
-| Sauts d'index de 5 % | 5 sur 5 | 6 349 | 11 |
-| Sauts d'index de 10 % | 5 sur 5 | 12 667 | 11 |
-| Sauts d'index de 30 % | 5 sur 5 | 37 696 | 11 |
+| Sauts d'index de 0,1 % | 5 sur 5 | 120 | 11 |
+| Sauts d'index de 1 % | 5 sur 5 | 1 216 | 11 |
+| Sauts d'index de 5 % | 5 sur 5 | 6 364 | 11 |
+| Sauts d'index de 10 % | 5 sur 5 | 12 663 | 11 |
+| Sauts d'index de 30 % | 5 sur 5 | 37 867 | 11 |
 | Substitutions de 0,5 % | 5 sur 5 | 0 | 11 |
 | Substitutions de 1 % | 5 sur 5 | 0 | 11 |
-| Substitutions de 2 % | 5 sur 5 | 0 | 11 |
-| Erreurs d'index de 1 % | 5 sur 5 | 0 | 1 012 |
-| Erreurs d'index de 5 % | 5 sur 5 | 0 | 20 700 |
-| Substitutions de 1 % et sauts d'index de 5 % | 5 sur 5 | 6 349 | 11 |
+| Substitutions de 2 % | 4 sur 5 | 0 | 11 |
+| Erreurs d'index de 1 % | 5 sur 5 | 0 | 979 |
+| Erreurs d'index de 5 % | 5 sur 5 | 0 | 20 878 |
+| Substitutions de 1 % et sauts d'index de 5 % | 5 sur 5 | 6 364 | 11 |
 | Erreurs de synthèse de 1 % | 0 sur 5 | 0 | 11 |
-| Perte de 10 % des molécules | 2 sur 5 | 0 | 9 |
-| Couverture de 3 | 5 sur 5 | 0 | 2 |
+| Perte de 10 % des molécules | 4 sur 5 | 0 | 10 |
+| Couverture de 3 | 5 sur 5 | 0 | 1 |
 | Couverture de 1 | 0 sur 5 | 0 | 0 |
 | Lectures de 200 bases | 5 sur 5 | 0 | 11 |
 | Lectures de 150 bases | 0 sur 5 | 0 | 11 |
@@ -246,12 +246,12 @@ couverture de 10 (37 240 paires par tirage), cinq tirages par scénario. Constru
   [hors bibliothèque](encoding_schemes.md#tolérance-aux-erreurs) — la couverture compte les
   paires, donc dix paires font vingt lectures par oligo. À 1 % d'erreur de synthèse, seul
   `grass` passe : `fountain`, `strands` et `goldman` échouent à chacun des cinq tirages. À 10 %
-  de perte, le pool n'est restitué que deux fois sur cinq : `goldman` perd deux tirages,
-  `strands` un.
+  de perte, le pool n'est plus restitué que quatre fois sur cinq : `goldman` perd un tirage —
+  à 2 % de substitution, c'est `fountain`.
 - **Durées** (même machine, construction `--release`) : `adn library` assemble quatre archives
-  de 64 Kio (24 673 molécules) en 40 ms ; `adn demux` range environ 215 000 paires de lectures
-  par seconde (246 728 paires en 1,15 s, 397 278 en 1,84 s) ; `adn simulate --library` tire,
-  démultiplexe et décode 246 728 paires en 2,3 s.
+  de 64 Kio (24 964 molécules) en 42 ms ; `adn demux` range environ 215 000 paires de lectures
+  par seconde (250 084 paires en 1,17 s, 398 921 en 1,86 s) ; `adn simulate --library` tire,
+  démultiplexe et décode 250 084 paires en 2,6 s.
 
 Un second pool, cette fois de quatre échantillons de 8 Kio tous au schéma `hedges`, un par
 rendement — ¼, ⅓, ½, ¾, dans cet ordre ci-dessous —, index `N701`–`N704` et `N501`–`N504` :
@@ -283,9 +283,9 @@ tirages par scénario.
   de leur budget.
 - **La longueur de lecture doit couvrir le brin** : à 200 bases, les échantillons aux brins de
   300 nt (¼ et ⅓) échouent, ceux de 200 nt passent ; à 150, tous échouent.
-- **Durée** (même machine) : 0,8 s par tirage, du séquenceur au décodage. Les lectures 2 des
+- **Durée** (même machine) : 0,4 s par tirage, du séquenceur au décodage. Les lectures 2 des
   brins de 300 nt s'arrêtent dans l'insert : `adn demux` les écarte, et le décodeur ne les
-  cherche plus en vain — 5,3 s par tirage avant qu'il le fasse.
+  cherche plus en vain — 5,3 s par tirage avant.
 
 ## Limites
 
